@@ -68,7 +68,28 @@ This needs **zero Unity-native offsets**, so it does not depend on asr's
 `scene_manager` module working on Unity 6.3, and it stays name-resolved
 end to end.
 
-The scan runs once on attach (and on scene change), not per tick.
+### Matches have to be validated
+
+A raw scan over-matches. The vtable address also appears inside Mono's own
+metadata — including the `domain_vtables[0]` slot that `Class::get_vtable`
+reads it out of. Measured against the game, `DayNightCycle` produced six
+matches: one real object and five words in Mono metadata clustered around the
+vtable itself.
+
+So each match is checked by reading a reference-typed field off it and
+confirming the object that field points at has the vtable of the class the
+field is declared to hold. `DayNightCycle._eventBus` must lead to an `EventBus`.
+This is decisive in practice — one of the rejects had a *non-null* `_eventBus`
+that simply did not lead to an `EventBus`, so a null check alone would have
+admitted it.
+
+Because validation is reliable, a scan for a singleton stops at the first match
+that survives it. Classes that are legitimately multi-instance —
+`DistrictBuildingRegistry` is per-district — need the full scan instead.
+
+The scan runs on attach and on scene change, not per tick. A located instance is
+revalidated each tick, which is two reads and detects a scene change directly
+rather than waiting for reads to start failing.
 
 Unity ships Mono with the Boehm collector — `MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll`
 — which **does not move objects**. So a located instance address stays valid for
@@ -119,11 +140,10 @@ This is the fiddliest part of the splitter and needs the most testing.
 
 ## Risks
 
-1. **Heap scan performance** in the WASM sandbox — cross-process reads over a
-   multi-GB address space. Mitigated by filtering to readable-writable
-   non-executable ranges and scanning once rather than per tick. This is the
-   biggest unknown. The spike in `src/scan.rs` exists to answer it and has not
-   been run against the game yet.
+1. ~~**Heap scan performance**~~ — **answered, see Spike results.** A full
+   scan of 3.3 GiB takes 1–2s, and with early stop a singleton lookup does not
+   need anything like the full sweep. The scan is resumable, so it never stalls
+   the splitter's update loop.
 2. `List<T>` / `HashSet<T>` internal layout is Unity's Mono BCL — stable across
    game patches, but moves on a Unity upgrade.
 3. Class or field renames in a game update. Caught immediately by the dumper.
@@ -234,32 +254,58 @@ a much better outcome than arriving with a finished competing implementation,
 and it may be that the right home for this is `timberborn_speedrun` itself — in
 which case the `_wasm` naming question above comes back.
 
+## Spike results
+
+Run against the game (Timberborn under Proton, long-running save loaded,
+`asr-debugger`). The approach is confirmed end to end.
+
+**Everything resolves by name.** Mono attach, image, class, and field offsets
+all resolved without a single hardcoded offset: `DayNumber` at `+0x48`,
+`_eventBus` at `+0x10`, found by name at runtime. `DayNumber` read live and
+ticked 546 -> 547 as a day passed in game.
+
+**Six matches, one real.** The vtable sat at `7cbcd7a8`; four of the five
+rejects clustered in `7c8x`–`7cbf`, i.e. in Mono metadata immediately around it,
+and one was a lone stray much higher up. The real object was at `7753b850`, in a
+separate band — the managed heap. Validation rejected all five, in both runs.
+
+**Timing.** A full sweep of 3321.6 MiB took 1–2s across 107 slices, roughly
+10–19ms per slice, which sits about at the host's update interval. Spreading the
+work across slices cost essentially nothing in wall time versus the earlier
+blocking version, while removing the stall. ~1500 chunk reads failed out of
+~53,000, consistently across runs — the map shifts mid-scan, and Wine adds
+noise. Harmless; worth watching only if it climbs.
+
+These numbers are from Proton, so the range layout (1492 scanned, 1809 skipped)
+and read costs are Wine's, not Windows'. Worth re-measuring natively before
+tuning anything against them.
+
 ## Running the spike
 
-`src/scan.rs` plus the `spike()` function in `src/lib.rs` are a first cut at the
-approach above, aimed squarely at the open performance question. The subject is
-`DayNightCycle`: a singleton with a trivially checkable field, `DayNumber`,
-which should be >= 1 in a loaded game and tick over as days pass.
+`src/scan.rs` plus `spike()` in `src/lib.rs` locate `DayNightCycle` and watch
+`DayNumber` — a singleton with a trivially checkable field, which should be >= 1
+in a loaded game and tick over as days pass.
 
 ```bash
 cargo build --release
 ```
 
 Load `target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm` in
-[asr-debugger](https://github.com/LiveSplit/asr-debugger), then **load a save** —
+[asr-debugger](https://github.com/LiveSplit/asr-debugger), then **load a save**.
 `DayNightCycle` does not exist in the main menu, so a scan from there correctly
-finds nothing.
+finds nothing. Re-running after a code change is a "restart" in the debugger;
+the game can keep running.
 
-What to look for:
+Expect roughly:
 
-- `Scan: 1 hits` — exactly one instance, as expected for a singleton. More than
-  one means the class needs disambiguation before it can be used this way.
-- The MiB figure, and asr-debugger's own tick timing display. wasm32-unknown-unknown
-  gives us no clock, so the debugger's timing is the measurement. **This is the
-  number the whole approach hinges on.**
-- `DayNumber = N` lines appearing as days pass, which confirms the pointer is
-  live and the field offset is right.
+```
+DayNightCycle vtable 7cbcd7a8, DayNumber +0x48, _eventBus +0x10 (EventBus vtable 7241d688).
+Scan: 412.0 of 3321.6 MiB (12.4%) over 13 slices | 0 rejected | 180 read failures
+Found DayNightCycle at 7753b850. Watching DayNumber.
+DayNumber = 546
+```
 
-If the scan is too slow to run in one tick, the fix is to make it resumable —
-scan N ranges per tick and carry the cursor across — rather than to abandon the
-approach. `Stats` is already shaped to support that.
+The percentage is the early stop working: the scan should finish well short of
+the full sweep. `rejected` counts Mono-metadata matches encountered *before* the
+real one, so it depends on where the object falls in range order and may be
+zero.
