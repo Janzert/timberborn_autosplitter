@@ -3,9 +3,9 @@
 A LiveSplit auto splitter for [Timberborn](https://store.steampowered.com/app/1062090/Timberborn/),
 built for the sandboxed WebAssembly auto splitting runtime.
 
-Unlike the mod-based splitter it replaces, **nothing runs inside the game**. It
-reads game state directly from process memory, so it is usable for runs
-submitted to speedrun.com, which does not allow mods.
+**Nothing runs inside the game.** It reads state directly from the game's
+memory, so it works on a stock, unmodified install and is usable for runs
+submitted to speedrun.com.
 
 ## Status
 

@@ -1,20 +1,27 @@
 # Design
 
-## Why not the existing mod + ASL script
+## Background
 
-The current auto splitter is a Timberborn mod that writes `autosplitter_state.json`
-every 0.5s, plus an ASL script that reads that file with `System.IO`.
+Autosplitting for Timberborn was established by MHVandborg's splitter
+([timberborn_speedrun](https://github.com/MHVandborg/timberborn_speedrun)): a
+game mod that exports live state to `autosplitter_state.json`, paired with an
+ASL script that reads it. It works, and it did the genuinely hard part — working
+out which in-game events the Wonder category should split on, and proving the
+whole thing was worth having. This project would not exist without it.
 
-Two problems:
+We keep that split set exactly, in the same order, so existing `.lss` files stay
+compatible.
 
-1. speedrun.com does not allow mods to be running for a submitted run, so the
-   mod-based splitter cannot be used for runs that are actually submitted.
-2. LiveSplit's sandboxed WebAssembly auto splitting runtime has **no filesystem
-   access**. It can attach to a process, read its memory, control the timer,
-   expose settings, and log. That is all. The file-based design cannot be
-   ported to it at any level of effort.
+The reason for a second implementation is a constraint rather than a
+shortcoming: speedrun.com does not allow mods to be running for a submitted run.
+Reading state out of the game's memory instead makes autosplitting available on
+a stock install.
 
-So the splitter has to read game state out of process memory directly.
+That constraint also rules out porting the existing design across as-is.
+LiveSplit's sandboxed WebAssembly runtime has **no filesystem access** — it can
+attach to a process, read its memory, control the timer, expose settings and
+log, and that is all — so a file hand-off between game and splitter cannot be
+reproduced there at any level of effort. State has to come from process memory.
 
 ## What the game gives us
 
@@ -107,3 +114,55 @@ This is the fiddliest part of the splitter and needs the most testing.
 2. `List<T>` / `HashSet<T>` internal layout is Unity's Mono BCL — stable across
    game patches, but moves on a Unity upgrade.
 3. Class or field renames in a game update. Caught immediately by the dumper.
+
+## Naming and distribution
+
+### Filename
+
+There is no enforced convention. LiveSplit does not parse the name: both ASL and
+WebAssembly entries in the index are `<Type>Script</Type>`, and the `.wasm`
+extension on the URL is what selects the runtime. Naming is for humans only.
+
+Across the 57 WebAssembly splitters currently in the index, three families:
+
+| Pattern | Examples |
+|---|---|
+| `<game>_autosplitter.wasm` / `_auto_splitter` | `pizza_tower_autosplitter`, `cosmic_shake_auto_splitter` |
+| `livesplit_<game>.wasm` | `livesplit_sonicmania`, `livesplit_redfall` |
+| `_wasm` / `_asr` suffix | `live_a_live_autosplitter_wasm`, `pseudoregalia_asr` |
+
+We use the first and most common: `timberborn_autosplitter.wasm`. The `_wasm`
+suffix is used by authors disambiguating *two repos of their own* — e.g.
+`SonicSpeedrunning/LiveSplit.Sonic1Forever` alongside
+`LiveSplit.Sonic1Forever_wasm` — which does not apply here, and `_wasm.wasm` is
+redundant besides. If this ever moves into a repo that also holds the ASL
+splitter, revisit and take the suffix then.
+
+### The index has one entry per game
+
+Worth knowing before planning a release: `LiveSplit.AutoSplitters.xml` has
+**2,611 entries and zero games listed more than once**. It is strictly one auto
+splitter per game name, and LiveSplit auto-downloads whichever one matches.
+
+So this cannot ship as a second Timberborn entry alongside the existing one — it
+would have to replace it. That makes release a coordination question rather than
+a technical one:
+
+- Re-pointing the `<Game>Timberborn</Game>` entry needs MHVandborg's agreement,
+  or LiveSplit maintainer arbitration.
+- On the next index refresh, *every* runner with Timberborn splits picks up
+  whatever that entry points at. So it must be at least as good on day one, and
+  the split set has to stay compatible — which is why we keep the same seven
+  splits in the same order.
+
+Worth opening that conversation early rather than at the end. A joint handoff is
+a much better outcome than arriving with a finished competing implementation,
+and it may be that the right home for this is `timberborn_speedrun` itself — in
+which case the `_wasm` naming question above comes back.
+
+### Index description
+
+The `<Description>` field is what LiveSplit shows runners, so it is where the
+practical difference belongs. Something like:
+
+    Auto start/split for Timberborn - Wonder. No mod required.
