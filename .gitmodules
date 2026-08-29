@@ -1,0 +1,3 @@
+[submodule "vendor/asr"]
+	path = vendor/asr
+	url = https://github.com/LiveSplit/asr.git

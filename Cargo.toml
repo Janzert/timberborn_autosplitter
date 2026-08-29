@@ -1,0 +1,34 @@
+[package]
+name = "timberborn_autosplitter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+asr = { git = "https://github.com/LiveSplit/asr", features = [
+    "alloc",  # Working with allocations.
+    "derive", # Defining settings structs and binding to .NET classes.
+    "unity",  # Accessing games using the Unity engine (implies "signature").
+] }
+
+# Bytemuck is used to define structs that are read from the game's process.
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+# Heap allocator.
+dlmalloc = { version = "0.2.4", features = ["global"] }
+
+# Redirect the upstream asr dependency to our submodule, so local changes are
+# picked up and the exact revision is pinned by the submodule gitlink.
+# Drop this stanza once the changes we need land upstream.
+[patch."https://github.com/LiveSplit/asr"]
+asr = { path = "vendor/asr" }
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true
+
+[profile.release.build-override]
+opt-level = 0
