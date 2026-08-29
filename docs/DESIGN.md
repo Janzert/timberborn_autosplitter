@@ -70,6 +70,13 @@ end to end.
 
 The scan runs once on attach (and on scene change), not per tick.
 
+Unity ships Mono with the Boehm collector — `MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll`
+— which **does not move objects**. So a located instance address stays valid for
+the lifetime of that object, and a rescan is only needed when the object itself
+is replaced, i.e. on a scene change. If Unity ever switched this build to SGen,
+which is a compacting collector, cached pointers would need revalidating against
+the vtable every tick.
+
 ### The asr change this needs
 
 `mono::Class` keeps its address in a `pub(super)` field and `get_name` is
@@ -108,9 +115,10 @@ This is the fiddliest part of the splitter and needs the most testing.
 ## Risks
 
 1. **Heap scan performance** in the WASM sandbox — cross-process reads over a
-   multi-GB address space. Mitigated by filtering to committed private RW
-   ranges and scanning once rather than per tick. This is the biggest unknown
-   and should be the first thing prototyped.
+   multi-GB address space. Mitigated by filtering to readable-writable
+   non-executable ranges and scanning once rather than per tick. This is the
+   biggest unknown. The spike in `src/scan.rs` exists to answer it and has not
+   been run against the game yet.
 2. `List<T>` / `HashSet<T>` internal layout is Unity's Mono BCL — stable across
    game patches, but moves on a Unity upgrade.
 3. Class or field renames in a game update. Caught immediately by the dumper.
@@ -166,3 +174,33 @@ The `<Description>` field is what LiveSplit shows runners, so it is where the
 practical difference belongs. Something like:
 
     Auto start/split for Timberborn - Wonder. No mod required.
+
+## Running the spike
+
+`src/scan.rs` plus the `spike()` function in `src/lib.rs` are a first cut at the
+approach above, aimed squarely at the open performance question. The subject is
+`DayNightCycle`: a singleton with a trivially checkable field, `DayNumber`,
+which should be >= 1 in a loaded game and tick over as days pass.
+
+```bash
+cargo build --release
+```
+
+Load `target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm` in
+[asr-debugger](https://github.com/LiveSplit/asr-debugger), then **load a save** —
+`DayNightCycle` does not exist in the main menu, so a scan from there correctly
+finds nothing.
+
+What to look for:
+
+- `Scan: 1 hits` — exactly one instance, as expected for a singleton. More than
+  one means the class needs disambiguation before it can be used this way.
+- The MiB figure, and asr-debugger's own tick timing display. wasm32-unknown-unknown
+  gives us no clock, so the debugger's timing is the measurement. **This is the
+  number the whole approach hinges on.**
+- `DayNumber = N` lines appearing as days pass, which confirms the pointer is
+  live and the field offset is right.
+
+If the scan is too slow to run in one tick, the fix is to make it resumable —
+scan N ranges per tick and carry the cursor across — rather than to abandon the
+approach. `Stats` is already shaped to support that.

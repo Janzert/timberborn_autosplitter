@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 asr = { git = "https://github.com/LiveSplit/asr", features = [
     "alloc",  # Working with allocations.
+    "flags",  # MemoryRangeFlags, for filtering ranges during the heap scan.
     "derive", # Defining settings structs and binding to .NET classes.
     "unity",  # Accessing games using the Unity engine (implies "signature").
 ] }
