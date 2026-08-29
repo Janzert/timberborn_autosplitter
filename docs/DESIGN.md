@@ -79,10 +79,15 @@ the vtable every tick.
 
 ### The asr change this needs
 
-`mono::Class` keeps its address in a `pub(super)` field and `get_name` is
-`pub(super)` too, so from outside the crate there is no way to get a class's
-address to compare against. `vendor/asr` is a submodule so we can add the
-accessor and pin it; see `docs/ASR_FORK.md`.
+`mono::Class` keeps its address in a `pub(super)` field, so from outside the
+crate there is no way to get a class identity handle to compare against.
+
+The fix turned out smaller than expected. asr already computes the vtable
+internally for static table lookups — `class.runtime_info` -> `domain_vtables[0]`
+— so rather than exposing the raw class address, `vendor/asr` adds
+`Class::get_vtable()`, which is exactly the value the scan compares against and
+does not leak offset internals. That is a better upstreaming proposition too;
+see `docs/ASR_FORK.md`.
 
 ## Split sources
 
@@ -125,11 +130,72 @@ This is the fiddliest part of the splitter and needs the most testing.
 
 ## Naming and distribution
 
+### Desktop LiveSplit runs these, and auto-loads them
+
+Worth stating plainly, since "the new WebAssembly runtime" sounds like it might
+be LiveSplit One only. It is not:
+
+- `LiveSplit.AutoSplittingRuntime` is a **git submodule of LiveSplit itself**,
+  exactly like `LiveSplit.ScriptableAutoSplit` (the ASL engine).
+- LiveSplit 1.8.37 ships both engines in the box. From the release zip:
+
+      49,664  Components/LiveSplit.AutoSplittingRuntime.dll
+      71,168  Components/LiveSplit.ScriptableAutoSplit.dll
+   9,727,488  Components/x64/asr_capi.dll      <- the wasmtime host
+     170,496  Components/x86/asr_capi.dll
+
+- `AutoSplitter.cs` downloads the `.wasm` and activates it through
+  `ComponentManager.ComponentFactories["LiveSplit.AutoSplittingRuntime.dll"]`,
+  the same path ASL scripts take, from the same
+  `LiveSplit.AutoSplitters.xml` index.
+
+So the runner experience is identical to the current splitter: set the game
+name, click Activate. Nothing extra to install.
+
+The Auto Splitting Runtime component also accepts a local `.wasm` path, which is
+how you point it at a development build, but that is not how runners get it.
+
+### The runtime is selected by ScriptType, not by the file extension
+
+This one is easy to get wrong and the failure mode is confusing, so it goes
+first. Both ASL and WebAssembly entries are `<Type>Script</Type>`. What
+distinguishes them is a separate `<ScriptType>` element — from
+`AutoSplitterFactory.cs` in LiveSplit:
+
+```csharp
+autoSplitterType = scriptTypeElementText == "AutoSplittingRuntime"
+    ? AutoSplitterType.AutoSplittingRuntimeScript
+    : AutoSplitterType.Script;
+```
+
+So our index entry **must** carry it:
+
+```xml
+<AutoSplitter>
+    <Games>
+        <Game>Timberborn</Game>
+    </Games>
+    <URLs>
+        <URL>https://github.com/OWNER/REPO/releases/latest/download/timberborn_autosplitter.wasm</URL>
+    </URLs>
+    <Type>Script</Type>
+    <ScriptType>AutoSplittingRuntime</ScriptType>
+    <Description>Auto start/split for Timberborn - Wonder. No mod required.</Description>
+</AutoSplitter>
+```
+
+`<Description>` is what LiveSplit shows runners in the activation prompt, so it
+is where the practical difference belongs.
+
+Omit `<ScriptType>` and LiveSplit hands the `.wasm` to the ASL engine, which
+fails in a way that does not obviously point at the cause. All 57 WebAssembly
+entries currently in the index carry both the `.wasm` URL and the element, with
+no mismatches — which is exactly why it is tempting to assume the extension is
+what matters. It is not.
+
 ### Filename
 
-There is no enforced convention. LiveSplit does not parse the name: both ASL and
-WebAssembly entries in the index are `<Type>Script</Type>`, and the `.wasm`
-extension on the URL is what selects the runtime. Naming is for humans only.
+There is no enforced convention; naming is for humans only.
 
 Across the 57 WebAssembly splitters currently in the index, three families:
 
@@ -167,13 +233,6 @@ Worth opening that conversation early rather than at the end. A joint handoff is
 a much better outcome than arriving with a finished competing implementation,
 and it may be that the right home for this is `timberborn_speedrun` itself — in
 which case the `_wasm` naming question above comes back.
-
-### Index description
-
-The `<Description>` field is what LiveSplit shows runners, so it is where the
-practical difference belongs. Something like:
-
-    Auto start/split for Timberborn - Wonder. No mod required.
 
 ## Running the spike
 
