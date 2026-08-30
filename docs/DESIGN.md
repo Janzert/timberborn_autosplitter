@@ -280,6 +280,27 @@ These numbers are from Proton, so the range layout (1492 scanned, 1809 skipped)
 and read costs are Wine's, not Windows'. Worth re-measuring natively before
 tuning anything against them.
 
+### Lifecycle, learned the hard way
+
+A full-lifecycle run (start splitter, launch game, load save, exit to menu, quit)
+turned up three things worth keeping written down:
+
+- **A class has no vtable until it is first instantiated.** Mono fills in
+  `domain_vtables[0]` lazily, so `Class::get_vtable` returns `None` in the main
+  menu and during load. That is not a failure, it is "not yet" — and it doubles
+  as a cheap signal that a game has actually been loaded.
+- **A failed bulk read must not be silently skipped.** A 64 KiB read spanning a
+  single unmapped page fails as a whole. Dropping the window skipped ~204 MiB in
+  one measured scan and produced a false "no instance found" for an object that
+  was located one second later. Failed chunks are now retried page by page, and
+  `Stats::bytes_unreadable` records what still could not be read — **a scan that
+  finds nothing is only trustworthy when that is 0.**
+- **Nothing may return into a bare retry loop.** Bailing out on a transient
+  condition and immediately re-attaching produced 6,098 log lines in 33 seconds.
+
+The address space also grows substantially during load — 1.2 GiB mid-load versus
+3.5 GiB in game — so scan cost depends on when it runs.
+
 ## Running the spike
 
 `src/scan.rs` plus `spike()` in `src/lib.rs` locate `DayNightCycle` and watch

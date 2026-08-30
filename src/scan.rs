@@ -70,9 +70,14 @@ pub struct Stats {
     pub bytes_total: u64,
     /// Bytes actually read and compared.
     pub bytes_scanned: u64,
-    /// Chunks whose read failed. Expected to be non-zero: the memory map can
-    /// change under us mid-scan.
+    /// Chunks whose bulk read failed and had to be retried page by page. The
+    /// map changes under us mid-scan, and a chunk spanning one unmapped page
+    /// fails as a whole.
     pub read_failures: u32,
+    /// Bytes that could not be read even page by page, and so were never
+    /// compared. Any hit inside them is missed, so a scan that finds nothing
+    /// is only trustworthy when this is 0.
+    pub bytes_unreadable: u64,
     /// Slices the scan was spread across.
     pub slices: u32,
 }
@@ -185,30 +190,22 @@ impl Scan {
 
             if process
                 .read_into_buf(start, bytemuck::cast_slice_mut(&mut self.buf[..words]))
-                .is_err()
+                .is_ok()
             {
-                // The map can change while we walk it. Skip the chunk rather
-                // than abandoning the range.
-                self.stats.read_failures += 1;
-            } else {
                 self.stats.bytes_scanned += bytes;
-                for i in 0..words {
-                    if self.buf[i] != self.needle {
-                        continue;
-                    }
-                    let candidate = start.add((i * 8) as u64);
-                    match &self.validator {
-                        Some(v) if !v.accepts(process, candidate) => {
-                            self.rejected.push(candidate);
-                        }
-                        _ => {
-                            self.found.push(candidate);
-                            if self.stop_at_first {
-                                self.offset += bytes;
-                                return true;
-                            }
-                        }
-                    }
+                if self.examine(process, start, words) {
+                    self.offset += bytes;
+                    return true;
+                }
+            } else {
+                // A chunk spanning a single unmapped page fails as a whole.
+                // Dropping it would silently skip 64 KiB and can hide the very
+                // object we are looking for, so fall back to page-sized reads
+                // and only give up on the pages that really are unreadable.
+                self.stats.read_failures += 1;
+                if self.examine_by_page(process, start, words) {
+                    self.offset += bytes;
+                    return true;
                 }
             }
 
@@ -216,6 +213,52 @@ impl Scan {
             used += bytes;
         }
 
+        false
+    }
+
+    /// Compares the first `words` of the buffer against the needle, recording
+    /// matches. Returns `true` if the scan should stop.
+    fn examine(&mut self, process: &Process, start: Address, words: usize) -> bool {
+        for i in 0..words {
+            if self.buf[i] != self.needle {
+                continue;
+            }
+            let candidate = start.add((i * 8) as u64);
+            match &self.validator {
+                Some(v) if !v.accepts(process, candidate) => self.rejected.push(candidate),
+                _ => {
+                    self.found.push(candidate);
+                    if self.stop_at_first {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Retries a failed chunk one page at a time, so a single unmapped page
+    /// costs us that page rather than the whole 64 KiB window.
+    fn examine_by_page(&mut self, process: &Process, start: Address, words: usize) -> bool {
+        const PAGE_WORDS: usize = 512; // 4 KiB
+
+        let mut done = 0;
+        while done < words {
+            let n = PAGE_WORDS.min(words - done);
+            let at = start.add((done * 8) as u64);
+            if process
+                .read_into_buf(at, bytemuck::cast_slice_mut(&mut self.buf[..n]))
+                .is_ok()
+            {
+                self.stats.bytes_scanned += (n * 8) as u64;
+                if self.examine(process, at, n) {
+                    return true;
+                }
+            } else {
+                self.stats.bytes_unreadable += (n * 8) as u64;
+            }
+            done += n;
+        }
         false
     }
 

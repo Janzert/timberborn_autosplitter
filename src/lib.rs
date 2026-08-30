@@ -10,9 +10,9 @@ mod scan;
 use alloc::format;
 
 use asr::{
-    future::next_tick,
+    future::{next_tick, retry},
     game_engine::unity::mono::{Class, Image, Module},
-    Process,
+    Address, Process,
 };
 
 asr::async_main!(stable);
@@ -21,6 +21,11 @@ asr::panic_handler!();
 /// Process names to try, in order. Windows is what runners use; the Linux name
 /// is here so the splitter can be exercised on a native or Proton install.
 const PROCESS_NAMES: &[&str] = &["Timberborn.exe", "Timberborn.x86_64"];
+
+/// Ticks to wait before rescanning after a scan comes up empty. Without this
+/// the retry is a hot loop; the object we are waiting for appears on a human
+/// timescale anyway.
+const RESCAN_DELAY_TICKS: u32 = 120;
 
 
 async fn main() {
@@ -49,9 +54,9 @@ async fn attach() -> Process {
 /// Locates `DayNightCycle` by scanning for the instance of its class, then
 /// watches `DayNumber` to prove the pointer is live and the offset is right.
 ///
-/// The scan stops at the first match that passes validation, which is sound
-/// because validation is reliable: measured against the game, one candidate
-/// passed and five -- words inside Mono's own metadata -- were rejected.
+/// Runs for as long as the process lives, riding out scene changes: the class
+/// has no vtable until it is first instantiated, and no instance exists in the
+/// main menu, so both are waited on rather than treated as failures.
 async fn spike(process: &Process) {
     let module = Module::wait_attach_auto_detect(process).await;
     asr::print_message("Attached to the Mono runtime.");
@@ -62,7 +67,6 @@ async fn spike(process: &Process) {
     let singleton_system: Image = module
         .wait_get_image(process, "Timberborn.SingletonSystem")
         .await;
-
     let day_night_cycle: Class = time_system
         .wait_get_class(process, &module, "DayNightCycle")
         .await;
@@ -70,13 +74,11 @@ async fn spike(process: &Process) {
         .wait_get_class(process, &module, "EventBus")
         .await;
 
-    let (Some(vtable), Some(event_bus_vtable)) = (
-        day_night_cycle.get_vtable(process, &module),
-        event_bus.get_vtable(process, &module),
-    ) else {
-        asr::print_message("FAIL: could not read a class vtable.");
-        return;
-    };
+    // Mono only fills in a class's vtable once the class is first
+    // instantiated, so this doubles as "wait until a game is actually loaded".
+    asr::print_message("Waiting for DayNightCycle to be instantiated...");
+    let vtable = retry(|| day_night_cycle.get_vtable(process, &module)).await;
+    let event_bus_vtable = retry(|| event_bus.get_vtable(process, &module)).await;
 
     let (Some(day_number), Some(event_bus_field)) = (
         day_night_cycle.get_field_offset(process, &module, "DayNumber"),
@@ -96,38 +98,53 @@ async fn spike(process: &Process) {
         expected_vtable: event_bus_vtable,
     };
 
-    let scan = scan::Scan::new(process, vtable)
-        .validating(validator)
-        .stop_at_first()
-        .run(process, scan::DEFAULT_BUDGET)
-        .await;
+    loop {
+        let scan = scan::Scan::new(process, vtable)
+            .validating(validator)
+            .stop_at_first()
+            .run(process, scan::DEFAULT_BUDGET)
+            .await;
 
-    let s = scan.stats;
-    asr::print_message(&format!(
-        "Scan: {:.1} of {:.1} MiB ({:.1}%) over {} slices | {} rejected | {} read failures",
-        s.bytes_scanned as f64 / (1024.0 * 1024.0),
-        s.bytes_total as f64 / (1024.0 * 1024.0),
-        100.0 * s.bytes_scanned as f64 / s.bytes_total.max(1) as f64,
-        s.slices,
-        scan.rejected.len(),
-        s.read_failures,
-    ));
+        let s = scan.stats;
+        asr::print_message(&format!(
+            "Scan: {:.1} of {:.1} MiB ({:.1}%) over {} slices | {} rejected \
+             | {} chunk retries | {:.1} MiB unreadable",
+            s.bytes_scanned as f64 / (1024.0 * 1024.0),
+            s.bytes_total as f64 / (1024.0 * 1024.0),
+            100.0 * s.bytes_scanned as f64 / s.bytes_total.max(1) as f64,
+            s.slices,
+            scan.rejected.len(),
+            s.read_failures,
+            s.bytes_unreadable as f64 / (1024.0 * 1024.0),
+        ));
 
-    let Some(&instance) = scan.found.first() else {
-        asr::print_message(
-            "FAIL: no instance found. Is a save loaded? DayNightCycle only \
-             exists in a loaded game, not in the main menu.",
-        );
-        return;
-    };
-    asr::print_message(&format!("Found DayNightCycle at {instance}. Watching DayNumber."));
+        let Some(&instance) = scan.found.first() else {
+            // Only a trustworthy negative if everything was actually readable.
+            asr::print_message(if s.bytes_unreadable == 0 {
+                "No instance -- no game loaded. Waiting."
+            } else {
+                "No instance, but some memory was unreadable, so this negative \
+                 is not conclusive. Waiting."
+            });
+            for _ in 0..RESCAN_DELAY_TICKS {
+                next_tick().await;
+            }
+            continue;
+        };
 
+        asr::print_message(&format!("Found DayNightCycle at {instance}. Watching DayNumber."));
+        watch(process, instance, day_number, &validator).await;
+        asr::print_message("Instance no longer valid -- scene change. Rescanning.");
+    }
+}
+
+/// Reports `DayNumber` as it changes, until the instance stops validating.
+async fn watch(process: &Process, instance: Address, day_number: u32, validator: &scan::Validator) {
     let mut last = None;
     loop {
         // Revalidating is two reads and detects a scene change directly, rather
         // than waiting for the read to start failing.
         if !validator.accepts(process, instance) {
-            asr::print_message("Instance no longer valid -- scene change. Rescanning.");
             return;
         }
         if let Ok(day) = process.read::<i32>(instance.add(day_number as u64)) {
