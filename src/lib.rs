@@ -7,12 +7,13 @@ static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
 mod probe;
 mod scan;
+mod service;
 
 use alloc::{format, vec::Vec};
 
 use asr::{
     future::{next_tick, retry},
-    game_engine::unity::mono::{Class, Image, Module},
+    game_engine::unity::mono::Module,
     Address, Process,
 };
 
@@ -46,6 +47,14 @@ const FIRST_SEARCH_NOTICE_TICKS: u32 = 1800;
 /// How often to repeat it: every 5 minutes. Frequent enough to be visible in a
 /// log, rare enough not to bury anything during a session with no game open.
 const REPEAT_SEARCH_NOTICE_TICKS: u32 = 36_000;
+
+/// How often to retry resolving the Wonder class, in ticks (~1s). It does not
+/// exist until a wonder has been built.
+const WONDER_RESOLVE_TICKS: u32 = 120;
+
+/// How often to scan for wonder instances, in ticks (~2s). This is a full scan,
+/// so it must not run every tick.
+const WONDER_POLL_TICKS: u32 = 240;
 
 /// How often to forget which candidates were ruled out, in ticks. Pids are
 /// reused, and a process rejected once may since have mapped the game.
@@ -136,118 +145,121 @@ fn is_timberborn(process: &Process) -> bool {
         .is_ok_and(|path| path.contains("Timberborn"))
 }
 
-/// The spike.
+/// The spike, now exercising the pieces the real splits will use.
 ///
-/// Locates `DayNightCycle` by scanning for the instance of its class, then
-/// watches `DayNumber` to prove the pointer is live and the offset is right.
-///
-/// Runs for as long as the process lives, riding out scene changes: the class
-/// has no vtable until it is first instantiated, and no instance exists in the
-/// main menu, so both are waited on rather than treated as failures.
+/// Locates `DayNightCycle` and watches `DayNumber`, and alongside it watches
+/// for the wonder being activated -- the first actual split condition, chosen
+/// because `Wonder.IsActive` is a plain bool and needs no knowledge of BCL
+/// collection layouts.
 async fn spike(process: &Process) {
     let module = Module::wait_attach_auto_detect(process).await;
     asr::print_message("Attached to the Mono runtime.");
 
-    let time_system: Image = module
-        .wait_get_image(process, "Timberborn.TimeSystem")
-        .await;
-    let singleton_system: Image = module
-        .wait_get_image(process, "Timberborn.SingletonSystem")
-        .await;
-    let day_night_cycle: Class = time_system
-        .wait_get_class(process, &module, "DayNightCycle")
-        .await;
-    let event_bus: Class = singleton_system
-        .wait_get_class(process, &module, "EventBus")
-        .await;
+    // Everything hangs off this: it is the shared validation target, and it
+    // only exists once the game has constructed an EventBus.
+    asr::print_message("Waiting for the game to load...");
+    let event_bus_vtable = retry(|| service::event_bus_vtable(process, &module)).await;
 
-    // Mono only fills in a class's vtable once the class is first
-    // instantiated, so this doubles as "wait until a game is actually loaded".
-    asr::print_message("Waiting for DayNightCycle to be instantiated...");
-    let vtable = retry(|| day_night_cycle.get_vtable(process, &module)).await;
-    let event_bus_vtable = retry(|| event_bus.get_vtable(process, &module)).await;
+    let clock = retry(|| {
+        service::Locatable::new(
+            process,
+            &module,
+            "Timberborn.TimeSystem",
+            "DayNightCycle",
+            event_bus_vtable,
+        )
+    })
+    .await;
 
-    let (Some(day_number), Some(event_bus_field)) = (
-        day_night_cycle.get_field_offset(process, &module, "DayNumber"),
-        day_night_cycle.get_field_offset(process, &module, "_eventBus"),
-    ) else {
-        asr::print_message("FAIL: a field is missing. Has it been renamed?");
+    let Some(day_number) = clock.field(process, &module, "DayNumber") else {
+        asr::print_message("FAIL: DayNightCycle has no DayNumber. Renamed?");
         return;
-    };
-
-    asr::print_message(&format!(
-        "DayNightCycle vtable {vtable}, DayNumber +0x{day_number:X}, \
-         _eventBus +0x{event_bus_field:X} (EventBus vtable {event_bus_vtable})."
-    ));
-
-    let validator = scan::Validator {
-        field_offset: event_bus_field,
-        expected_vtable: event_bus_vtable,
     };
 
     let mut probed = false;
     loop {
-        let scan = scan::Scan::new(process, vtable)
-            .validating(validator)
-            .stop_at_first()
-            .run(process, scan::DEFAULT_BUDGET)
-            .await;
-
-        let s = scan.stats;
-        asr::print_message(&format!(
-            "Scan: {:.1} of {:.1} MiB ({:.1}%) over {} slices | {} rejected \
-             | {} chunk retries | {:.1} MiB unreadable",
-            s.bytes_scanned as f64 / (1024.0 * 1024.0),
-            s.bytes_total as f64 / (1024.0 * 1024.0),
-            100.0 * s.bytes_scanned as f64 / s.bytes_total.max(1) as f64,
-            s.slices,
-            scan.rejected.len(),
-            s.read_failures,
-            s.bytes_unreadable as f64 / (1024.0 * 1024.0),
-        ));
-
-        let Some(&instance) = scan.found.first() else {
-            asr::print_message(if scan.is_conclusive() {
-                "No instance -- no game loaded. Waiting."
-            } else {
-                "No instance, but the scan was incomplete, so this negative is \
-                 not conclusive. Waiting."
-            });
+        let Some(instance) = clock.find_one(process).await else {
+            asr::print_message("No DayNightCycle yet. Waiting.");
             for _ in 0..RESCAN_DELAY_TICKS {
                 next_tick().await;
             }
             continue;
         };
+        asr::print_message(&format!("Found {} at {instance}.", clock.name()));
 
-        asr::print_message(&format!("Found DayNightCycle at {instance}. Watching DayNumber."));
-
-        // Probe here rather than at first instantiation: by now the game is
-        // past its initial load, so more classes have been constructed and the
-        // vtable column is worth something.
         if !probed {
             probe::run(process, &module);
             probed = true;
         }
-        watch(process, instance, day_number, &validator).await;
-        asr::print_message("Instance no longer valid -- scene change. Rescanning.");
+
+        watch(process, &module, &clock, instance, day_number, event_bus_vtable).await;
+        asr::print_message("Scene change. Rescanning.");
     }
 }
 
-/// Reports `DayNumber` as it changes, until the instance stops validating.
-async fn watch(process: &Process, instance: Address, day_number: u32, validator: &scan::Validator) {
-    let mut last = None;
+/// Watches the loaded game until the scene changes.
+async fn watch(
+    process: &Process,
+    module: &Module,
+    clock: &service::Locatable,
+    instance: Address,
+    day_number: u32,
+    event_bus_vtable: Address,
+) {
+    let mut last_day = None;
+    let mut wonder: Option<(service::Locatable, u32)> = None;
+    let mut wonder_seen_active = false;
+    let mut ticks = 0u32;
+
     loop {
-        // Revalidating is two reads and detects a scene change directly, rather
-        // than waiting for the read to start failing.
-        if !validator.accepts(process, instance) {
+        if !clock.still_valid(process, instance) {
             return;
         }
+
         if let Ok(day) = process.read::<i32>(instance.add(day_number as u64)) {
-            if last != Some(day) {
+            if last_day != Some(day) {
                 asr::print_message(&format!("DayNumber = {day}"));
-                last = Some(day);
+                last_day = Some(day);
             }
         }
+
+        // Wonder only exists once one has been built, so keep trying to resolve
+        // it rather than giving up at load time.
+        if wonder.is_none() && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
+            if let Some(w) = service::Locatable::new(
+                process,
+                module,
+                "Timberborn.Wonders",
+                "Wonder",
+                event_bus_vtable,
+            ) {
+                if let Some(offset) = w.field(process, module, "IsActive") {
+                    asr::print_message("A Wonder now exists; watching for activation.");
+                    wonder = Some((w, offset));
+                }
+            }
+        }
+
+        // A wonder is a building, not a singleton, so check every instance.
+        if let Some((w, is_active)) = &wonder {
+            if !wonder_seen_active && ticks.is_multiple_of(WONDER_POLL_TICKS) {
+                let (instances, _) = w.find_all(process).await;
+                for &wonder_instance in &instances {
+                    if process
+                        .read::<u8>(wonder_instance.add(*is_active as u64))
+                        .is_ok_and(|active| active != 0)
+                    {
+                        asr::print_message(&format!(
+                            "SPLIT would fire: wonder activated ({wonder_instance})."
+                        ));
+                        wonder_seen_active = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        ticks = ticks.wrapping_add(1);
         next_tick().await;
     }
 }

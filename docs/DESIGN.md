@@ -114,12 +114,39 @@ see `docs/ASR_FORK.md`.
 
 All paths below were verified to exist in the shipped assemblies.
 
-| Split | Path |
-|---|---|
-| Research Earth Recultivator | `BuildingUnlockingService._unlockedBuildings` |
-| Wonder activated | instances of `Timberborn.Wonders.Wonder` → `<IsActive>k__BackingField` |
-| Buildings finished | `DistrictBuildingRegistry._finishedBuildings` → `BaseComponent._componentCache` → `ComponentCache._components` → `TemplateSpec.<TemplateName>` |
-| Population / day | `PopulationService.<GlobalPopulationData>` → `<NumberOfAdults>`; `DayNightCycle.<DayNumber>` |
+| Split | Path | Type |
+|---|---|---|
+| Wonder activated | instances of `Timberborn.Wonders.Wonder` → `IsActive` | `bool` |
+| Research Earth Recultivator | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
+| Buildings finished | `DistrictBuildingRegistry._finishedBuildings` → `EntityComponentRegistry._registeredComponents` → per component `BaseComponent._componentCache` → `ComponentCache._components` → `TemplateSpec.TemplateName` | `EntityComponentRegistry`, then `Dictionary<Type, List<IRegisteredComponent>>`, `List<object>`, `string` |
+| Population / day | `PopulationService.GlobalPopulationData` → `NumberOfAdults`; `DayNightCycle.DayNumber` | `int` |
+
+Field types were read out of the assemblies offline (`devtools/metadata.py`),
+which settles how much machinery each split needs:
+
+- **Wonder activated needs none.** `IsActive` is a plain `bool`. A wonder is a
+  building rather than a singleton, so all instances are scanned and any active
+  one counts.
+- **Research is a string membership test**, not an object graph walk —
+  `_unlockedBuildings` holds template names directly. It does need a
+  `HashSet<string>` reader.
+- **Buildings finished is the expensive one**, three collection types deep.
+  `ComponentCache._name` is a `string`, so the shortcut is still open: if it
+  holds the template name, the last two hops collapse to one read.
+
+### Reading BCL collections
+
+`HashSet<T>`, `List<T>` and `Dictionary<K, V>` layouts belong to Unity's Mono
+BCL, not to Timberborn, so they move on a Unity upgrade rather than a game
+patch. They should be resolved by name like everything else rather than
+hardcoded.
+
+That needs something the fork does not expose yet: given an arbitrary object we
+find at runtime, there is no way to turn its `MonoClass` pointer back into an
+`mono::Class` to call `get_field_offset` on. `Class`'s address field is
+`pub(super)` and there is no constructor from an address. Adding one is a small
+addition to the same fork that already carries `get_vtable`, and it is needed
+for both the research and buildings splits.
 
 Open question for the dumper: does `ComponentCache._name` already hold the
 template name (e.g. `Forester.Folktails`)? If so the buildings split collapses
