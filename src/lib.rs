@@ -223,7 +223,6 @@ async fn run(process: &Process, settings: &mut Settings) {
 
         if !probed {
             probe::run(process, &module);
-            probe::sample_component_names(process, &module, 12).await;
             probed = true;
         }
 
@@ -255,6 +254,7 @@ async fn watch(
     let mut last_day = None;
     let mut completion: Option<WonderCompletion> = None;
     let mut research: Option<Research> = None;
+    let mut sampled_names = false;
     let mut ended = false;
 
     // Resolved lazily and retried: on a fresh load GameInitializer exists
@@ -297,6 +297,12 @@ async fn watch(
         // earlier captures a stale "false" baseline and the restore then looks
         // like the run ending.
         let initialized = run_start.as_ref().is_some_and(|s| s.initialized());
+
+        // ComponentCache does not exist until the game has entities, so this
+        // has to wait for initialization like anything else reading game state.
+        if initialized && !sampled_names && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
+            sampled_names = probe::sample_component_names(process, module, 12).await;
+        }
 
         if initialized && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
             if completion.is_none() {

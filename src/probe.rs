@@ -190,15 +190,20 @@ pub fn run(process: &Process, module: &Module) -> bool {
 ///
 /// `ComponentCache` is not a DI service and has no `_eventBus`, so it is
 /// validated through `_componentCacheService` instead.
-pub async fn sample_component_names(process: &Process, module: &Module, count: usize) {
+/// Returns false if the classes are not constructed yet, so the caller can
+/// retry. Neither exists until the game has entities.
+pub async fn sample_component_names(
+    process: &Process,
+    module: &Module,
+    count: usize,
+) -> bool {
     let Some(service_vtable) = service::class_vtable(
         process,
         module,
         "Timberborn.BaseComponentSystem",
         "ComponentCacheService",
     ) else {
-        asr::print_message("probe: ComponentCacheService not constructed yet.");
-        return;
+        return false;
     };
 
     let Some(cache) = service::Locatable::with_validator(
@@ -209,13 +214,12 @@ pub async fn sample_component_names(process: &Process, module: &Module, count: u
         "_componentCacheService",
         service_vtable,
     ) else {
-        asr::print_message("probe: could not resolve ComponentCache.");
-        return;
+        return false;
     };
 
     let Some(name_offset) = cache.field(process, module, "_name") else {
         asr::print_message("probe: ComponentCache has no _name.");
-        return;
+        return true;
     };
 
     let instances = cache.find_upto(process, count).await;
@@ -229,6 +233,7 @@ pub async fn sample_component_names(process: &Process, module: &Module, count: u
             .unwrap_or_else(|| String::from("<unreadable>"));
         asr::print_message(&format!("  {instance}  _name = {text:?}"));
     }
+    true
 }
 
 /// Reads a .NET string for display. Truncates rather than failing on long ones.
