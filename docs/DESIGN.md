@@ -371,29 +371,31 @@ The lesson generalises: the name a process reports is not stable across engine
 versions, and anything that can silently find nothing needs to say so
 periodically.
 
-### Measured offsets (Unity 6000.5.5f1, game 1.1.2.1)
+### Measured offsets
 
-Baseline to diff against after an update. All resolved by name; these are
-recorded as evidence, not relied on.
+Recorded as evidence, not relied on: everything is resolved by name at runtime.
 
-| class | field | offset |
-|---|---|---|
-| `DayNightCycle` | `DayNumber` / `_eventBus` | `+0x48` / `+0x10` |
-| `BuildingUnlockingService` | `_unlockedBuildings` / `_eventBus` | `+0x48` / `+0x30` |
-| `Wonder` | `IsActive` / `_eventBus` | `+0x48` / `+0x38` |
-| `DistrictBuildingRegistry` | `_finishedBuildings` / `_instantFinishedBuildings` | `+0x48` / `+0x50` |
-| `BaseComponent` | `_componentCache` | `+0x10` |
-| `ComponentCache` | `_components` / `_name` | `+0x48` / `+0x60` |
-| `TemplateSpec` | `TemplateName` | `+0x20` |
-| `PopulationService` | `GlobalPopulationData` | `+0x10` |
-| `PopulationData` | `NumberOfAdults` / `NumberOfChildren` | `+0x10` / `+0x14` |
-| `WorldDataService` | `SourceFileName` (static) | `+0x0` |
+| class | field | stable 6000.3.6f1 | experimental 6000.5.5f1 |
+|---|---|---|---|
+| `DayNightCycle` | `DayNumber` / `_eventBus` | `+0x48` / `+0x10` | same |
+| `BuildingUnlockingService` | `_unlockedBuildings` / `_eventBus` | `+0x48` / `+0x30` | same |
+| `Wonder` | `IsActive` / `_eventBus` | `+0x48` / `+0x38` | same |
+| `DistrictBuildingRegistry` | `_finishedBuildings` / `_instantFinishedBuildings` | `+0x48` / `+0x50` | same |
+| `BaseComponent` | `_componentCache` | `+0x10` | same |
+| `ComponentCache` | `_components` / `_name` | `+0x48` / **`+0x68`** | `+0x48` / **`+0x60`** |
+| `TemplateSpec` | `TemplateName` | `+0x20` | same |
+| `PopulationService` | `GlobalPopulationData` | `+0x10` | same |
+| `PopulationData` | `NumberOfAdults` / `NumberOfChildren` | `+0x10` / `+0x14` | same |
+| `WorldDataService` | `SourceFileName` (static) | `+0x0` | same |
 
-Mono reports as V3, 64-bit. `DayNumber +0x48` and `_eventBus +0x10` are
-unchanged from Unity 6000.3.6f1, the only two we had measured before.
+**`ComponentCache._name` moved by 8 bytes between the two versions.** That is
+the justification for the whole name-resolution approach, measured rather than
+argued: a hardcoded offset would have silently read the adjacent field, and
+`_name` is on the path for the buildings split. Everything else held, so the
+churn is real but narrow.
 
-The runtime ticks at **120/s**, confirmed by a 1800-tick timer firing every
-15 seconds.
+Mono reports as V3, 64-bit on both. The runtime ticks at **120/s**, confirmed
+by a 1800-tick timer firing every 15 seconds.
 
 ## Checking a new game version
 

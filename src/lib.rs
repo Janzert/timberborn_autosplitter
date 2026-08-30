@@ -48,6 +48,9 @@ const FIRST_SEARCH_NOTICE_TICKS: u32 = 1800;
 /// log, rare enough not to bury anything during a session with no game open.
 const REPEAT_SEARCH_NOTICE_TICKS: u32 = 36_000;
 
+/// How long to wait after the game closes before looking again, in ticks (~5s).
+const PROCESS_GONE_DELAY_TICKS: u32 = 600;
+
 /// How often to retry resolving the Wonder class, in ticks (~1s). It does not
 /// exist until a wonder has been built.
 const WONDER_RESOLVE_TICKS: u32 = 120;
@@ -77,9 +80,9 @@ async fn main() {
     loop {
         let process = attach().await;
         process.until_closes(spike(&process)).await;
-        // A process on its way out can still be attachable for a while. Without
-        // this the loop re-attaches to it once per tick.
-        for _ in 0..RESCAN_DELAY_TICKS {
+        // A process on its way out stays attachable for several seconds, and
+        // each re-attach is logged, so wait longer here than between rescans.
+        for _ in 0..PROCESS_GONE_DELAY_TICKS {
             next_tick().await;
         }
     }
@@ -178,8 +181,14 @@ async fn spike(process: &Process) {
 
     let mut probed = false;
     loop {
-        let Some(instance) = clock.find_one(process).await else {
-            asr::print_message("No DayNightCycle yet. Waiting.");
+        let found = clock.find_one(process).await;
+        let Some(instance) = found.first else {
+            asr::print_message(if found.conclusive {
+                "No DayNightCycle -- no game loaded. Waiting."
+            } else {
+                "No DayNightCycle, but the scan was incomplete, so this is not \
+                 conclusive. Waiting."
+            });
             for _ in 0..RESCAN_DELAY_TICKS {
                 next_tick().await;
             }
@@ -243,8 +252,8 @@ async fn watch(
         // A wonder is a building, not a singleton, so check every instance.
         if let Some((w, is_active)) = &wonder {
             if !wonder_seen_active && ticks.is_multiple_of(WONDER_POLL_TICKS) {
-                let (instances, _) = w.find_all(process).await;
-                for &wonder_instance in &instances {
+                let found = w.find_all(process).await;
+                for &wonder_instance in &found.all {
                     if process
                         .read::<u8>(wonder_instance.add(*is_active as u64))
                         .is_ok_and(|active| active != 0)

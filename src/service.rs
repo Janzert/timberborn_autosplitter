@@ -28,6 +28,15 @@ pub fn event_bus_vtable(process: &Process, module: &Module) -> Option<Address> {
     class.get_vtable(process, module)
 }
 
+/// The outcome of a search.
+pub struct Found {
+    pub first: Option<Address>,
+    pub all: Vec<Address>,
+    /// Whether an empty `all` actually means "not present". False when the scan
+    /// could not read everything it set out to.
+    pub conclusive: bool,
+}
+
 /// A class whose instances we can find in memory.
 pub struct Locatable {
     class: Class,
@@ -73,24 +82,35 @@ impl Locatable {
     }
 
     /// Finds the single instance of a singleton service.
-    pub async fn find_one(&self, process: &Process) -> Option<Address> {
+    ///
+    /// An empty result carries `conclusive: false` when the scan could not read
+    /// everything, which happens while a scene is being torn down. Absence is
+    /// only meaningful when the search was complete.
+    pub async fn find_one(&self, process: &Process) -> Found {
         let scan = scan::Scan::new(process, self.vtable)
             .validating(self.validator)
             .stop_at_first()
             .run(process, scan::DEFAULT_BUDGET)
             .await;
-        scan.found.first().copied()
+        Found {
+            first: scan.found.first().copied(),
+            conclusive: scan.is_conclusive(),
+            all: scan.found,
+        }
     }
 
     /// Finds every instance. For classes that are legitimately multi-instance,
     /// where stopping at the first would be wrong.
-    pub async fn find_all(&self, process: &Process) -> (Vec<Address>, bool) {
+    pub async fn find_all(&self, process: &Process) -> Found {
         let scan = scan::Scan::new(process, self.vtable)
             .validating(self.validator)
             .run(process, scan::DEFAULT_BUDGET)
             .await;
-        // The second value says whether an empty result can be trusted.
-        (scan.found.clone(), scan.is_conclusive())
+        Found {
+            first: scan.found.first().copied(),
+            conclusive: scan.is_conclusive(),
+            all: scan.found,
+        }
     }
 
     /// Whether a previously located instance is still the object we think it
