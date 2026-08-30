@@ -279,6 +279,22 @@ locator cannot be built for it at all, even though its statics read fine. Static
 access is therefore a separate path. The first attempt coupled the two and
 silently could not read the field.
 
+### Resolve lazily, and keep retrying
+
+On a fresh load a singleton exists before its dependencies are injected, so a
+scan finds the object, sees a null `_eventBus`, rejects it, and returns nothing.
+That is correct behaviour — an object mid-construction is not yet the service —
+but it means **the first attempt to resolve anything routinely fails**.
+
+Everything must therefore be resolved lazily and retried on an interval, never
+resolved once at load. `RunStart` was resolved once, failed that way, and run
+start went unwatched for an entire session while every other watcher worked, so
+the failure looked like a detection bug rather than a resolution one.
+
+Retries cost a scan, so they are spaced (~2s). That is comfortable here because
+the settlement-name dialog is open far longer than that, giving ample time to
+resolve before the state can leave `Waiting`.
+
 ### Nothing may sample saved state before initialization finishes
 
 Two false splits in one test run traced to the same mistake, so it is worth

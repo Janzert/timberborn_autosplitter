@@ -55,6 +55,11 @@ const PROCESS_GONE_DELAY_TICKS: u32 = 600;
 /// exist until a wonder has been built.
 const WONDER_RESOLVE_TICKS: u32 = 120;
 
+/// How often to retry resolving GameInitializer, in ticks (~2s). Each attempt
+/// costs a scan, and the settlement-name dialog is up for far longer than this,
+/// so there is ample time to resolve before the state can move off Waiting.
+const RUN_START_RESOLVE_TICKS: u32 = 240;
+
 /// How often to rescan for wonder instances while none are known, in ticks
 /// (~2s). Only the scan is throttled: once an instance is located its flag is
 /// read every tick, because this split ends the run and its latency is the
@@ -217,20 +222,27 @@ async fn watch(
     day_number: u32,
     event_bus_vtable: Address,
 ) {
+    let mut ticks = 0u32;
     let mut last_day = None;
     let mut wonder: Option<Wonder> = None;
     let mut completion: Option<WonderCompletion> = None;
     let mut activated = false;
     let mut ended = false;
-    let mut ticks = 0u32;
 
-    let mut run_start = RunStart::resolve(process, module, event_bus_vtable).await;
+    // Resolved lazily and retried: on a fresh load GameInitializer exists
+    // before its dependencies are injected, so the first attempt finds an
+    // object that fails validation and comes back empty. Resolving once and
+    // giving up meant run start was never watched for that whole session.
+    let mut run_start: Option<RunStart> = None;
 
     loop {
         if !clock.still_valid(process, instance) {
             return;
         }
 
+        if run_start.is_none() && ticks.is_multiple_of(RUN_START_RESOLVE_TICKS) {
+            run_start = RunStart::resolve(process, module, event_bus_vtable).await;
+        }
         if let Some(start) = &mut run_start {
             if start.poll(process) {
                 asr::print_message("SPLIT would fire: RUN START -- overlay shown.");
