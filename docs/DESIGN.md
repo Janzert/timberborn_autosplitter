@@ -344,6 +344,30 @@ The lesson generalises: the name a process reports is not stable across engine
 versions, and anything that can silently find nothing needs to say so
 periodically.
 
+### Measured offsets (Unity 6000.5.5f1, game 1.1.2.1)
+
+Baseline to diff against after an update. All resolved by name; these are
+recorded as evidence, not relied on.
+
+| class | field | offset |
+|---|---|---|
+| `DayNightCycle` | `DayNumber` / `_eventBus` | `+0x48` / `+0x10` |
+| `BuildingUnlockingService` | `_unlockedBuildings` / `_eventBus` | `+0x48` / `+0x30` |
+| `Wonder` | `IsActive` / `_eventBus` | `+0x48` / `+0x38` |
+| `DistrictBuildingRegistry` | `_finishedBuildings` / `_instantFinishedBuildings` | `+0x48` / `+0x50` |
+| `BaseComponent` | `_componentCache` | `+0x10` |
+| `ComponentCache` | `_components` / `_name` | `+0x48` / `+0x60` |
+| `TemplateSpec` | `TemplateName` | `+0x20` |
+| `PopulationService` | `GlobalPopulationData` | `+0x10` |
+| `PopulationData` | `NumberOfAdults` / `NumberOfChildren` | `+0x10` / `+0x14` |
+| `WorldDataService` | `SourceFileName` (static) | `+0x0` |
+
+Mono reports as V3, 64-bit. `DayNumber +0x48` and `_eventBus +0x10` are
+unchanged from Unity 6000.3.6f1, the only two we had measured before.
+
+The runtime ticks at **120/s**, confirmed by a 1800-tick timer firing every
+15 seconds.
+
 ## Checking a new game version
 
 Everything the splitter reads is resolved by name, which is what should make it

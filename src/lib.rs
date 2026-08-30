@@ -8,7 +8,7 @@ static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 mod probe;
 mod scan;
 
-use alloc::format;
+use alloc::{format, vec::Vec};
 
 use asr::{
     future::{next_tick, retry},
@@ -38,9 +38,23 @@ const AMBIGUOUS_NAMES: &[&str] = &["Unity Main Thre"];
 /// The module that confirms an ambiguous match really is Timberborn.
 const GAME_MODULE: &str = "Timberborn.exe";
 
-/// How often to say we are still looking, in ticks. Silence and failure looked
-/// identical before this, which cost an evening of forensics.
-const SEARCHING_NOTICE_TICKS: u32 = 1800;
+/// When to first say we are still looking, in ticks. The runtime ticks at
+/// 120/s, so this is 15 seconds. Silence and failure looked identical before
+/// this, which cost an evening of forensics.
+const FIRST_SEARCH_NOTICE_TICKS: u32 = 1800;
+
+/// How often to repeat it: every 5 minutes. Frequent enough to be visible in a
+/// log, rare enough not to bury anything during a session with no game open.
+const REPEAT_SEARCH_NOTICE_TICKS: u32 = 36_000;
+
+/// How often to forget which candidates were ruled out, in ticks. Pids are
+/// reused, and a process rejected once may since have mapped the game.
+const FORGET_RULED_OUT_TICKS: u32 = 1200;
+
+/// How often to re-examine ambiguous candidates, in ticks. Checking one means
+/// attaching to it, which the runtime logs, so doing it every tick turns a
+/// dying game into a stream of attach/detach churn.
+const AMBIGUOUS_RETRY_TICKS: u32 = 60;
 
 /// Ticks to wait before rescanning after a scan comes up empty. Without this
 /// the retry is a hot loop; the object we are waiting for appears on a human
@@ -64,6 +78,11 @@ async fn main() {
 
 async fn attach() -> Process {
     let mut waited = 0u32;
+    let mut next_notice = FIRST_SEARCH_NOTICE_TICKS;
+    // Candidates already ruled out. A game on its way out lingers for seconds,
+    // and re-checking it means re-attaching to it, which the runtime logs.
+    let mut ruled_out: Vec<asr::ProcessId> = Vec::new();
+
     loop {
         for name in EXACT_NAMES {
             if let Some(process) = Process::attach(name) {
@@ -72,24 +91,34 @@ async fn attach() -> Process {
             }
         }
 
-        for name in AMBIGUOUS_NAMES {
-            for pid in Process::list_by_name(name).unwrap_or_default() {
-                let Some(process) = Process::attach_by_pid(pid) else {
-                    continue;
-                };
-                if is_timberborn(&process) {
-                    asr::print_message(&format!(
-                        "Attached to pid {pid:?}, which reports as \"{name}\" but \
-                         has {GAME_MODULE} mapped."
-                    ));
-                    return process;
+        if waited.is_multiple_of(AMBIGUOUS_RETRY_TICKS) {
+            for name in AMBIGUOUS_NAMES {
+                for pid in Process::list_by_name(name).unwrap_or_default() {
+                    if ruled_out.contains(&pid) {
+                        continue;
+                    }
+                    let Some(process) = Process::attach_by_pid(pid) else {
+                        continue;
+                    };
+                    if is_timberborn(&process) {
+                        asr::print_message(&format!(
+                            "Attached to pid {pid:?}, which reports as \"{name}\" \
+                             but has {GAME_MODULE} mapped."
+                        ));
+                        return process;
+                    }
+                    ruled_out.push(pid);
                 }
             }
         }
 
         waited += 1;
-        if waited.is_multiple_of(SEARCHING_NOTICE_TICKS) {
+        if waited.is_multiple_of(FORGET_RULED_OUT_TICKS) {
+            ruled_out.clear();
+        }
+        if waited >= next_notice {
             asr::print_message("Still looking for Timberborn...");
+            next_notice = waited.saturating_add(REPEAT_SEARCH_NOTICE_TICKS);
         }
         next_tick().await;
     }
@@ -138,9 +167,6 @@ async fn spike(process: &Process) {
     let vtable = retry(|| day_night_cycle.get_vtable(process, &module)).await;
     let event_bus_vtable = retry(|| event_bus.get_vtable(process, &module)).await;
 
-    // Now a save is loaded, so lazily-loaded assemblies are present.
-    probe::run(process, &module);
-
     let (Some(day_number), Some(event_bus_field)) = (
         day_night_cycle.get_field_offset(process, &module, "DayNumber"),
         day_night_cycle.get_field_offset(process, &module, "_eventBus"),
@@ -159,6 +185,7 @@ async fn spike(process: &Process) {
         expected_vtable: event_bus_vtable,
     };
 
+    let mut probed = false;
     loop {
         let scan = scan::Scan::new(process, vtable)
             .validating(validator)
@@ -193,6 +220,14 @@ async fn spike(process: &Process) {
         };
 
         asr::print_message(&format!("Found DayNightCycle at {instance}. Watching DayNumber."));
+
+        // Probe here rather than at first instantiation: by now the game is
+        // past its initial load, so more classes have been constructed and the
+        // vtable column is worth something.
+        if !probed {
+            probe::run(process, &module);
+            probed = true;
+        }
         watch(process, instance, day_number, &validator).await;
         asr::print_message("Instance no longer valid -- scene change. Rescanning.");
     }
