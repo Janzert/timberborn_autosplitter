@@ -275,6 +275,7 @@ async fn watch(
     let mut completion: Option<WonderCompletion> = None;
     let mut research: Option<Research> = None;
     let mut buildings: Option<Buildings> = None;
+    let mut explained_buildings = false;
     let mut sampled_names = false;
     let mut ended = false;
 
@@ -334,7 +335,10 @@ async fn watch(
                 research = Research::resolve(process, module, event_bus_vtable).await;
             }
             if buildings.is_none() {
-                buildings = Buildings::resolve(process, module, event_bus_vtable).await;
+                buildings =
+                    Buildings::resolve(process, module, event_bus_vtable, !explained_buildings)
+                        .await;
+                explained_buildings = true;
             }
         }
 
@@ -472,39 +476,76 @@ struct Buildings {
 const STATE_FINISHED: i32 = 1;
 
 impl Buildings {
+    /// `explain` makes the first attempt say why it failed. Later attempts stay
+    /// quiet, since "not constructed yet" is normal during a load.
     async fn resolve(
         process: &Process,
         module: &Module,
         event_bus_vtable: Address,
+        explain: bool,
     ) -> Option<Self> {
-        let class = service::Locatable::new(
-            process,
-            module,
-            "Timberborn.BlockSystem",
-            "BlockObjectState",
-            event_bus_vtable,
-        )?;
-        let state_offset = class.field(process, module, "_state")?;
-        let cache_offset = class.field(process, module, "_componentCache")?;
+        macro_rules! need {
+            ($value:expr, $what:literal) => {
+                match $value {
+                    Some(value) => value,
+                    None => {
+                        if explain {
+                            asr::print_message(concat!(
+                                "buildings: cannot resolve yet -- ",
+                                $what
+                            ));
+                        }
+                        return None;
+                    }
+                }
+            };
+        }
 
-        let cache_service = service::class_vtable(
-            process,
-            module,
-            "Timberborn.BaseComponentSystem",
-            "ComponentCacheService",
-        )?;
-        let name_offset = service::Locatable::with_validator(
-            process,
-            module,
-            "Timberborn.BaseComponentSystem",
-            "ComponentCache",
-            "_componentCacheService",
-            cache_service,
-        )?
-        .field(process, module, "_name")?;
+        let class = need!(
+            service::Locatable::new(
+                process,
+                module,
+                "Timberborn.BlockSystem",
+                "BlockObjectState",
+                event_bus_vtable,
+            ),
+            "BlockObjectState"
+        );
+        let state_offset = need!(class.field(process, module, "_state"), "BlockObjectState._state");
+        let cache_offset = need!(
+            class.field(process, module, "_componentCache"),
+            "BlockObjectState._componentCache"
+        );
 
-        let counters = Self::find_counters(process, module, event_bus_vtable).await;
+        let cache_service = need!(
+            service::class_vtable(
+                process,
+                module,
+                "Timberborn.BaseComponentSystem",
+                "ComponentCacheService",
+            ),
+            "ComponentCacheService"
+        );
+        let name_offset = need!(
+            service::Locatable::with_validator(
+                process,
+                module,
+                "Timberborn.BaseComponentSystem",
+                "ComponentCache",
+                "_componentCacheService",
+                cache_service,
+            )
+            .and_then(|cache| cache.field(process, module, "_name")),
+            "ComponentCache._name"
+        );
+
+        let counters = Self::find_counters(process, module, explain).await;
         if counters.is_empty() {
+            if explain {
+                asr::print_message(
+                    "buildings: no district finished-building registries found.",
+                );
+            }
             return None;
         }
 
@@ -541,16 +582,35 @@ impl Buildings {
     async fn find_counters(
         process: &Process,
         module: &Module,
-        event_bus_vtable: Address,
+        explain: bool,
     ) -> Vec<(Address, u32)> {
         let mut counters = Vec::new();
-        let Some(registry) = service::Locatable::new(
+
+        // DistrictBuildingRegistry has no _eventBus -- it is not a DI service --
+        // so it is validated through the factory it holds instead.
+        let Some(factory_vtable) = service::class_vtable(
+            process,
+            module,
+            "Timberborn.EntitySystem",
+            "EntityComponentRegistryFactory",
+        ) else {
+            if explain {
+                asr::print_message("buildings: EntityComponentRegistryFactory not constructed.");
+            }
+            return counters;
+        };
+
+        let Some(registry) = service::Locatable::with_validator(
             process,
             module,
             "Timberborn.GameDistricts",
             "DistrictBuildingRegistry",
-            event_bus_vtable,
+            "_entityComponentRegistryFactory",
+            factory_vtable,
         ) else {
+            if explain {
+                asr::print_message("buildings: DistrictBuildingRegistry not resolvable.");
+            }
             return counters;
         };
         let Some(finished_field) = registry.field(process, module, "_finishedBuildings") else {

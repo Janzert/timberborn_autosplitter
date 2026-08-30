@@ -21,6 +21,7 @@ import re
 import struct
 import subprocess
 import sys
+from pathlib import Path
 
 def u2(b,o): return struct.unpack_from('<H',b,o)[0]
 def u4(b,o): return struct.unpack_from('<I',b,o)[0]
@@ -155,6 +156,49 @@ def _probe_subjects(probe_rs):
         yield image, cls, [f for f in fields if f]
 
 
+def _validator_sites(src_dir):
+    """(image, class, field) for every Locatable construction in the source.
+
+    Locatable::new validates through _eventBus; with_validator names its own
+    field. A class lacking the field it is validated through can never be
+    located, and the failure is silent, so it is worth checking statically."""
+    for path in sorted(Path(src_dir).glob("*.rs")):
+        text = path.read_text(encoding="utf8")
+        for image, cls in re.findall(
+            r'Locatable::new\(\s*process,\s*module,\s*"([^"]+)",\s*"([^"]+)"', text
+        ):
+            yield path.name, image, cls, "_eventBus"
+        for image, cls, field in re.findall(
+            r'Locatable::with_validator\(\s*process,\s*module,\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)"',
+            text,
+        ):
+            yield path.name, image, cls, field
+
+
+def check_validators(managed_dir, src_dir):
+    problems = 0
+    sites = list(_validator_sites(src_dir))
+    if not sites:
+        return 0
+    print()
+    print("validator fields:")
+    for where, image, cls, field in sites:
+        by_class = _fields_by_class(managed_dir, image)
+        have = (by_class or {}).get(cls)
+        if have is None:
+            print(f"  MISSING CLASS     {image}/{cls}  ({where})")
+            problems += 1
+        elif field not in have and f"<{field}>k__BackingField" not in have:
+            print(
+                f"  MISSING FIELD     {image}/{cls} has no {field}, so it can "
+                f"never be located  ({where})"
+            )
+            problems += 1
+        else:
+            print(f"  ok                {image}/{cls} via {field}")
+    return problems
+
+
 def check(managed_dir, probe_rs):
     problems = 0
     for image, cls, fields in _probe_subjects(probe_rs):
@@ -178,6 +222,8 @@ def check(managed_dir, probe_rs):
         else:
             listed = ", ".join(fields) if fields else "(class only)"
             print(f"  ok                {image}/{cls}: {listed}")
+    problems += check_validators(managed_dir, Path(probe_rs).parent)
+
     print()
     print("ALL RESOLVED" if not problems else f"{problems} PROBLEM(S)")
     return 1 if problems else 0

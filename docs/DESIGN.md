@@ -146,6 +146,28 @@ which settles how much machinery each split needs:
   `EntityComponentRegistry` holding a `Dictionary<Type, List<IRegisteredComponent>>` —
   is no longer needed, and with it the need for a `Dictionary` reader.
 
+### A class can only be located through a field it has
+
+`Locatable` validates a scan hit by dereferencing a field and checking what it
+points at. Most Timberborn services hold an `_eventBus`, so that is the default —
+but it is not universal, and a class validated through a field it does not have
+can **never** be located. The scan finds it, the validator rejects every hit,
+and the result is indistinguishable from "not present".
+
+This has bitten twice: `WorldDataService` (not a DI service, statics only) and
+`DistrictBuildingRegistry` (validated through `_entityComponentRegistryFactory`
+instead). Both failed silently — the second cost a full test run in which the
+building splits simply never appeared.
+
+Two defences:
+
+- `devtools/metadata.py check` reads every `Locatable::new` and
+  `with_validator` call out of the source and verifies the class really has the
+  field it is validated through. It catches this with the game closed.
+- Resolution failures explain themselves on the first attempt rather than
+  retrying in silence. "Not constructed yet" is normal during a load, so later
+  attempts stay quiet.
+
 ### Faction-specific template names
 
 The wonder is a different building per faction, and the names are not
