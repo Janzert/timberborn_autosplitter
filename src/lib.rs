@@ -19,9 +19,28 @@ use asr::{
 asr::async_main!(stable);
 asr::panic_handler!();
 
-/// Process names to try, in order. Windows is what runners use; the Linux name
-/// is here so the splitter can be exercised on a native or Proton install.
-const PROCESS_NAMES: &[&str] = &["Timberborn.exe", "Timberborn.x86_64"];
+/// Names that identify the game on their own. Windows reports the executable
+/// name, which is what runners will hit.
+const EXACT_NAMES: &[&str] = &["Timberborn.exe", "Timberborn.x86_64"];
+
+/// Names that are *not* specific to this game and must be confirmed before use.
+///
+/// The runtime matches on the name the OS reports, which on Linux is
+/// `/proc/<pid>/comm`, capped at 15 characters. Unity 6.5 names its main thread
+/// "Unity Main Thread", so a Proton install reports `Unity Main Thre` and never
+/// matches the executable name. Unity 6.3 did not do this, which is why it only
+/// started failing on the experimental branch.
+///
+/// Any Unity 6.5 game would match, so a candidate is only accepted once we can
+/// see Timberborn's own module in it.
+const AMBIGUOUS_NAMES: &[&str] = &["Unity Main Thre"];
+
+/// The module that confirms an ambiguous match really is Timberborn.
+const GAME_MODULE: &str = "Timberborn.exe";
+
+/// How often to say we are still looking, in ticks. Silence and failure looked
+/// identical before this, which cost an evening of forensics.
+const SEARCHING_NOTICE_TICKS: u32 = 1800;
 
 /// Ticks to wait before rescanning after a scan comes up empty. Without this
 /// the retry is a hot loop; the object we are waiting for appears on a human
@@ -44,15 +63,48 @@ async fn main() {
 }
 
 async fn attach() -> Process {
+    let mut waited = 0u32;
     loop {
-        for name in PROCESS_NAMES {
+        for name in EXACT_NAMES {
             if let Some(process) = Process::attach(name) {
                 asr::print_message(&format!("Attached to {name}."));
                 return process;
             }
         }
+
+        for name in AMBIGUOUS_NAMES {
+            for pid in Process::list_by_name(name).unwrap_or_default() {
+                let Some(process) = Process::attach_by_pid(pid) else {
+                    continue;
+                };
+                if is_timberborn(&process) {
+                    asr::print_message(&format!(
+                        "Attached to pid {pid:?}, which reports as \"{name}\" but \
+                         has {GAME_MODULE} mapped."
+                    ));
+                    return process;
+                }
+            }
+        }
+
+        waited += 1;
+        if waited.is_multiple_of(SEARCHING_NOTICE_TICKS) {
+            asr::print_message("Still looking for Timberborn...");
+        }
         next_tick().await;
     }
+}
+
+/// Confirms a process really is the game, for names that could be any Unity
+/// title. The executable is mapped into the process even under Proton, where
+/// the process path itself points at the Wine loader rather than the game.
+fn is_timberborn(process: &Process) -> bool {
+    if process.get_module_address(GAME_MODULE).is_ok() {
+        return true;
+    }
+    process
+        .get_path()
+        .is_ok_and(|path| path.contains("Timberborn"))
 }
 
 /// The spike.

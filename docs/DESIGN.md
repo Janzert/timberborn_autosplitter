@@ -318,6 +318,32 @@ turned up three things worth keeping written down:
 The address space also grows substantially during load — 1.2 GiB mid-load versus
 3.5 GiB in game — so scan cost depends on when it runs.
 
+### Finding the process
+
+The runtime matches processes on the name the OS reports. On Linux that is
+`/proc/<pid>/comm`, **capped at 15 characters**, via `sysinfo`.
+
+Unity 6.5 names its main thread "Unity Main Thread", so a Proton install reports
+`Unity Main Thre` and `Process::attach("Timberborn.exe")` can never match, even
+though the command line is `...\Timberborn.exe`. Unity 6.3 did not do this,
+which is why this only appeared on the experimental branch — and it presents as
+the splitter sitting silent, indistinguishable from the game not running.
+
+Windows reports the executable name, so runners on the stable branch are
+unaffected. Linux and Steam Deck players are not, so it is handled rather than
+worked around:
+
+- exact names (`Timberborn.exe`, `Timberborn.x86_64`) are trusted outright
+- ambiguous ones (`Unity Main Thre`) would match *any* Unity 6.5 game, so
+  candidates are enumerated with `list_by_name`, attached by pid, and only
+  accepted once `Timberborn.exe` is visible as a mapped module. Under Proton the
+  process path points at the Wine loader, so the module is the reliable check,
+  not the path.
+
+The lesson generalises: the name a process reports is not stable across engine
+versions, and anything that can silently find nothing needs to say so
+periodically.
+
 ## Checking a new game version
 
 Everything the splitter reads is resolved by name, which is what should make it
