@@ -69,20 +69,13 @@ const REPEAT_SEARCH_NOTICE_TICKS: u32 = 36_000;
 /// How long to wait after the game closes before looking again, in ticks (~5s).
 const PROCESS_GONE_DELAY_TICKS: u32 = 600;
 
-/// How often to retry resolving the Wonder class, in ticks (~1s). It does not
-/// exist until a wonder has been built.
+/// How often to retry resolving the wonder completion service, in ticks (~1s).
 const WONDER_RESOLVE_TICKS: u32 = 120;
 
 /// How often to retry resolving GameInitializer, in ticks (~2s). Each attempt
 /// costs a scan, and the settlement-name dialog is up for far longer than this,
 /// so there is ample time to resolve before the state can move off Waiting.
 const RUN_START_RESOLVE_TICKS: u32 = 240;
-
-/// How often to rescan for wonder instances while none are known, in ticks
-/// (~2s). Only the scan is throttled: once an instance is located its flag is
-/// read every tick, because this split ends the run and its latency is the
-/// splitter's timing error.
-const WONDER_RESCAN_TICKS: u32 = 240;
 
 /// How often to forget which candidates were ruled out, in ticks. Pids are
 /// reused, and a process rejected once may since have mapped the game.
@@ -254,9 +247,7 @@ async fn watch(
 ) {
     let mut ticks = 0u32;
     let mut last_day = None;
-    let mut wonder: Option<Wonder> = None;
     let mut completion: Option<WonderCompletion> = None;
-    let mut activated = false;
     let mut ended = false;
 
     // Resolved lazily and retried: on a fresh load GameInitializer exists
@@ -300,29 +291,14 @@ async fn watch(
         // like the run ending.
         let initialized = run_start.as_ref().is_some_and(|s| s.initialized());
 
-        if initialized && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
-            if wonder.is_none() {
-                wonder = Wonder::resolve(process, module, event_bus_vtable);
-            }
-            if completion.is_none() {
-                completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
-            }
-        }
-
-        if let Some(w) = &mut wonder {
-            w.update(process, ticks).await;
-            if !activated && w.is_active(process) {
-                let day = completion.as_ref().and_then(|c| c.unlock_day(process));
-                asr::print_message(&format!(
-                    "Wonder activated (NOT the run end). Completion due on day {day:?}."
-                ));
-                activated = true;
-            }
+        if initialized && completion.is_none() && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
+            completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
         }
 
         // The actual run end: the Congratulations screen. Read every tick.
         if let Some(c) = &mut completion {
             c.report_length(process, module, clock, instance);
+            c.report_activation(process);
             if !ended && c.finished(process) {
                 ended = true;
                 if settings.wonder_completed && timer::state() == TimerState::Running {
@@ -341,64 +317,6 @@ async fn watch(
     }
 }
 
-/// Tracks the wonder buildings and whether any has been activated.
-///
-/// A wonder is a building rather than a singleton, so there may be several, and
-/// none exist until one is built. Locating them is a full scan; checking them
-/// afterwards is one byte each, which is why the two are separated.
-struct Wonder {
-    class: service::Locatable,
-    is_active: u32,
-    instances: alloc::vec::Vec<Address>,
-}
-
-impl Wonder {
-    fn resolve(process: &Process, module: &Module, event_bus_vtable: Address) -> Option<Self> {
-        let class = service::Locatable::new(
-            process,
-            module,
-            "Timberborn.Wonders",
-            "Wonder",
-            event_bus_vtable,
-        )?;
-        let is_active = class.field(process, module, "IsActive")?;
-        // Resolving only proves the class has been constructed once, which a
-        // prefab does at load. Whether a wonder is actually built is decided by
-        // the scan in update().
-        asr::print_message("Wonder class resolved; scanning for built wonders.");
-        Some(Self {
-            class,
-            is_active,
-            instances: alloc::vec::Vec::new(),
-        })
-    }
-
-    /// Rescans only when we have nothing to watch, or when what we were
-    /// watching stopped being valid -- a wonder demolished and rebuilt, say.
-    async fn update(&mut self, process: &Process, ticks: u32) {
-        let stale = self
-            .instances
-            .iter()
-            .any(|&i| !self.class.still_valid(process, i));
-
-        if (self.instances.is_empty() || stale) && ticks.is_multiple_of(WONDER_RESCAN_TICKS) {
-            let found = self.class.find_all(process).await;
-            if !found.all.is_empty() || found.conclusive {
-                self.instances = found.all;
-            }
-        }
-    }
-
-    /// One byte per wonder. Cheap enough to run every tick.
-    fn is_active(&self, process: &Process) -> bool {
-        self.instances.iter().any(|&i| {
-            process
-                .read::<u8>(i.add(self.is_active as u64))
-                .is_ok_and(|active| active != 0)
-        })
-    }
-}
-
 /// The run-end condition, per the category rules: the "Congratulations!"
 /// screen, not the wonder being activated.
 ///
@@ -412,6 +330,10 @@ struct WonderCompletion {
     countdown_finished: u32,
     unlock_day: u32,
     instance: Address,
+    /// `_unlockDay` as first seen. It is set when the wonder is activated, so a
+    /// change means activation -- no scanning required.
+    unlock_day_on_arrival: Option<f32>,
+    reported_activation: bool,
     /// Whether the real-time length of the countdown has been reported yet.
     /// The clock reads zero during load, so this is retried until it is sane.
     reported_length: bool,
@@ -448,11 +370,17 @@ impl WonderCompletion {
              Already finished in this save: {already}."
         ));
 
+        let unlock_day_on_arrival = process
+            .read::<f32>(instance.add(unlock_day as u64))
+            .ok();
+
         Some(Self {
             class,
             countdown_finished,
             unlock_day,
             instance,
+            unlock_day_on_arrival,
+            reported_activation: false,
             reported_length: false,
             was_finished_on_arrival: already,
         })
@@ -484,6 +412,27 @@ impl WonderCompletion {
 
     fn unlock_day(&self, process: &Process) -> Option<f32> {
         process.read::<f32>(self.instance.add(self.unlock_day as u64)).ok()
+    }
+
+    /// Notes when the wonder is activated, which is not the run end but is
+    /// worth seeing in the log: the run ends one countdown later.
+    ///
+    /// Activation sets `_unlockDay`, so watching that costs two reads. The
+    /// alternative -- scanning for `Wonder` instances and reading `IsActive` --
+    /// meant a full heap scan every two seconds for the length of a run.
+    fn report_activation(&mut self, process: &Process) {
+        if self.reported_activation {
+            return;
+        }
+        let Some(day) = self.unlock_day(process) else {
+            return;
+        };
+        if Some(day) != self.unlock_day_on_arrival {
+            asr::print_message(&format!(
+                "Wonder activated (not the run end). Completion due on day {day}."
+            ));
+            self.reported_activation = true;
+        }
     }
 }
 

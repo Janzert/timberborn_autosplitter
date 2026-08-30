@@ -134,6 +134,20 @@ which settles how much machinery each split needs:
   `ComponentCache._name` is a `string`, so the shortcut is still open: if it
   holds the template name, the last two hops collapse to one read.
 
+### Watch cheap fields, not expensive ones
+
+Wonder activation was originally detected by scanning for `Wonder` instances and
+reading `IsActive`. A wonder is a building rather than a singleton, so that
+meant a **full heap scan every two seconds for the length of a run** — around
+180 scans in a six-minute test — and it never actually found one.
+
+`WonderCompletionCountdownStarter._unlockDay` is set at the moment of
+activation, and that object is already located for the run-end split. Watching
+it costs two reads instead of a scan, and needs no `Wonder` tracking at all.
+
+The general point: prefer a field on an object already held over locating a new
+one, especially for anything polled. Scans are for finding things once.
+
 ### Split latency
 
 Run start (initial load) and run end (wonder activated) are the two splits whose

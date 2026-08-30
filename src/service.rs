@@ -6,8 +6,6 @@
 //! Nearly every Timberborn service holds an `_eventBus` pointing at the single
 //! `EventBus`, which makes one shared validation target work for all of them.
 
-use alloc::vec::Vec;
-
 use asr::{
     game_engine::unity::mono::{Class, Image, Module},
     Address, Process,
@@ -63,9 +61,8 @@ pub fn string_len(process: &Process, reference: Address) -> Option<i32> {
 /// The outcome of a search.
 pub struct Found {
     pub first: Option<Address>,
-    pub all: Vec<Address>,
-    /// Whether an empty `all` actually means "not present". False when the scan
-    /// could not read everything it set out to.
+    /// Whether an empty result actually means "not present". False when the
+    /// scan could not read everything it set out to.
     pub conclusive: bool,
 }
 
@@ -135,21 +132,6 @@ impl Locatable {
         Found {
             first: scan.found.first().copied(),
             conclusive: scan.is_conclusive(),
-            all: scan.found,
-        }
-    }
-
-    /// Finds every instance. For classes that are legitimately multi-instance,
-    /// where stopping at the first would be wrong.
-    pub async fn find_all(&self, process: &Process) -> Found {
-        let scan = scan::Scan::new(process, self.vtable)
-            .validating(self.validator)
-            .run(process, scan::DEFAULT_BUDGET)
-            .await;
-        Found {
-            first: scan.found.first().copied(),
-            conclusive: scan.is_conclusive(),
-            all: scan.found,
         }
     }
 
