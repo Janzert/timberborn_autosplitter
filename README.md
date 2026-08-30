@@ -18,8 +18,10 @@ game:
   appears. Note this is *not* wonder activation, which precedes it by about
   0.5 in-game hours.
 
-The intermediate splits (Forester, Gear Workshop, Tapper's Shack, Observatory,
-Smelter + Wood Workshop, Research Earth Recultivator) are not implemented yet.
+All seven splits are implemented, matching the ASL script's set and order so
+existing `.lss` files stay compatible: Forester, Gear Workshop, Tapper's Shack,
+Observatory, Smelter + Wood Workshop, Research, and the wonder completing. The
+five building splits have not yet been seen firing in a real run.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for how it works and what has been
 measured.

@@ -82,6 +82,19 @@ pub struct Found {
     pub conclusive: bool,
 }
 
+/// Offset of a named field on an object whose class is discovered at runtime.
+///
+/// For objects reached by dereference rather than by scanning, where there is
+/// no need to build a [`Locatable`] for the class.
+pub fn field_of(
+    process: &Process,
+    module: &Module,
+    object: Address,
+    field: &str,
+) -> Option<u32> {
+    Class::of_object(process, module, object)?.get_field_offset(process, module, field)
+}
+
 /// A class whose instances we can find in memory.
 pub struct Locatable {
     class: Class,

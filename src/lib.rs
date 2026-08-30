@@ -28,6 +28,26 @@ struct Settings {
     #[default = true]
     start: bool,
 
+    /// Split when the Forester is finished
+    #[default = true]
+    forester: bool,
+
+    /// Split when the Gear Workshop is finished
+    #[default = true]
+    gear_workshop: bool,
+
+    /// Split when the Tapper's Shack is finished
+    #[default = true]
+    tappers_shack: bool,
+
+    /// Split when the Observatory is finished
+    #[default = true]
+    observatory: bool,
+
+    /// Split when both the Smelter and Wood Workshop are finished
+    #[default = true]
+    smelter_woodworkshop: bool,
+
     /// Split when the wonder becomes researchable
     #[default = true]
     research_wonder: bool,
@@ -254,6 +274,7 @@ async fn watch(
     let mut last_day = None;
     let mut completion: Option<WonderCompletion> = None;
     let mut research: Option<Research> = None;
+    let mut buildings: Option<Buildings> = None;
     let mut sampled_names = false;
     let mut ended = false;
 
@@ -312,6 +333,9 @@ async fn watch(
             if research.is_none() {
                 research = Research::resolve(process, module, event_bus_vtable).await;
             }
+            if buildings.is_none() {
+                buildings = Buildings::resolve(process, module, event_bus_vtable).await;
+            }
         }
 
         // Each watcher owns a different object with its own lifetime, so the
@@ -323,6 +347,27 @@ async fn watch(
         }
         if completion.as_ref().is_some_and(|c| !c.still_valid(process)) {
             completion = None;
+        }
+        if buildings.as_ref().is_some_and(|b| !b.still_valid(process)) {
+            buildings = None;
+        }
+
+        if let Some(b) = &mut buildings {
+            for label in b.poll(process).await {
+                let enabled = match label {
+                    "Forester" => settings.forester,
+                    "Gear Workshop" => settings.gear_workshop,
+                    "Tapper's Shack" => settings.tappers_shack,
+                    "Observatory" => settings.observatory,
+                    _ => settings.smelter_woodworkshop,
+                };
+                if enabled && timer::state() == TimerState::Running {
+                    asr::print_message(&format!("Split: {label} finished."));
+                    timer::split();
+                } else {
+                    asr::print_message(&format!("{label} finished, but not splitting."));
+                }
+            }
         }
 
         if let Some(r) = &mut research {
@@ -366,6 +411,291 @@ async fn watch(
         ticks = ticks.wrapping_add(1);
         next_tick().await;
     }
+}
+
+/// A building split: the first time any of `templates` is finished.
+struct BuildingSplit {
+    label: &'static str,
+    templates: &'static [&'static str],
+}
+
+/// Mirrors the ASL script's split set and order. Each entry lists both
+/// factions' template names where both exist.
+const BUILDING_SPLITS: &[BuildingSplit] = &[
+    BuildingSplit {
+        label: "Forester",
+        templates: &["Forester.Folktails", "Forester.IronTeeth"],
+    },
+    BuildingSplit {
+        label: "Gear Workshop",
+        templates: &["GearWorkshop.Folktails", "GearWorkshop.IronTeeth"],
+    },
+    BuildingSplit {
+        label: "Tapper's Shack",
+        templates: &["TappersShack.Folktails", "TappersShack.IronTeeth"],
+    },
+    BuildingSplit {
+        label: "Observatory",
+        templates: &["Observatory.Folktails"],
+    },
+];
+
+/// The Smelter + Wood Workshop split needs both, in either order.
+const SMELTER: &[&str] = &["Smelter.Folktails", "Smelter.IronTeeth"];
+const WOOD_WORKSHOP: &[&str] = &["WoodWorkshop.Folktails", "WoodWorkshop.IronTeeth"];
+
+/// Finished buildings, by template name.
+///
+/// `BlockObjectState` carries `_state` and inherits `_componentCache`, whose
+/// `_name` is the template name -- suffixed with `.EntityComponent` on a live
+/// entity. So a finished building is a scan plus two derefs, with no component
+/// walk.
+///
+/// Scanning is expensive, so it only happens when a district's finished-building
+/// registry changes size. That count is one read per tick; a building finishing
+/// is a handful of events per run.
+struct Buildings {
+    class: service::Locatable,
+    state_offset: u32,
+    cache_offset: u32,
+    name_offset: u32,
+    /// `_count` on each district's finished-building collection.
+    counters: Vec<(Address, u32)>,
+    last_total: Option<i64>,
+    /// Which templates have been seen finished, including on arrival.
+    finished: Vec<bool>,
+    /// Seen when we attached, so a loaded save does not split.
+    on_arrival: Vec<bool>,
+}
+
+/// `BlockObjectState.State.Finished`.
+const STATE_FINISHED: i32 = 1;
+
+impl Buildings {
+    async fn resolve(
+        process: &Process,
+        module: &Module,
+        event_bus_vtable: Address,
+    ) -> Option<Self> {
+        let class = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.BlockSystem",
+            "BlockObjectState",
+            event_bus_vtable,
+        )?;
+        let state_offset = class.field(process, module, "_state")?;
+        let cache_offset = class.field(process, module, "_componentCache")?;
+
+        let cache_service = service::class_vtable(
+            process,
+            module,
+            "Timberborn.BaseComponentSystem",
+            "ComponentCacheService",
+        )?;
+        let name_offset = service::Locatable::with_validator(
+            process,
+            module,
+            "Timberborn.BaseComponentSystem",
+            "ComponentCache",
+            "_componentCacheService",
+            cache_service,
+        )?
+        .field(process, module, "_name")?;
+
+        let counters = Self::find_counters(process, module, event_bus_vtable).await;
+        if counters.is_empty() {
+            return None;
+        }
+
+        let mut buildings = Self {
+            class,
+            state_offset,
+            cache_offset,
+            name_offset,
+            counters,
+            last_total: None,
+            finished: alloc::vec![false; Self::TRACKED],
+            on_arrival: alloc::vec![false; Self::TRACKED],
+        };
+
+        buildings.rescan(process).await;
+        buildings.on_arrival = buildings.finished.clone();
+        asr::print_message(&format!(
+            "Watching buildings across {} district registries. Already finished \
+             in this save: {}.",
+            buildings.counters.len(),
+            buildings.describe_finished(),
+        ));
+        Some(buildings)
+    }
+
+    /// Four single-building splits, plus smelter and wood workshop tracked
+    /// separately for the combined one.
+    const TRACKED: usize = 6;
+    const SMELTER_INDEX: usize = 4;
+    const WOOD_WORKSHOP_INDEX: usize = 5;
+
+    /// The `_count` of every district's finished-building collection. Watching
+    /// these is what makes a rescan rare.
+    async fn find_counters(
+        process: &Process,
+        module: &Module,
+        event_bus_vtable: Address,
+    ) -> Vec<(Address, u32)> {
+        let mut counters = Vec::new();
+        let Some(registry) = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.GameDistricts",
+            "DistrictBuildingRegistry",
+            event_bus_vtable,
+        ) else {
+            return counters;
+        };
+        let Some(finished_field) = registry.field(process, module, "_finishedBuildings") else {
+            return counters;
+        };
+
+        // One registry per district; a run has few, but not necessarily one.
+        for instance in registry.find_upto(process, 16).await {
+            let Some(entity_registry) = read_pointer(process, instance, finished_field) else {
+                continue;
+            };
+            let Some(components) = service::field_of(
+                process,
+                module,
+                entity_registry,
+                "_registeredComponents",
+            )
+            .and_then(|offset| read_pointer(process, entity_registry, offset)) else {
+                continue;
+            };
+            if let Some(offset) = collections::count_offset(process, module, components) {
+                counters.push((components, offset));
+            }
+        }
+        counters
+    }
+
+    fn total(&self, process: &Process) -> Option<i64> {
+        let mut total = 0i64;
+        for &(address, offset) in &self.counters {
+            total += process.read::<i32>(address.add(offset as u64)).ok()? as i64;
+        }
+        Some(total)
+    }
+
+    /// Walks every BlockObjectState and records which tracked templates are
+    /// finished. Expensive, so only called when a count changed.
+    async fn rescan(&mut self, process: &Process) {
+        let instances = self.class.find_upto(process, 8192).await;
+        for instance in instances {
+            let finished = process
+                .read::<i32>(instance.add(self.state_offset as u64))
+                .is_ok_and(|state| state == STATE_FINISHED);
+            if !finished {
+                continue;
+            }
+            let Some(cache) = read_pointer(process, instance, self.cache_offset) else {
+                continue;
+            };
+            let name = cache.add(self.name_offset as u64);
+            let Some(name) = read_pointer_raw(process, name) else {
+                continue;
+            };
+
+            for (index, templates) in Self::all_templates().enumerate() {
+                if self.finished[index] {
+                    continue;
+                }
+                if templates
+                    .iter()
+                    .any(|t| collections::string_starts_with_segment(process, name, t))
+                {
+                    self.finished[index] = true;
+                }
+            }
+        }
+    }
+
+    fn all_templates() -> impl Iterator<Item = &'static [&'static str]> {
+        BUILDING_SPLITS
+            .iter()
+            .map(|s| s.templates)
+            .chain([SMELTER, WOOD_WORKSHOP])
+    }
+
+    fn describe_finished(&self) -> alloc::string::String {
+        let mut names = Vec::new();
+        for (index, split) in BUILDING_SPLITS.iter().enumerate() {
+            if self.finished[index] {
+                names.push(split.label);
+            }
+        }
+        if self.finished[Self::SMELTER_INDEX] {
+            names.push("Smelter");
+        }
+        if self.finished[Self::WOOD_WORKSHOP_INDEX] {
+            names.push("Wood Workshop");
+        }
+        if names.is_empty() {
+            alloc::string::String::from("none")
+        } else {
+            names.join(", ")
+        }
+    }
+
+    fn still_valid(&self, process: &Process) -> bool {
+        self.counters
+            .first()
+            .is_some_and(|&(address, offset)| {
+                process.read::<i32>(address.add(offset as u64)).is_ok()
+            })
+    }
+
+    /// One read per district per tick. Returns the labels that just completed.
+    async fn poll(&mut self, process: &Process) -> Vec<&'static str> {
+        let Some(total) = self.total(process) else {
+            return Vec::new();
+        };
+        if self.last_total == Some(total) {
+            return Vec::new();
+        }
+        self.last_total = Some(total);
+
+        let before = self.finished.clone();
+        self.rescan(process).await;
+
+        let mut fired = Vec::new();
+        for (index, split) in BUILDING_SPLITS.iter().enumerate() {
+            if self.finished[index] && !before[index] && !self.on_arrival[index] {
+                fired.push(split.label);
+            }
+        }
+
+        // Both halves, in either order: fires when the second one lands.
+        let both = self.finished[Self::SMELTER_INDEX] && self.finished[Self::WOOD_WORKSHOP_INDEX];
+        let both_before = before[Self::SMELTER_INDEX] && before[Self::WOOD_WORKSHOP_INDEX];
+        let both_on_arrival =
+            self.on_arrival[Self::SMELTER_INDEX] && self.on_arrival[Self::WOOD_WORKSHOP_INDEX];
+        if both && !both_before && !both_on_arrival {
+            fired.push("Smelter + Wood Workshop");
+        }
+        fired
+    }
+}
+
+fn read_pointer(process: &Process, base: Address, offset: u32) -> Option<Address> {
+    read_pointer_raw(process, base.add(offset as u64))
+}
+
+fn read_pointer_raw(process: &Process, at: Address) -> Option<Address> {
+    process
+        .read::<u64>(at)
+        .ok()
+        .map(Address::new)
+        .filter(|a| !a.is_null())
 }
 
 /// The research split: the faction's wonder becoming buildable.

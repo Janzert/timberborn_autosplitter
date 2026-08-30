@@ -36,6 +36,31 @@ const MAX_CHARS: usize = 64;
 const SLOT_SIZE: u64 = 16;
 const SLOT_VALUE: u64 = 8;
 
+/// Whether a .NET string at `address` is `expected`, optionally followed by a
+/// `.`-separated suffix.
+///
+/// Live entities name their component cache `<template>.EntityComponent`, while
+/// prefabs use the bare template name, so both have to match. Requiring a `.`
+/// boundary stops `Forester.Folktails` matching a longer template that merely
+/// starts the same way.
+pub fn string_starts_with_segment(process: &Process, address: Address, expected: &str) -> bool {
+    let Ok(len) = process.read::<i32>(address.add(STRING_LENGTH)) else {
+        return false;
+    };
+    let wanted = expected.encode_utf16().count();
+    if len < 0 || (len as usize) < wanted || len as usize > MAX_CHARS {
+        return false;
+    }
+    let Ok(text) = process.read::<ArrayWString<MAX_CHARS>>(address.add(STRING_CHARS)) else {
+        return false;
+    };
+    let chars = text.as_slice();
+    if chars.len() < wanted || !chars.iter().copied().take(wanted).eq(expected.encode_utf16()) {
+        return false;
+    }
+    chars.len() == wanted || chars[wanted] == u16::from(b'.')
+}
+
 /// Whether a .NET string at `address` equals `expected`.
 ///
 /// The length is checked first, so a shorter string cannot match a prefix and
