@@ -17,8 +17,11 @@ use alloc::{format, string::String, vec::Vec};
 
 use asr::{
     game_engine::unity::mono::Module,
-    Process,
+    string::ArrayWString,
+    Address, Process,
 };
+
+use crate::service;
 
 /// A class we depend on, and the fields we read off it.
 struct Subject {
@@ -169,4 +172,75 @@ pub fn run(process: &Process, module: &Module) -> bool {
         missing_fields,
     ));
     ok
+}
+
+/// Samples `ComponentCache._name` to settle what it actually holds.
+///
+/// The buildings splits need a finished building's template name, e.g.
+/// `Forester.Folktails`. The documented path is a walk:
+///
+/// ```text
+/// building -> BaseComponent._componentCache -> ComponentCache._components
+///          -> find TemplateSpec -> TemplateName
+/// ```
+///
+/// If `_name` already carries that name, the last two hops collapse to one
+/// string read per building. That matters here more than anywhere else,
+/// because this is the one split that touches many objects rather than one.
+///
+/// `ComponentCache` is not a DI service and has no `_eventBus`, so it is
+/// validated through `_componentCacheService` instead.
+pub async fn sample_component_names(process: &Process, module: &Module, count: usize) {
+    let Some(service_vtable) = service::class_vtable(
+        process,
+        module,
+        "Timberborn.BaseComponentSystem",
+        "ComponentCacheService",
+    ) else {
+        asr::print_message("probe: ComponentCacheService not constructed yet.");
+        return;
+    };
+
+    let Some(cache) = service::Locatable::with_validator(
+        process,
+        module,
+        "Timberborn.BaseComponentSystem",
+        "ComponentCache",
+        "_componentCacheService",
+        service_vtable,
+    ) else {
+        asr::print_message("probe: could not resolve ComponentCache.");
+        return;
+    };
+
+    let Some(name_offset) = cache.field(process, module, "_name") else {
+        asr::print_message("probe: ComponentCache has no _name.");
+        return;
+    };
+
+    let instances = cache.find_upto(process, count).await;
+    asr::print_message(&format!(
+        "probe: {} ComponentCache instances sampled, _name at +0x{name_offset:X}:",
+        instances.len()
+    ));
+
+    for instance in instances {
+        let text = read_string(process, instance.add(name_offset as u64))
+            .unwrap_or_else(|| String::from("<unreadable>"));
+        asr::print_message(&format!("  {instance}  _name = {text:?}"));
+    }
+}
+
+/// Reads a .NET string for display. Truncates rather than failing on long ones.
+fn read_string(process: &Process, reference: Address) -> Option<String> {
+    let pointer = Address::new(process.read::<u64>(reference).ok()?);
+    if pointer.is_null() {
+        return None;
+    }
+    let len = process.read::<i32>(pointer.add(0x10)).ok()?;
+    if !(0..=256).contains(&len) {
+        return None;
+    }
+    let chars = process.read::<ArrayWString<64>>(pointer.add(0x14)).ok()?;
+    Some(String::from_utf16_lossy(chars.as_slice()))
 }

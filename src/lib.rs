@@ -223,6 +223,7 @@ async fn run(process: &Process, settings: &mut Settings) {
 
         if !probed {
             probe::run(process, &module);
+            probe::sample_component_names(process, &module, 12).await;
             probed = true;
         }
 

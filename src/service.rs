@@ -6,6 +6,8 @@
 //! Nearly every Timberborn service holds an `_eventBus` pointing at the single
 //! `EventBus`, which makes one shared validation target work for all of them.
 
+extern crate alloc;
+
 use asr::{
     game_engine::unity::mono::{Class, Image, Module},
     Address, Process,
@@ -13,17 +15,31 @@ use asr::{
 
 use crate::scan::{self, Validator};
 
-/// The field almost every service has, and the class it points at.
-const VALIDATION_FIELD: &str = "_eventBus";
-const VALIDATION_CLASS: (&str, &str) = ("Timberborn.SingletonSystem", "EventBus");
+/// The field almost every Timberborn service has, and the class it points at.
+/// Not universal: `ComponentCache` and other non-services have no `_eventBus`.
+const EVENT_BUS_FIELD: &str = "_eventBus";
+const EVENT_BUS_CLASS: (&str, &str) = ("Timberborn.SingletonSystem", "EventBus");
 
-/// Resolves the shared validation target. Its vtable only exists once an
-/// `EventBus` has been constructed, which is why this can fail early in a load.
-pub fn event_bus_vtable(process: &Process, module: &Module) -> Option<Address> {
-    let (image_name, class_name) = VALIDATION_CLASS;
+/// Resolves a class's vtable, for use as a validation target.
+///
+/// Returns `None` until the class has been constructed at least once, since
+/// Mono fills in a vtable lazily.
+pub fn class_vtable(
+    process: &Process,
+    module: &Module,
+    image_name: &str,
+    class_name: &str,
+) -> Option<Address> {
     let image: Image = module.get_image(process, image_name)?;
-    let class = image.get_class(process, module, class_name)?;
-    class.get_vtable(process, module)
+    image
+        .get_class(process, module, class_name)?
+        .get_vtable(process, module)
+}
+
+/// Resolves the shared validation target used by most services.
+pub fn event_bus_vtable(process: &Process, module: &Module) -> Option<Address> {
+    let (image_name, class_name) = EVENT_BUS_CLASS;
+    class_vtable(process, module, image_name, class_name)
 }
 
 /// Address of a static field, without needing an instance.
@@ -87,14 +103,36 @@ impl Locatable {
         class_name: &'static str,
         event_bus_vtable: Address,
     ) -> Option<Self> {
+        Self::with_validator(
+            process,
+            module,
+            image_name,
+            class_name,
+            EVENT_BUS_FIELD,
+            event_bus_vtable,
+        )
+    }
+
+    /// As [`new`](Self::new), but validating through a different field.
+    ///
+    /// Classes that are not DI services have no `_eventBus`; `ComponentCache`
+    /// points at its `ComponentCacheService` instead.
+    pub fn with_validator(
+        process: &Process,
+        module: &Module,
+        image_name: &str,
+        class_name: &'static str,
+        validation_field: &str,
+        expected_vtable: Address,
+    ) -> Option<Self> {
         let image: Image = module.get_image(process, image_name)?;
         let class = image.get_class(process, module, class_name)?;
         Some(Self {
             class,
             vtable: class.get_vtable(process, module)?,
             validator: Validator {
-                field_offset: class.get_field_offset(process, module, VALIDATION_FIELD)?,
-                expected_vtable: event_bus_vtable,
+                field_offset: class.get_field_offset(process, module, validation_field)?,
+                expected_vtable,
             },
             name: class_name,
         })
@@ -126,13 +164,24 @@ impl Locatable {
     pub async fn find_one(&self, process: &Process) -> Found {
         let scan = scan::Scan::new(process, self.vtable)
             .validating(self.validator)
-            .stop_at_first()
+            .limit(1)
             .run(process, scan::DEFAULT_BUDGET)
             .await;
         Found {
             first: scan.found.first().copied(),
             conclusive: scan.is_conclusive(),
         }
+    }
+
+    /// Finds up to `limit` instances. For classes with many instances, where
+    /// a sample is enough.
+    pub async fn find_upto(&self, process: &Process, limit: usize) -> alloc::vec::Vec<Address> {
+        scan::Scan::new(process, self.vtable)
+            .validating(self.validator)
+            .limit(limit)
+            .run(process, scan::DEFAULT_BUDGET)
+            .await
+            .found
     }
 
     /// Whether a previously located instance is still the object we think it

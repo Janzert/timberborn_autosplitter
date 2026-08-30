@@ -91,7 +91,7 @@ pub struct Stats {
 pub struct Scan {
     needle: u64,
     validator: Option<Validator>,
-    stop_at_first: bool,
+    limit: Option<usize>,
     ranges: Vec<(Address, u64)>,
     range_index: usize,
     offset: u64,
@@ -134,7 +134,7 @@ impl Scan {
         Self {
             needle: vtable.value(),
             validator: None,
-            stop_at_first: false,
+            limit: None,
             ranges,
             range_index: 0,
             offset: 0,
@@ -161,11 +161,14 @@ impl Scan {
         self
     }
 
-    /// Stop as soon as one match is accepted. Only correct for classes that are
-    /// genuinely singletons: `DistrictBuildingRegistry`, for instance, has one
-    /// instance per district and needs a full scan.
-    pub fn stop_at_first(mut self) -> Self {
-        self.stop_at_first = true;
+    /// Stop once `limit` matches have been accepted.
+    ///
+    /// A limit of 1 suits a singleton. Classes that are legitimately
+    /// multi-instance -- `DistrictBuildingRegistry` is per-district -- need a
+    /// higher limit or none at all, and an unlimited scan always reads the
+    /// whole address space.
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
         self
     }
 
@@ -238,7 +241,7 @@ impl Scan {
                 Some(v) if !v.accepts(process, candidate) => self.rejected.push(candidate),
                 _ => {
                     self.found.push(candidate);
-                    if self.stop_at_first {
+                    if self.limit.is_some_and(|n| self.found.len() >= n) {
                         return true;
                     }
                 }
