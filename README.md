@@ -9,9 +9,20 @@ submitted to speedrun.com.
 
 ## Status
 
-Early. The scaffolding attaches to the process and the Mono runtime; service
-location and the splits themselves are not implemented yet. See
-[docs/DESIGN.md](docs/DESIGN.md).
+Working for the two splits that decide a run's time, both verified against the
+game:
+
+- **Run start** — when the overlay appears after naming the settlement, per the
+  category rules. Correctly ignores loading an existing save.
+- **Run end** — when the wonder completes and the "Congratulations!" screen
+  appears. Note this is *not* wonder activation, which precedes it by about
+  0.5 in-game hours.
+
+The intermediate splits (Forester, Gear Workshop, Tapper's Shack, Observatory,
+Smelter + Wood Workshop, Research Earth Recultivator) are not implemented yet.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for how it works and what has been
+measured.
 
 ## Building
 

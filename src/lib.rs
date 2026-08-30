@@ -14,8 +14,26 @@ use alloc::{format, vec::Vec};
 use asr::{
     future::{next_tick, retry},
     game_engine::unity::mono::Module,
+    settings::Gui,
+    timer::{self, TimerState},
     Address, Process,
 };
+
+/// Which splits are enabled. Names and order match the ASL script this
+/// replaces, so existing .lss files stay compatible.
+#[derive(Gui)]
+struct Settings {
+    /// Start the run when the overlay appears after naming the settlement
+    #[default = true]
+    start: bool,
+
+    /// Split when the wonder completes (the "Congratulations!" screen)
+    ///
+    /// The category rules end the run here, which is roughly 0.5 in-game hours
+    /// after the wonder is activated -- not at activation itself.
+    #[default = true]
+    wonder_completed: bool,
+}
 
 asr::async_main!(stable);
 asr::panic_handler!();
@@ -82,11 +100,13 @@ const RESCAN_DELAY_TICKS: u32 = 120;
 
 
 async fn main() {
-    asr::print_message("Timberborn auto splitter (heap scan spike).");
+    asr::print_message("Timberborn auto splitter.");
+    let mut settings = Settings::register();
 
     loop {
         let process = attach().await;
-        process.until_closes(spike(&process)).await;
+        settings.update();
+        process.until_closes(run(&process, &mut settings)).await;
         // A process on its way out stays attachable for several seconds, and
         // each re-attach is logged, so wait longer here than between rescans.
         for _ in 0..PROCESS_GONE_DELAY_TICKS {
@@ -161,7 +181,7 @@ fn is_timberborn(process: &Process) -> bool {
 /// for the wonder being activated -- the first actual split condition, chosen
 /// because `Wonder.IsActive` is a plain bool and needs no knowledge of BCL
 /// collection layouts.
-async fn spike(process: &Process) {
+async fn run(process: &Process, settings: &mut Settings) {
     let module = Module::wait_attach_auto_detect(process).await;
     asr::print_message("Attached to the Mono runtime.");
 
@@ -208,7 +228,16 @@ async fn spike(process: &Process) {
             probed = true;
         }
 
-        watch(process, &module, &clock, instance, day_number, event_bus_vtable).await;
+        watch(
+            process,
+            &module,
+            &clock,
+            instance,
+            day_number,
+            event_bus_vtable,
+            settings,
+        )
+        .await;
         asr::print_message("Scene change. Rescanning.");
     }
 }
@@ -221,6 +250,7 @@ async fn watch(
     instance: Address,
     day_number: u32,
     event_bus_vtable: Address,
+    settings: &mut Settings,
 ) {
     let mut ticks = 0u32;
     let mut last_day = None;
@@ -243,9 +273,17 @@ async fn watch(
         if run_start.is_none() && ticks.is_multiple_of(RUN_START_RESOLVE_TICKS) {
             run_start = RunStart::resolve(process, module, event_bus_vtable).await;
         }
+        settings.update();
+
         if let Some(start) = &mut run_start {
-            if start.poll(process) {
-                asr::print_message("SPLIT would fire: RUN START -- overlay shown.");
+            if start.poll(process) && settings.start {
+                // Only from a stopped timer: never restart a run in progress.
+                if timer::state() == TimerState::NotRunning {
+                    asr::print_message("Run start: overlay shown. Starting the timer.");
+                    timer::start();
+                } else {
+                    asr::print_message("Run start seen, but the timer is already running.");
+                }
             }
         }
 
@@ -286,8 +324,15 @@ async fn watch(
         if let Some(c) = &mut completion {
             c.report_length(process, module, clock, instance);
             if !ended && c.finished(process) {
-                asr::print_message("SPLIT would fire: RUN END -- wonder completion countdown finished.");
                 ended = true;
+                if settings.wonder_completed && timer::state() == TimerState::Running {
+                    asr::print_message("Run end: wonder completed. Splitting.");
+                    timer::split();
+                } else {
+                    asr::print_message(
+                        "Wonder completed, but the timer is not running so nothing was split.",
+                    );
+                }
             }
         }
 
