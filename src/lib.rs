@@ -247,7 +247,9 @@ async fn watch(
                 wonder = Wonder::resolve(process, module, event_bus_vtable);
             }
             if completion.is_none() {
-                completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
+                completion =
+                    WonderCompletion::resolve(process, module, event_bus_vtable, clock, instance)
+                        .await;
             }
         }
 
@@ -342,6 +344,9 @@ struct WonderCompletion {
     countdown_finished: u32,
     unlock_day: u32,
     instance: Address,
+    /// The value when we first saw it. A save that already completed its wonder
+    /// loads with this true, and that must not read as the run ending.
+    was_finished_on_arrival: bool,
 }
 
 impl WonderCompletion {
@@ -349,6 +354,8 @@ impl WonderCompletion {
         process: &Process,
         module: &Module,
         event_bus_vtable: Address,
+        clock: &service::Locatable,
+        clock_instance: Address,
     ) -> Option<Self> {
         let class = service::Locatable::new(
             process,
@@ -358,36 +365,82 @@ impl WonderCompletion {
             event_bus_vtable,
         )?;
 
-        // static float, so it can be reported before anything happens.
-        if let Some(addr) = class.static_field(process, module, "UnlockOffsetInHours") {
-            if let Ok(hours) = process.read::<f32>(addr) {
-                asr::print_message(&format!(
-                    "Wonder completion countdown is {hours} in-game hours after activation."
-                ));
-            }
-        }
+        report_countdown_length(process, module, &class, clock, clock_instance);
+
 
         let countdown_finished = class.field(process, module, "CountdownFinished")?;
         let unlock_day = class.field(process, module, "_unlockDay")?;
         let instance = class.find_one(process).await.first?;
+
+        let already = process
+            .read::<u8>(instance.add(countdown_finished as u64))
+            .is_ok_and(|done| done != 0);
         asr::print_message(&format!(
-            "Watching wonder completion at {instance} (run end per the rules)."
+            "Watching wonder completion at {instance} (run end per the rules). \
+             Already finished in this save: {already}."
         ));
+
         Some(Self {
             countdown_finished,
             unlock_day,
             instance,
+            was_finished_on_arrival: already,
         })
     }
 
+    /// True only on a transition we actually observed.
     fn finished(&self, process: &Process) -> bool {
-        process
-            .read::<u8>(self.instance.add(self.countdown_finished as u64))
-            .is_ok_and(|done| done != 0)
+        !self.was_finished_on_arrival
+            && process
+                .read::<u8>(self.instance.add(self.countdown_finished as u64))
+                .is_ok_and(|done| done != 0)
     }
 
     fn unlock_day(&self, process: &Process) -> Option<f32> {
         process.read::<f32>(self.instance.add(self.unlock_day as u64)).ok()
+    }
+}
+
+/// Works out how far the run end sits behind wonder activation, in real time.
+///
+/// The countdown is expressed in in-game hours, and `DayNightCycle` knows how
+/// long a day is in both hours and real seconds, so the gap can be computed
+/// from any save rather than waiting to observe a completion -- which is
+/// otherwise a whole run, and only happens once per map.
+fn report_countdown_length(
+    process: &Process,
+    module: &Module,
+    countdown: &service::Locatable,
+    clock: &service::Locatable,
+    clock_instance: Address,
+) {
+    let read = |offset: Option<u32>| -> Option<f32> {
+        process.read::<f32>(clock_instance.add(offset? as u64)).ok()
+    };
+
+    let Some(hours) = countdown
+        .static_field(process, module, "UnlockOffsetInHours")
+        .and_then(|addr| process.read::<f32>(addr).ok())
+    else {
+        return;
+    };
+
+    let day_seconds = read(clock.field(process, module, "DayLengthInSeconds"));
+    let daytime = read(clock.field(process, module, "DaytimeLengthInHours"));
+    let nighttime = read(clock.field(process, module, "NighttimeLengthInHours"));
+
+    match (day_seconds, daytime, nighttime) {
+        (Some(day_seconds), Some(daytime), Some(nighttime)) if daytime + nighttime > 0.0 => {
+            let seconds = hours * (day_seconds / (daytime + nighttime));
+            asr::print_message(&format!(
+                "Countdown: {hours} in-game hours = {seconds:.1}s real time at 1x \
+                 (day is {daytime}+{nighttime}h in {day_seconds}s). This is how far \
+                 activation precedes the run end."
+            ));
+        }
+        _ => asr::print_message(&format!(
+            "Countdown: {hours} in-game hours (could not read day length to convert)."
+        )),
     }
 }
 

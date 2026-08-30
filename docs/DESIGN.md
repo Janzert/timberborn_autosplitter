@@ -206,8 +206,26 @@ So the run-end signal is `WonderCompletionCountdownStarter.CountdownFinished`
 
 This matters beyond this implementation: the existing ASL splitter's final split
 is "Earth Recultivator (Launch)", which fires on activation. If the countdown is
-non-zero, that splits early relative to the rules. Both are currently logged so
-the gap can be measured; `UnlockOffsetInHours` is reported at startup.
+non-zero, that splits early relative to the rules.
+
+The gap does not have to be observed to be known. The countdown is in in-game
+hours and `DayNightCycle` knows both the length of a day in hours
+(`DaytimeLengthInHours + NighttimeLengthInHours`) and in real seconds
+(`DayLengthInSeconds`), so:
+
+    gap_seconds = UnlockOffsetInHours * DayLengthInSeconds / (Daytime + Nighttime)
+
+which is computed and logged from any loaded save. That matters because
+observing a real completion is expensive: the Congratulations screen only
+appears on a map's first completion, so a save that has already finished its
+wonder cannot produce another one.
+
+The same fact is a correctness trap. `CountdownFinished` is persisted in the
+save, so a completed save loads with it already `true`. The end split therefore
+only fires on a **transition we observed**, never on a value that was already
+set when we attached. A real run starts from a new game and can never hit this,
+but a splitter that fires the run-end split on loading an old save would be
+badly behaved.
 
 **Start** is "the overlay appears after choosing your settlement name" — the
 naming dialog closes, the UI appears, the game begins. Two candidate signals,
