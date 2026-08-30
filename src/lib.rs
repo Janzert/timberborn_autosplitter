@@ -5,6 +5,7 @@ extern crate alloc;
 #[global_allocator]
 static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
+mod collections;
 mod probe;
 mod scan;
 mod service;
@@ -26,6 +27,10 @@ struct Settings {
     /// Start the run when the overlay appears after naming the settlement
     #[default = true]
     start: bool,
+
+    /// Split when the wonder becomes researchable
+    #[default = true]
+    research_wonder: bool,
 
     /// Split when the wonder completes (the "Congratulations!" screen)
     ///
@@ -248,6 +253,7 @@ async fn watch(
     let mut ticks = 0u32;
     let mut last_day = None;
     let mut completion: Option<WonderCompletion> = None;
+    let mut research: Option<Research> = None;
     let mut ended = false;
 
     // Resolved lazily and retried: on a fresh load GameInitializer exists
@@ -291,8 +297,24 @@ async fn watch(
         // like the run ending.
         let initialized = run_start.as_ref().is_some_and(|s| s.initialized());
 
-        if initialized && completion.is_none() && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
-            completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
+        if initialized && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
+            if completion.is_none() {
+                completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
+            }
+            if research.is_none() {
+                research = Research::resolve(process, module, event_bus_vtable).await;
+            }
+        }
+
+        if let Some(r) = &mut research {
+            if r.poll(process, module) {
+                if settings.research_wonder && timer::state() == TimerState::Running {
+                    asr::print_message("Split: wonder research unlocked.");
+                    timer::split();
+                } else {
+                    asr::print_message("Wonder research unlocked, but not splitting.");
+                }
+            }
         }
 
         // The actual run end: the Congratulations screen. Read every tick.
@@ -314,6 +336,94 @@ async fn watch(
 
         ticks = ticks.wrapping_add(1);
         next_tick().await;
+    }
+}
+
+/// The research split: the faction's wonder becoming buildable.
+///
+/// `BuildingUnlockingService._unlockedBuildings` is a `HashSet<string>` of
+/// template names, so this is a membership test rather than an object walk.
+///
+/// Both factions are covered. The ASL script this replaces only recognised the
+/// Folktails wonder.
+struct Research {
+    set: Address,
+    count_offset: u32,
+    last_count: Option<i32>,
+    /// Whether the wonder was already unlocked when we arrived. A loaded save
+    /// has its research done, and that must not read as researching it now.
+    unlocked_on_arrival: bool,
+    fired: bool,
+}
+
+/// Wonder template names, by faction.
+const WONDER_TEMPLATES: &[&str] = &["EarthRecultivator.Folktails", "TributeToIngenuity.IronTeeth"];
+
+impl Research {
+    async fn resolve(
+        process: &Process,
+        module: &Module,
+        event_bus_vtable: Address,
+    ) -> Option<Self> {
+        let class = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.ScienceSystem",
+            "BuildingUnlockingService",
+            event_bus_vtable,
+        )?;
+        let field = class.field(process, module, "_unlockedBuildings")?;
+        let instance = class.find_one(process).await.first?;
+
+        let set = process
+            .read_pointer(instance.add(field as u64), module.get_pointer_size())
+            .ok()
+            .filter(|a| !a.is_null())?;
+        let count_offset = collections::count_offset(process, module, set)?;
+
+        let unlocked_on_arrival = Self::wonder_unlocked(process, module, set);
+        asr::print_message(&format!(
+            "Watching research at {set}. Wonder already unlocked in this save: \
+             {unlocked_on_arrival}."
+        ));
+
+        Some(Self {
+            set,
+            count_offset,
+            last_count: None,
+            unlocked_on_arrival,
+            fired: false,
+        })
+    }
+
+    fn wonder_unlocked(process: &Process, module: &Module, set: Address) -> bool {
+        let Some(set) = collections::HashSet::read(process, module, set) else {
+            return false;
+        };
+        WONDER_TEMPLATES
+            .iter()
+            .any(|name| set.contains_str(process, name))
+    }
+
+    /// One read per tick. The set is only walked when its count changes, which
+    /// happens a handful of times a run rather than 120 times a second.
+    fn poll(&mut self, process: &Process, module: &Module) -> bool {
+        if self.fired || self.unlocked_on_arrival {
+            return false;
+        }
+        let Ok(count) = process.read::<i32>(self.set.add(self.count_offset as u64)) else {
+            return false;
+        };
+        if self.last_count == Some(count) {
+            return false;
+        }
+        self.last_count = Some(count);
+
+        if Self::wonder_unlocked(process, module, self.set) {
+            self.fired = true;
+            return true;
+        }
+        false
     }
 }
 
