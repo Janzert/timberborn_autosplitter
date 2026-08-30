@@ -181,7 +181,50 @@ Open question for the dumper: does `ComponentCache._name` already hold the
 template name (e.g. `Forester.Folktails`)? If so the buildings split collapses
 from a component-array walk to one string read per building.
 
-### Run start
+### Category rules, and what they mean in memory
+
+From the category rules:
+
+> Starts when the overlay appears after choosing your settlement name.
+> Ends when the "Congratulations!" screen appears.
+
+**The end condition is not wonder activation.** Activating the wonder starts a
+countdown, and only when it finishes does the Congratulations screen appear:
+
+```
+Wonder.IsActive = true
+  -> WonderCompletionCountdownStarter sets _unlockDay
+     from UnlockOffsetInHours (static float, in-game hours)
+  -> CountdownFinished = true
+  -> WonderCompletedEvent
+  -> WonderCompletionPanel  (WonderCompletedLocKey -- "Congratulations!")
+```
+
+So the run-end signal is `WonderCompletionCountdownStarter.CountdownFinished`
+(`bool`, on a singleton with `_eventBus`, so the ordinary locator finds it).
+`Wonder.IsActive` is strictly earlier by the countdown.
+
+This matters beyond this implementation: the existing ASL splitter's final split
+is "Earth Recultivator (Launch)", which fires on activation. If the countdown is
+non-zero, that splits early relative to the rules. Both are currently logged so
+the gap can be measured; `UnlockOffsetInHours` is reported at startup.
+
+**Start** is "the overlay appears after choosing your settlement name" — the
+naming dialog closes, the UI appears, the game begins. Two candidate signals,
+neither confirmed:
+
+| candidate | type | why |
+|---|---|---|
+| `GameInitializer._initializationState` | `InitializationState` enum | steps through startup; `GameStarter` drives the name prompt then the initializer |
+| `SpeedManager.CurrentSpeed` | `float` | should be paused while the dialog is up, running once it closes |
+
+Both live on singletons that exist *while the dialog is up*, which resolves the
+worry that run start needs to catch an object being created. They can be located
+in advance and then polled every tick, so run start gets the same one-tick
+accuracy as run end. Both are logged on change, to be correlated against a real
+new-game start.
+
+### Run start: earlier notes
 
 There is no `NewGameInitializedEvent` equivalent to observe from outside.
 

@@ -219,13 +219,19 @@ async fn watch(
 ) {
     let mut last_day = None;
     let mut wonder: Option<Wonder> = None;
-    let mut fired = false;
+    let mut completion: Option<WonderCompletion> = None;
+    let mut activated = false;
+    let mut ended = false;
     let mut ticks = 0u32;
+
+    let mut start_signals = StartSignals::resolve(process, module, event_bus_vtable).await;
 
     loop {
         if !clock.still_valid(process, instance) {
             return;
         }
+
+        start_signals.poll(process);
 
         if let Ok(day) = process.read::<i32>(instance.add(day_number as u64)) {
             if last_day != Some(day) {
@@ -234,18 +240,33 @@ async fn watch(
             }
         }
 
-        // The class does not exist until a wonder has been built, so keep
-        // trying rather than giving up at load time.
-        if wonder.is_none() && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
-            wonder = Wonder::resolve(process, module, event_bus_vtable);
+        // Neither class exists until a wonder has been built, so keep trying
+        // rather than giving up at load time.
+        if ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
+            if wonder.is_none() {
+                wonder = Wonder::resolve(process, module, event_bus_vtable);
+            }
+            if completion.is_none() {
+                completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
+            }
         }
 
         if let Some(w) = &mut wonder {
             w.update(process, ticks).await;
-            if !fired && w.is_active(process) {
-                // This is the run-end split, so it is read every tick.
-                asr::print_message("SPLIT would fire: wonder activated.");
-                fired = true;
+            if !activated && w.is_active(process) {
+                let day = completion.as_ref().and_then(|c| c.unlock_day(process));
+                asr::print_message(&format!(
+                    "Wonder activated (NOT the run end). Completion due on day {day:?}."
+                ));
+                activated = true;
+            }
+        }
+
+        // The actual run end: the Congratulations screen. Read every tick.
+        if let Some(c) = &completion {
+            if !ended && c.finished(process) {
+                asr::print_message("SPLIT would fire: RUN END -- wonder completion countdown finished.");
+                ended = true;
             }
         }
 
@@ -306,5 +327,147 @@ impl Wonder {
                 .read::<u8>(i.add(self.is_active as u64))
                 .is_ok_and(|active| active != 0)
         })
+    }
+}
+
+/// The run-end condition, per the category rules: the "Congratulations!"
+/// screen, not the wonder being activated.
+///
+/// Activating a wonder starts a countdown of `UnlockOffsetInHours` in-game
+/// hours. Only when that finishes does `WonderCompletedEvent` fire and
+/// `WonderCompletionPanel` -- the Congratulations screen -- appear. So
+/// `CountdownFinished` is the signal, and `Wonder.IsActive` is strictly
+/// earlier. Both are watched so the gap between them can be measured.
+struct WonderCompletion {
+    countdown_finished: u32,
+    unlock_day: u32,
+    instance: Address,
+}
+
+impl WonderCompletion {
+    async fn resolve(
+        process: &Process,
+        module: &Module,
+        event_bus_vtable: Address,
+    ) -> Option<Self> {
+        let class = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.GameWonderCompletion",
+            "WonderCompletionCountdownStarter",
+            event_bus_vtable,
+        )?;
+
+        // static float, so it can be reported before anything happens.
+        if let Some(addr) = class.static_field(process, module, "UnlockOffsetInHours") {
+            if let Ok(hours) = process.read::<f32>(addr) {
+                asr::print_message(&format!(
+                    "Wonder completion countdown is {hours} in-game hours after activation."
+                ));
+            }
+        }
+
+        let countdown_finished = class.field(process, module, "CountdownFinished")?;
+        let unlock_day = class.field(process, module, "_unlockDay")?;
+        let instance = class.find_one(process).await.first?;
+        asr::print_message(&format!(
+            "Watching wonder completion at {instance} (run end per the rules)."
+        ));
+        Some(Self {
+            countdown_finished,
+            unlock_day,
+            instance,
+        })
+    }
+
+    fn finished(&self, process: &Process) -> bool {
+        process
+            .read::<u8>(self.instance.add(self.countdown_finished as u64))
+            .is_ok_and(|done| done != 0)
+    }
+
+    fn unlock_day(&self, process: &Process) -> Option<f32> {
+        process.read::<f32>(self.instance.add(self.unlock_day as u64)).ok()
+    }
+}
+
+/// Candidate signals for run start, logged for comparison against the rules:
+/// "starts when the overlay appears after choosing your settlement name".
+///
+/// Neither is confirmed yet. `GameInitializer._initializationState` is an enum
+/// that should step through startup, and `SpeedManager.CurrentSpeed` should go
+/// from paused to running when the naming dialog closes. Both live on
+/// singletons that exist *while* the dialog is up, so they can be located in
+/// advance and then polled every tick -- which is what run-start accuracy
+/// needs.
+struct StartSignals {
+    init_state: Option<(Address, u32)>,
+    speed: Option<(Address, u32)>,
+    last: Option<(i32, f32)>,
+}
+
+impl StartSignals {
+    async fn resolve(process: &Process, module: &Module, event_bus_vtable: Address) -> Self {
+        let mut signals = Self {
+            init_state: None,
+            speed: None,
+            last: None,
+        };
+
+        if let Some(class) = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.GameStartup",
+            "GameInitializer",
+            event_bus_vtable,
+        ) {
+            if let (Some(offset), Some(instance)) = (
+                class.field(process, module, "_initializationState"),
+                class.find_one(process).await.first,
+            ) {
+                signals.init_state = Some((instance, offset));
+            }
+        }
+
+        if let Some(class) = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.TimeSystem",
+            "SpeedManager",
+            event_bus_vtable,
+        ) {
+            if let (Some(offset), Some(instance)) = (
+                class.field(process, module, "CurrentSpeed"),
+                class.find_one(process).await.first,
+            ) {
+                signals.speed = Some((instance, offset));
+            }
+        }
+
+        asr::print_message(&format!(
+            "Start signals: GameInitializer {}, SpeedManager {}.",
+            if signals.init_state.is_some() { "found" } else { "MISSING" },
+            if signals.speed.is_some() { "found" } else { "MISSING" },
+        ));
+        signals
+    }
+
+    /// Logs on change, so a new game start shows the exact transition.
+    fn poll(&mut self, process: &Process) {
+        let state = self
+            .init_state
+            .and_then(|(a, o)| process.read::<i32>(a.add(o as u64)).ok())
+            .unwrap_or(-1);
+        let speed = self
+            .speed
+            .and_then(|(a, o)| process.read::<f32>(a.add(o as u64)).ok())
+            .unwrap_or(-1.0);
+
+        if self.last != Some((state, speed)) {
+            asr::print_message(&format!(
+                "start signals: initializationState={state} currentSpeed={speed}"
+            ));
+            self.last = Some((state, speed));
+        }
     }
 }

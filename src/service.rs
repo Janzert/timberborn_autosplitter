@@ -81,6 +81,14 @@ impl Locatable {
         self.class.get_field_offset(process, module, name)
     }
 
+    /// Address of a static field, for values that live on the class rather
+    /// than on an instance.
+    pub fn static_field(&self, process: &Process, module: &Module, name: &str) -> Option<Address> {
+        let table = self.class.get_static_table(process, module)?;
+        let offset = self.class.get_field_offset(process, module, name)?;
+        Some(table.add(offset as u64))
+    }
+
     /// Finds the single instance of a singleton service.
     ///
     /// An empty result carries `conclusive: false` when the scan could not read
