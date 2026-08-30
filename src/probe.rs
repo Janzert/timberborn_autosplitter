@@ -249,3 +249,87 @@ fn read_string(process: &Process, reference: Address) -> Option<String> {
     let chars = process.read::<ArrayWString<64>>(pointer.add(0x14)).ok()?;
     Some(String::from_utf16_lossy(chars.as_slice()))
 }
+
+/// Samples `BlockObjectState` to confirm how a finished building is recognised.
+///
+/// This is the shape the buildings splits need. `BlockObjectState` carries
+/// `_state` (`Unfinished`, `Finished`, `Preview`) and, being a component,
+/// inherits `_componentCache` -- whose `_name` is the template name. So a
+/// finished building of a given type is one scan and two derefs, with no
+/// component-list walk and no `TemplateSpec` lookup.
+pub async fn sample_block_objects(
+    process: &Process,
+    module: &Module,
+    event_bus_vtable: Address,
+    count: usize,
+) -> bool {
+    let Some(states) = service::Locatable::new(
+        process,
+        module,
+        "Timberborn.BlockSystem",
+        "BlockObjectState",
+        event_bus_vtable,
+    ) else {
+        return false;
+    };
+
+    let (Some(state_offset), Some(cache_offset)) = (
+        states.field(process, module, "_state"),
+        states.field(process, module, "_componentCache"),
+    ) else {
+        asr::print_message("probe: BlockObjectState is missing _state or _componentCache.");
+        return true;
+    };
+
+    let name_offset = match service::class_vtable(
+        process,
+        module,
+        "Timberborn.BaseComponentSystem",
+        "ComponentCacheService",
+    )
+    .and_then(|vtable| {
+        service::Locatable::with_validator(
+            process,
+            module,
+            "Timberborn.BaseComponentSystem",
+            "ComponentCache",
+            "_componentCacheService",
+            vtable,
+        )
+    })
+    .and_then(|cache| cache.field(process, module, "_name"))
+    {
+        Some(offset) => offset,
+        None => return false,
+    };
+
+    let instances = states.find_upto(process, count).await;
+    asr::print_message(&format!(
+        "probe: {} BlockObjectState sampled (_state +0x{state_offset:X}, \
+         _componentCache +0x{cache_offset:X}, _name +0x{name_offset:X}):",
+        instances.len()
+    ));
+
+    for instance in instances {
+        let state = process
+            .read::<i32>(instance.add(state_offset as u64))
+            .map(|v| match v {
+                0 => "Unfinished",
+                1 => "Finished",
+                2 => "Preview",
+                _ => "?",
+            })
+            .unwrap_or("<unreadable>");
+
+        let name = process
+            .read::<u64>(instance.add(cache_offset as u64))
+            .ok()
+            .map(Address::new)
+            .filter(|a| !a.is_null())
+            .and_then(|cache| read_string(process, cache.add(name_offset as u64)))
+            .unwrap_or_else(|| String::from("<none>"));
+
+        asr::print_message(&format!("  {state:<10} {name}"));
+    }
+    true
+}

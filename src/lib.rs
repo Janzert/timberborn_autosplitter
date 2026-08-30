@@ -301,7 +301,8 @@ async fn watch(
         // ComponentCache does not exist until the game has entities, so this
         // has to wait for initialization like anything else reading game state.
         if initialized && !sampled_names && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
-            sampled_names = probe::sample_component_names(process, module, 12).await;
+            sampled_names = probe::sample_component_names(process, module, 6).await
+                && probe::sample_block_objects(process, module, event_bus_vtable, 20).await;
         }
 
         if initialized && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {

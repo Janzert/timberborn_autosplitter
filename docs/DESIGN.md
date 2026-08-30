@@ -118,7 +118,7 @@ All paths below were verified to exist in the shipped assemblies.
 |---|---|---|
 | Wonder activated | instances of `Timberborn.Wonders.Wonder` → `IsActive` | `bool` |
 | Research Earth Recultivator | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
-| Buildings finished | `DistrictBuildingRegistry._finishedBuildings` → `EntityComponentRegistry._registeredComponents` → per component `BaseComponent._componentCache` → `ComponentCache._components` → `TemplateSpec.TemplateName` | `EntityComponentRegistry`, then `Dictionary<Type, List<IRegisteredComponent>>`, `List<object>`, `string` |
+| Buildings finished | instances of `BlockSystem.BlockObjectState` → `_state`, and `_componentCache` → `ComponentCache._name` | `State` enum, `string` |
 | Population / day | `PopulationService.GlobalPopulationData` → `NumberOfAdults`; `DayNightCycle.DayNumber` | `int` |
 
 Field types were read out of the assemblies offline (`devtools/metadata.py`),
@@ -130,9 +130,21 @@ which settles how much machinery each split needs:
 - **Research is a string membership test**, not an object graph walk —
   `_unlockedBuildings` holds template names directly. It does need a
   `HashSet<string>` reader.
-- **Buildings finished is the expensive one**, three collection types deep.
-  `ComponentCache._name` is a `string`, so the shortcut is still open: if it
-  holds the template name, the last two hops collapse to one read.
+- **Buildings finished turned out cheap.** `ComponentCache._name` holds the
+  template name outright — sampled from a live game it reads
+  `"WoodWorkshop.Folktails"`, `"TappersShack.Folktails"`, and
+  `"BlueberryBush.<guid>"` for natural entities. That removes the component-list
+  walk and the `TemplateSpec` lookup entirely.
+
+  Finished state comes from `BlockSystem.BlockObjectState`, which carries
+  `_state` (`Unfinished`, `Finished`, `Preview`) and, being a component,
+  inherits `_componentCache`. It also has an `_eventBus`, so the ordinary
+  validator finds it. A finished building of a given type is therefore one scan
+  plus two derefs.
+
+  The registry route through `DistrictBuildingRegistry._finishedBuildings` —
+  `EntityComponentRegistry` holding a `Dictionary<Type, List<IRegisteredComponent>>` —
+  is no longer needed, and with it the need for a `Dictionary` reader.
 
 ### Faction-specific template names
 
