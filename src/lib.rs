@@ -224,14 +224,18 @@ async fn watch(
     let mut ended = false;
     let mut ticks = 0u32;
 
-    let mut start_signals = StartSignals::resolve(process, module, event_bus_vtable).await;
+    let mut run_start = RunStart::resolve(process, module, event_bus_vtable).await;
 
     loop {
         if !clock.still_valid(process, instance) {
             return;
         }
 
-        start_signals.poll(process);
+        if let Some(start) = &mut run_start {
+            if start.poll(process) {
+                asr::print_message("SPLIT would fire: RUN START -- overlay shown.");
+            }
+        }
 
         if let Ok(day) = process.read::<i32>(instance.add(day_number as u64)) {
             if last_day != Some(day) {
@@ -247,9 +251,7 @@ async fn watch(
                 wonder = Wonder::resolve(process, module, event_bus_vtable);
             }
             if completion.is_none() {
-                completion =
-                    WonderCompletion::resolve(process, module, event_bus_vtable, clock, instance)
-                        .await;
+                completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
             }
         }
 
@@ -265,7 +267,8 @@ async fn watch(
         }
 
         // The actual run end: the Congratulations screen. Read every tick.
-        if let Some(c) = &completion {
+        if let Some(c) = &mut completion {
+            c.report_length(process, module, clock, instance);
             if !ended && c.finished(process) {
                 asr::print_message("SPLIT would fire: RUN END -- wonder completion countdown finished.");
                 ended = true;
@@ -298,7 +301,10 @@ impl Wonder {
             event_bus_vtable,
         )?;
         let is_active = class.field(process, module, "IsActive")?;
-        asr::print_message("A wonder exists; watching for activation.");
+        // Resolving only proves the class has been constructed once, which a
+        // prefab does at load. Whether a wonder is actually built is decided by
+        // the scan in update().
+        asr::print_message("Wonder class resolved; scanning for built wonders.");
         Some(Self {
             class,
             is_active,
@@ -341,9 +347,13 @@ impl Wonder {
 /// `CountdownFinished` is the signal, and `Wonder.IsActive` is strictly
 /// earlier. Both are watched so the gap between them can be measured.
 struct WonderCompletion {
+    class: service::Locatable,
     countdown_finished: u32,
     unlock_day: u32,
     instance: Address,
+    /// Whether the real-time length of the countdown has been reported yet.
+    /// The clock reads zero during load, so this is retried until it is sane.
+    reported_length: bool,
     /// The value when we first saw it. A save that already completed its wonder
     /// loads with this true, and that must not read as the run ending.
     was_finished_on_arrival: bool,
@@ -354,8 +364,6 @@ impl WonderCompletion {
         process: &Process,
         module: &Module,
         event_bus_vtable: Address,
-        clock: &service::Locatable,
-        clock_instance: Address,
     ) -> Option<Self> {
         let class = service::Locatable::new(
             process,
@@ -365,7 +373,6 @@ impl WonderCompletion {
             event_bus_vtable,
         )?;
 
-        report_countdown_length(process, module, &class, clock, clock_instance);
 
 
         let countdown_finished = class.field(process, module, "CountdownFinished")?;
@@ -381,11 +388,29 @@ impl WonderCompletion {
         ));
 
         Some(Self {
+            class,
             countdown_finished,
             unlock_day,
             instance,
+            reported_length: false,
             was_finished_on_arrival: already,
         })
+    }
+
+    /// Reports how far activation precedes the run end, once the clock has
+    /// values to compute it from.
+    fn report_length(
+        &mut self,
+        process: &Process,
+        module: &Module,
+        clock: &service::Locatable,
+        clock_instance: Address,
+    ) {
+        if self.reported_length {
+            return;
+        }
+        self.reported_length =
+            report_countdown_length(process, module, &self.class, clock, clock_instance);
     }
 
     /// True only on a transition we actually observed.
@@ -413,7 +438,7 @@ fn report_countdown_length(
     countdown: &service::Locatable,
     clock: &service::Locatable,
     clock_instance: Address,
-) {
+) -> bool {
     let read = |offset: Option<u32>| -> Option<f32> {
         process.read::<f32>(clock_instance.add(offset? as u64)).ok()
     };
@@ -422,7 +447,7 @@ fn report_countdown_length(
         .static_field(process, module, "UnlockOffsetInHours")
         .and_then(|addr| process.read::<f32>(addr).ok())
     else {
-        return;
+        return false;
     };
 
     let day_seconds = read(clock.field(process, module, "DayLengthInSeconds"));
@@ -437,90 +462,100 @@ fn report_countdown_length(
                  (day is {daytime}+{nighttime}h in {day_seconds}s). This is how far \
                  activation precedes the run end."
             ));
+            true
         }
-        _ => asr::print_message(&format!(
-            "Countdown: {hours} in-game hours (could not read day length to convert)."
-        )),
+        // The clock reads zero until the game finishes loading; try again.
+        _ => false,
     }
 }
 
-/// Candidate signals for run start, logged for comparison against the rules:
-/// "starts when the overlay appears after choosing your settlement name".
+/// The run-start condition, per the category rules: "starts when the overlay
+/// appears after choosing your settlement name".
 ///
-/// Neither is confirmed yet. `GameInitializer._initializationState` is an enum
-/// that should step through startup, and `SpeedManager.CurrentSpeed` should go
-/// from paused to running when the naming dialog closes. Both live on
-/// singletons that exist *while* the dialog is up, so they can be located in
-/// advance and then polled every tick -- which is what run-start accuracy
-/// needs.
-struct StartSignals {
-    init_state: Option<(Address, u32)>,
-    speed: Option<(Address, u32)>,
-    last: Option<(i32, f32)>,
+/// `GameInitializer` steps through an `InitializationState` enum, whose members
+/// name the sequence exactly:
+///
+/// ```text
+/// 0 Waiting  1 SpawnBeavers  2 PostSpawnBeavers  3 UnpauseGame  4 ShowUI  5 Finished
+/// ```
+///
+/// It sits on `Waiting` while the settlement-name dialog is up and steps
+/// through the rest within a few ticks of confirming it. `ShowUI` is the step
+/// that puts the overlay on screen, so that is the split.
+///
+/// `SpeedManager.CurrentSpeed` was the other candidate and is unusable: it goes
+/// to 1 at `UnpauseGame`, one step early, and then toggles every time the
+/// player pauses.
+struct RunStart {
+    instance: Address,
+    offset: u32,
+    /// Whether a state before `ShowUI` has been seen. Attaching to a game
+    /// already in progress must not count as a start.
+    seen_before_ui: bool,
+    fired: bool,
+    last: Option<i32>,
 }
 
-impl StartSignals {
-    async fn resolve(process: &Process, module: &Module, event_bus_vtable: Address) -> Self {
-        let mut signals = Self {
-            init_state: None,
-            speed: None,
-            last: None,
-        };
+/// `InitializationState.ShowUI`.
+const SHOW_UI: i32 = 4;
 
-        if let Some(class) = service::Locatable::new(
+impl RunStart {
+    async fn resolve(
+        process: &Process,
+        module: &Module,
+        event_bus_vtable: Address,
+    ) -> Option<Self> {
+        let class = service::Locatable::new(
             process,
             module,
             "Timberborn.GameStartup",
             "GameInitializer",
             event_bus_vtable,
-        ) {
-            if let (Some(offset), Some(instance)) = (
-                class.field(process, module, "_initializationState"),
-                class.find_one(process).await.first,
-            ) {
-                signals.init_state = Some((instance, offset));
-            }
-        }
-
-        if let Some(class) = service::Locatable::new(
-            process,
-            module,
-            "Timberborn.TimeSystem",
-            "SpeedManager",
-            event_bus_vtable,
-        ) {
-            if let (Some(offset), Some(instance)) = (
-                class.field(process, module, "CurrentSpeed"),
-                class.find_one(process).await.first,
-            ) {
-                signals.speed = Some((instance, offset));
-            }
-        }
-
-        asr::print_message(&format!(
-            "Start signals: GameInitializer {}, SpeedManager {}.",
-            if signals.init_state.is_some() { "found" } else { "MISSING" },
-            if signals.speed.is_some() { "found" } else { "MISSING" },
-        ));
-        signals
+        )?;
+        let offset = class.field(process, module, "_initializationState")?;
+        let instance = class.find_one(process).await.first?;
+        asr::print_message(&format!("Watching run start at {instance}."));
+        Some(Self {
+            instance,
+            offset,
+            seen_before_ui: false,
+            fired: false,
+            last: None,
+        })
     }
 
-    /// Logs on change, so a new game start shows the exact transition.
-    fn poll(&mut self, process: &Process) {
-        let state = self
-            .init_state
-            .and_then(|(a, o)| process.read::<i32>(a.add(o as u64)).ok())
-            .unwrap_or(-1);
-        let speed = self
-            .speed
-            .and_then(|(a, o)| process.read::<f32>(a.add(o as u64)).ok())
-            .unwrap_or(-1.0);
+    /// One read. Called every tick, because run start is as timing-critical as
+    /// run end.
+    fn poll(&mut self, process: &Process) -> bool {
+        let Ok(state) = process.read::<i32>(self.instance.add(self.offset as u64)) else {
+            return false;
+        };
 
-        if self.last != Some((state, speed)) {
-            asr::print_message(&format!(
-                "start signals: initializationState={state} currentSpeed={speed}"
-            ));
-            self.last = Some((state, speed));
+        if self.last != Some(state) {
+            asr::print_message(&format!("initializationState = {state}{}", name_of(state)));
+            self.last = Some(state);
         }
+
+        if state < SHOW_UI {
+            self.seen_before_ui = true;
+            // A fresh game start after a previous one, so allow firing again.
+            self.fired = false;
+        } else if self.seen_before_ui && !self.fired {
+            self.fired = true;
+            return true;
+        }
+        false
+    }
+}
+
+fn name_of(state: i32) -> &'static str {
+    match state {
+        0 => " (Waiting)",
+        1 => " (SpawnBeavers)",
+        2 => " (PostSpawnBeavers)",
+        3 => " (UnpauseGame)",
+        4 => " (ShowUI)",
+        5 => " (Finished)",
+        _ => "",
     }
 }

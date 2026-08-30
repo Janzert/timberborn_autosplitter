@@ -227,20 +227,34 @@ set when we attached. A real run starts from a new game and can never hit this,
 but a splitter that fires the run-end split on loading an old save would be
 badly behaved.
 
-**Start** is "the overlay appears after choosing your settlement name" — the
-naming dialog closes, the UI appears, the game begins. Two candidate signals,
-neither confirmed:
+**Start** is identified, and the game's own state machine uses the same concept
+the rules do. `GameInitializer` steps through an `InitializationState` enum:
 
-| candidate | type | why |
-|---|---|---|
-| `GameInitializer._initializationState` | `InitializationState` enum | steps through startup; `GameStarter` drives the name prompt then the initializer |
-| `SpeedManager.CurrentSpeed` | `float` | should be paused while the dialog is up, running once it closes |
+```
+0 Waiting  1 SpawnBeavers  2 PostSpawnBeavers  3 UnpauseGame  4 ShowUI  5 Finished
+```
 
-Both live on singletons that exist *while the dialog is up*, which resolves the
-worry that run start needs to catch an object being created. They can be located
-in advance and then polled every tick, so run start gets the same one-tick
-accuracy as run end. Both are logged on change, to be correlated against a real
-new-game start.
+Measured against a real new game: it sits on `Waiting` for as long as the
+settlement-name dialog is up, then steps through 1-5 within a few ticks of
+confirming the name. **`ShowUI` is the split** — the rules say the run starts
+when the overlay appears, and that is the step that shows it.
+
+`SpeedManager.CurrentSpeed` was the other candidate and is unusable. It becomes
+1 at `UnpauseGame`, one step early, and then toggles every time the player
+pauses, so it is neither correctly placed nor monotonic.
+
+`GameInitializer` exists while the dialog is up, so it is located in advance and
+then polled every tick. Run start gets the same one-tick accuracy as run end,
+with no scanning in the critical window.
+
+Like the run end, this fires only on an observed transition: a state below
+`ShowUI` has to be seen first, so attaching to a game already in progress does
+not count as a start.
+
+**Still unknown:** whether loading an existing save also walks this sequence. If
+it does, load and new-game are indistinguishable from this field alone, and
+`WorldDataService.SourceFileName` — empty on a new game — becomes the
+discriminator.
 
 ### Run start: earlier notes
 
