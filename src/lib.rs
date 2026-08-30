@@ -306,6 +306,17 @@ async fn watch(
             }
         }
 
+        // Each watcher owns a different object with its own lifetime, so the
+        // clock still validating does not mean these do. Reading through a
+        // torn-down object produced a denormal float in one log, and the same
+        // read on CountdownFinished could fire a spurious run end.
+        if research.as_ref().is_some_and(|r| !r.still_valid(process)) {
+            research = None;
+        }
+        if completion.as_ref().is_some_and(|c| !c.still_valid(process)) {
+            completion = None;
+        }
+
         if let Some(r) = &mut research {
             if r.poll(process, module) {
                 if settings.research_wonder && timer::state() == TimerState::Running {
@@ -357,6 +368,8 @@ async fn watch(
 /// Both factions are covered. The ASL script this replaces only recognised the
 /// Folktails wonder.
 struct Research {
+    class: service::Locatable,
+    instance: Address,
     set: Address,
     count_offset: u32,
     last_count: Option<i32>,
@@ -371,6 +384,10 @@ impl Research {
     /// there. False at the end of a run means the template name is wrong.
     fn ever_matched(&self) -> bool {
         self.fired || self.unlocked_on_arrival
+    }
+
+    fn still_valid(&self, process: &Process) -> bool {
+        self.class.still_valid(process, self.instance)
     }
 }
 
@@ -408,6 +425,8 @@ impl Research {
         ));
 
         Some(Self {
+            class,
+            instance,
             set,
             count_offset,
             last_count: None,
@@ -470,6 +489,12 @@ struct WonderCompletion {
     /// The value when we first saw it. A save that already completed its wonder
     /// loads with this true, and that must not read as the run ending.
     was_finished_on_arrival: bool,
+}
+
+impl WonderCompletion {
+    fn still_valid(&self, process: &Process) -> bool {
+        self.class.still_valid(process, self.instance)
+    }
 }
 
 impl WonderCompletion {
