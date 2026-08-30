@@ -5,6 +5,7 @@ extern crate alloc;
 #[global_allocator]
 static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
+mod probe;
 mod scan;
 
 use alloc::format;
@@ -84,6 +85,9 @@ async fn spike(process: &Process) {
     asr::print_message("Waiting for DayNightCycle to be instantiated...");
     let vtable = retry(|| day_night_cycle.get_vtable(process, &module)).await;
     let event_bus_vtable = retry(|| event_bus.get_vtable(process, &module)).await;
+
+    // Now a save is loaded, so lazily-loaded assemblies are present.
+    probe::run(process, &module);
 
     let (Some(day_number), Some(event_bus_field)) = (
         day_night_cycle.get_field_offset(process, &module, "DayNumber"),

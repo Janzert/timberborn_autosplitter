@@ -318,6 +318,29 @@ turned up three things worth keeping written down:
 The address space also grows substantially during load — 1.2 GiB mid-load versus
 3.5 GiB in game — so scan cost depends on when it runs.
 
+## Checking a new game version
+
+Everything the splitter reads is resolved by name, which is what should make it
+survive game updates. Two halves check that, and neither takes long:
+
+- **Offline**, with the game closed:
+  `devtools/metadata.py check <Timberborn_Data/Managed>` verifies every name
+  `src/probe.rs` depends on against the installed assemblies. This is the fast
+  answer to "did an update rename something".
+- **At runtime**, `src/probe.rs` resolves the same set against the live process
+  and logs each one's offset, plus the Mono version and pointer size. It runs
+  once a save is loaded, because Mono loads assemblies lazily and some are
+  absent in the main menu.
+
+A missing *vtable* in the probe output is not a failure — Mono fills those in
+lazily, so it only means the class has not been constructed yet this session.
+Missing *classes or fields* are the real signal.
+
+Worth running against the Steam `experimental` branch to get advance warning of
+what the next release breaks. Old release branches (0.6, 0.7) are also allowed
+for submitted runs, though nobody appears to be using them, so supporting them
+is worth having only if it turns out to be close to free.
+
 ## Running the spike
 
 `src/scan.rs` plus `spike()` in `src/lib.rs` locate `DayNightCycle` and watch
