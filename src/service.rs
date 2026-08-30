@@ -28,6 +28,18 @@ pub fn event_bus_vtable(process: &Process, module: &Module) -> Option<Address> {
     class.get_vtable(process, module)
 }
 
+/// Length of a .NET string, or `None` if the reference is null.
+///
+/// `MonoString` is a 16-byte object header, then an `i32` length, then UTF-16
+/// characters. Only the length is needed to tell "set" from "unset".
+pub fn string_len(process: &Process, reference: Address) -> Option<i32> {
+    let pointer = Address::new(process.read::<u64>(reference).ok()?);
+    if pointer.is_null() {
+        return None;
+    }
+    process.read::<i32>(pointer.add(0x10)).ok()
+}
+
 /// The outcome of a search.
 pub struct Found {
     pub first: Option<Address>,

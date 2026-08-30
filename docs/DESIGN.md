@@ -208,6 +208,20 @@ This matters beyond this implementation: the existing ASL splitter's final split
 is "Earth Recultivator (Launch)", which fires on activation. If the countdown is
 non-zero, that splits early relative to the rules.
 
+**Measured: 0.5 in-game hours, which is 9.6s of real time at 1x** (a day is
+16+8 hours in 460.8s). So the existing ASL splitter ends its runs roughly that
+much early relative to the rules.
+
+Treat 9.6s as an order of magnitude, not a constant. The countdown is in in-game
+hours, so its real-time length scales with game speed — a run at 3x sees ~3.2s —
+and stretches further if the simulation cannot keep up or if maximum
+acceleration is capped as a settlement grows. `DayLengthInSeconds` itself
+appears not to be population-scaled: it read 460.80002 in both a brand-new game
+and a day-1511 save.
+
+None of that affects the splitter, which reads `CountdownFinished` directly. The
+conversion exists only to size the discrepancy for discussion.
+
 The gap does not have to be observed to be known. The countdown is in in-game
 hours and `DayNightCycle` knows both the length of a day in hours
 (`DaytimeLengthInHours + NighttimeLengthInHours`) and in real seconds
@@ -251,10 +265,28 @@ Like the run end, this fires only on an observed transition: a state below
 `ShowUI` has to be seen first, so attaching to a game already in progress does
 not count as a start.
 
-**Still unknown:** whether loading an existing save also walks this sequence. If
-it does, load and new-game are indistinguishable from this field alone, and
-`WorldDataService.SourceFileName` — empty on a new game — becomes the
-discriminator.
+**Loading a save walks the identical sequence**, confirmed by measurement, so
+`initializationState` alone cannot tell a load from a new game and would fire a
+run start on both. The discriminator is the static
+`WorldDataService.SourceFileName`: null on a new game, set to the save being
+loaded otherwise. It is read when `ShowUI` is reached, and a non-empty name
+suppresses the start.
+
+### Nothing may sample saved state before initialization finishes
+
+Two false splits in one test run traced to the same mistake, so it is worth
+stating as a rule.
+
+Loading a save that had already completed its wonder fired a run *end* five
+seconds into the load. `CountdownFinished` was sampled as `false` while the
+scene was still loading, and `GameWonderCompletionRestorer` then restored the
+saved `true` — which looks exactly like a completion happening.
+
+The "only fire on an observed transition" guard is necessary but not
+sufficient: the baseline has to be taken at the right time as well. So anything
+reading persisted state waits for `initializationState == Finished`. Run start
+is the exception, and has to be, since it fires at `ShowUI` one step earlier —
+but it reads only a state machine, never saved data.
 
 ### Run start: earlier notes
 

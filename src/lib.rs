@@ -244,9 +244,13 @@ async fn watch(
             }
         }
 
-        // Neither class exists until a wonder has been built, so keep trying
-        // rather than giving up at load time.
-        if ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
+        // Nothing may sample game state until initialization is done. The save
+        // restorer sets CountdownFinished partway through a load, so resolving
+        // earlier captures a stale "false" baseline and the restore then looks
+        // like the run ending.
+        let initialized = run_start.as_ref().is_some_and(|s| s.initialized());
+
+        if initialized && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
             if wonder.is_none() {
                 wonder = Wonder::resolve(process, module, event_bus_vtable);
             }
@@ -489,12 +493,19 @@ fn report_countdown_length(
 struct RunStart {
     instance: Address,
     offset: u32,
+    /// Static `WorldDataService.SourceFileName`: the save being loaded, and
+    /// null on a new game. `initializationState` alone cannot tell the two
+    /// apart -- loading a save walks the same Waiting -> ShowUI sequence.
+    source_file_name: Option<Address>,
     /// Whether a state before `ShowUI` has been seen. Attaching to a game
     /// already in progress must not count as a start.
     seen_before_ui: bool,
     fired: bool,
     last: Option<i32>,
 }
+
+/// `InitializationState.Finished`.
+const FINISHED: i32 = 5;
 
 /// `InitializationState.ShowUI`.
 const SHOW_UI: i32 = 4;
@@ -514,14 +525,38 @@ impl RunStart {
         )?;
         let offset = class.field(process, module, "_initializationState")?;
         let instance = class.find_one(process).await.first?;
+
+        // Static, so no instance is needed and it can be read at any time.
+        let source_file_name = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.ErrorReporting",
+            "WorldDataService",
+            event_bus_vtable,
+        )
+        .and_then(|c| c.static_field(process, module, "SourceFileName"));
+        if source_file_name.is_none() {
+            asr::print_message(
+                "WARNING: cannot read SourceFileName, so a loaded save cannot be \
+                 told from a new game. Run start would fire on both.",
+            );
+        }
+
         asr::print_message(&format!("Watching run start at {instance}."));
         Some(Self {
             instance,
             offset,
+            source_file_name,
             seen_before_ui: false,
             fired: false,
             last: None,
         })
+    }
+
+    /// Whether the game has finished loading. Anything that samples saved state
+    /// must wait for this.
+    fn initialized(&self) -> bool {
+        self.last.is_some_and(|state| state >= FINISHED)
     }
 
     /// One read. Called every tick, because run start is as timing-critical as
@@ -542,9 +577,24 @@ impl RunStart {
             self.fired = false;
         } else if self.seen_before_ui && !self.fired {
             self.fired = true;
-            return true;
+            return match self.loaded_from_save(process) {
+                Some(name_len) => {
+                    asr::print_message(&format!(
+                        "Overlay shown, but this is a loaded save \
+                         (SourceFileName is {name_len} chars). Not a run start."
+                    ));
+                    false
+                }
+                None => true,
+            };
         }
         false
+    }
+
+    /// `Some(length)` when a save file name is set, i.e. this is a load rather
+    /// than a new game.
+    fn loaded_from_save(&self, process: &Process) -> Option<i32> {
+        service::string_len(process, self.source_file_name?).filter(|&len| len > 0)
     }
 }
 
