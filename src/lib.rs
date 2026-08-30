@@ -323,6 +323,16 @@ async fn watch(
             c.report_activation(process);
             if !ended && c.finished(process) {
                 ended = true;
+                // A wrong template name shows up as the research split never
+                // firing, which is otherwise silent. Reaching the end of a run
+                // without it is the symptom, so say so.
+                if research.as_ref().is_some_and(|r| !r.ever_matched()) {
+                    asr::print_message(
+                        "WARNING: the run ended but the wonder was never seen as \
+                         researched. The template name for this faction is \
+                         probably wrong.",
+                    );
+                }
                 if settings.wonder_completed && timer::state() == TimerState::Running {
                     asr::print_message("Run end: wonder completed. Splitting.");
                     timer::split();
@@ -356,8 +366,18 @@ struct Research {
     fired: bool,
 }
 
-/// Wonder template names, by faction.
-const WONDER_TEMPLATES: &[&str] = &["EarthRecultivator.Folktails", "TributeToIngenuity.IronTeeth"];
+impl Research {
+    /// Whether the wonder was ever seen in the unlocked set, however it got
+    /// there. False at the end of a run means the template name is wrong.
+    fn ever_matched(&self) -> bool {
+        self.fired || self.unlocked_on_arrival
+    }
+}
+
+/// Wonder template names, by faction. Both verified against a completed run --
+/// the Iron Teeth wonder is the Earth Repopulator, not the similarly grand
+/// sounding Tribute to Ingenuity, which is a monument.
+const WONDER_TEMPLATES: &[&str] = &["EarthRecultivator.Folktails", "EarthRepopulator.IronTeeth"];
 
 impl Research {
     async fn resolve(

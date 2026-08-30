@@ -134,6 +134,30 @@ which settles how much machinery each split needs:
   `ComponentCache._name` is a `string`, so the shortcut is still open: if it
   holds the template name, the last two hops collapse to one read.
 
+### Faction-specific template names
+
+The wonder is a different building per faction, and the names are not
+guessable:
+
+| faction | wonder template |
+|---|---|
+| Folktails | `EarthRecultivator.Folktails` |
+| Iron Teeth | `EarthRepopulator.IronTeeth` |
+
+`TributeToIngenuity.IronTeeth` reads like a wonder and is not one — it is a
+monument, alongside `FarmerMonument.Folktails` and `LaborerMonument.IronTeeth`.
+Guessing it cost an Iron Teeth test run, during which the research split simply
+never fired. The confirming evidence is the pair of localisation keys
+`Buildings.Wonder.EarthRecultivator` and `Buildings.Wonder.EarthRepopulator`.
+
+A wrong name fails **silently** — the split just never happens. So reaching the
+run end without ever having seen the wonder in the unlocked set now logs a
+warning naming that as the likely cause.
+
+A more robust alternative exists and is not implemented: rather than matching
+names, find the building spec carrying a `Wonder` component. That would cover
+future factions without changes, at the cost of walking building specs.
+
 ### Watch cheap fields, not expensive ones
 
 Wonder activation was originally detected by scanning for `Wonder` instances and
