@@ -55,9 +55,11 @@ const PROCESS_GONE_DELAY_TICKS: u32 = 600;
 /// exist until a wonder has been built.
 const WONDER_RESOLVE_TICKS: u32 = 120;
 
-/// How often to scan for wonder instances, in ticks (~2s). This is a full scan,
-/// so it must not run every tick.
-const WONDER_POLL_TICKS: u32 = 240;
+/// How often to rescan for wonder instances while none are known, in ticks
+/// (~2s). Only the scan is throttled: once an instance is located its flag is
+/// read every tick, because this split ends the run and its latency is the
+/// splitter's timing error.
+const WONDER_RESCAN_TICKS: u32 = 240;
 
 /// How often to forget which candidates were ruled out, in ticks. Pids are
 /// reused, and a process rejected once may since have mapped the game.
@@ -216,8 +218,8 @@ async fn watch(
     event_bus_vtable: Address,
 ) {
     let mut last_day = None;
-    let mut wonder: Option<(service::Locatable, u32)> = None;
-    let mut wonder_seen_active = false;
+    let mut wonder: Option<Wonder> = None;
+    let mut fired = false;
     let mut ticks = 0u32;
 
     loop {
@@ -232,43 +234,77 @@ async fn watch(
             }
         }
 
-        // Wonder only exists once one has been built, so keep trying to resolve
-        // it rather than giving up at load time.
+        // The class does not exist until a wonder has been built, so keep
+        // trying rather than giving up at load time.
         if wonder.is_none() && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
-            if let Some(w) = service::Locatable::new(
-                process,
-                module,
-                "Timberborn.Wonders",
-                "Wonder",
-                event_bus_vtable,
-            ) {
-                if let Some(offset) = w.field(process, module, "IsActive") {
-                    asr::print_message("A Wonder now exists; watching for activation.");
-                    wonder = Some((w, offset));
-                }
-            }
+            wonder = Wonder::resolve(process, module, event_bus_vtable);
         }
 
-        // A wonder is a building, not a singleton, so check every instance.
-        if let Some((w, is_active)) = &wonder {
-            if !wonder_seen_active && ticks.is_multiple_of(WONDER_POLL_TICKS) {
-                let found = w.find_all(process).await;
-                for &wonder_instance in &found.all {
-                    if process
-                        .read::<u8>(wonder_instance.add(*is_active as u64))
-                        .is_ok_and(|active| active != 0)
-                    {
-                        asr::print_message(&format!(
-                            "SPLIT would fire: wonder activated ({wonder_instance})."
-                        ));
-                        wonder_seen_active = true;
-                        break;
-                    }
-                }
+        if let Some(w) = &mut wonder {
+            w.update(process, ticks).await;
+            if !fired && w.is_active(process) {
+                // This is the run-end split, so it is read every tick.
+                asr::print_message("SPLIT would fire: wonder activated.");
+                fired = true;
             }
         }
 
         ticks = ticks.wrapping_add(1);
         next_tick().await;
+    }
+}
+
+/// Tracks the wonder buildings and whether any has been activated.
+///
+/// A wonder is a building rather than a singleton, so there may be several, and
+/// none exist until one is built. Locating them is a full scan; checking them
+/// afterwards is one byte each, which is why the two are separated.
+struct Wonder {
+    class: service::Locatable,
+    is_active: u32,
+    instances: alloc::vec::Vec<Address>,
+}
+
+impl Wonder {
+    fn resolve(process: &Process, module: &Module, event_bus_vtable: Address) -> Option<Self> {
+        let class = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.Wonders",
+            "Wonder",
+            event_bus_vtable,
+        )?;
+        let is_active = class.field(process, module, "IsActive")?;
+        asr::print_message("A wonder exists; watching for activation.");
+        Some(Self {
+            class,
+            is_active,
+            instances: alloc::vec::Vec::new(),
+        })
+    }
+
+    /// Rescans only when we have nothing to watch, or when what we were
+    /// watching stopped being valid -- a wonder demolished and rebuilt, say.
+    async fn update(&mut self, process: &Process, ticks: u32) {
+        let stale = self
+            .instances
+            .iter()
+            .any(|&i| !self.class.still_valid(process, i));
+
+        if (self.instances.is_empty() || stale) && ticks.is_multiple_of(WONDER_RESCAN_TICKS) {
+            let found = self.class.find_all(process).await;
+            if !found.all.is_empty() || found.conclusive {
+                self.instances = found.all;
+            }
+        }
+    }
+
+    /// One byte per wonder. Cheap enough to run every tick.
+    fn is_active(&self, process: &Process) -> bool {
+        self.instances.iter().any(|&i| {
+            process
+                .read::<u8>(i.add(self.is_active as u64))
+                .is_ok_and(|active| active != 0)
+        })
     }
 }

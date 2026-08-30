@@ -134,6 +134,35 @@ which settles how much machinery each split needs:
   `ComponentCache._name` is a `string`, so the shortcut is still open: if it
   holds the template name, the last two hops collapse to one read.
 
+### Split latency
+
+Run start (initial load) and run end (wonder activated) are the two splits whose
+accuracy actually matters; the intermediate ones only affect segment times.
+
+There is **no watchpoint mechanism**. The sandbox offers read-only memory access
+— no ptrace, no debug registers, no write traps — so a change can only be
+noticed by looking again.
+
+That is fine, because scanning and reading are different costs. Locating an
+object is a multi-GiB scan; re-reading a known address is one byte. So anything
+timing-critical is located once and then polled **every tick**, and only the
+scan is throttled. Getting this wrong is easy: the first version rescanned every
+2 seconds, which would have put 2 seconds of error on the run-end split.
+
+Resulting error is one tick, worst case:
+
+| host | tick rate | worst-case error |
+|---|---|---|
+| asr-debugger | 120/s (measured) | ~8 ms |
+| LiveSplit (Auto Splitting Runtime) | ~66/s — the component drives it from a `Timer { Interval = 15 }` | ~15 ms |
+
+Average error is half of that. `asr::runtime::set_tick_rate` can ask for more,
+but the host's own polling interval is the real ceiling, so raising it does
+nothing in LiveSplit. ~15 ms is comfortably inside speedrun.com's 0.01 s
+display precision and is the best achievable from outside the process.
+
+The same treatment is needed for run start once its signal is settled.
+
 ### Reading BCL collections
 
 `HashSet<T>`, `List<T>` and `Dictionary<K, V>` layouts belong to Unity's Mono
