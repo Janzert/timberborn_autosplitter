@@ -272,6 +272,13 @@ run start on both. The discriminator is the static
 loaded otherwise. It is read when `ShowUI` is reached, and a non-empty name
 suppresses the start.
 
+Reading it needs no instance and no validation. The service locator requires an
+`_eventBus` so it can validate the objects it finds, but `WorldDataService` is a
+crash-reporting helper rather than a DI service and has no such field — so the
+locator cannot be built for it at all, even though its statics read fine. Static
+access is therefore a separate path. The first attempt coupled the two and
+silently could not read the field.
+
 ### Nothing may sample saved state before initialization finishes
 
 Two false splits in one test run traced to the same mistake, so it is worth

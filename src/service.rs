@@ -28,6 +28,26 @@ pub fn event_bus_vtable(process: &Process, module: &Module) -> Option<Address> {
     class.get_vtable(process, module)
 }
 
+/// Address of a static field, without needing an instance.
+///
+/// [`Locatable`] deliberately requires an `_eventBus` so it can validate the
+/// instances it finds, but that is a requirement of *finding objects*, not of
+/// reading statics. Classes like `WorldDataService` are not DI services and
+/// have no `_eventBus`, yet their statics are perfectly readable.
+pub fn static_field(
+    process: &Process,
+    module: &Module,
+    image_name: &str,
+    class_name: &str,
+    field: &str,
+) -> Option<Address> {
+    let image: Image = module.get_image(process, image_name)?;
+    let class = image.get_class(process, module, class_name)?;
+    let table = class.get_static_table(process, module)?;
+    let offset = class.get_field_offset(process, module, field)?;
+    Some(table.add(offset as u64))
+}
+
 /// Length of a .NET string, or `None` if the reference is null.
 ///
 /// `MonoString` is a 16-byte object header, then an `i32` length, then UTF-16

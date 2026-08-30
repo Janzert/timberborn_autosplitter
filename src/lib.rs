@@ -526,15 +526,16 @@ impl RunStart {
         let offset = class.field(process, module, "_initializationState")?;
         let instance = class.find_one(process).await.first?;
 
-        // Static, so no instance is needed and it can be read at any time.
-        let source_file_name = service::Locatable::new(
+        // Static, so no instance and no validator are needed. WorldDataService
+        // is not a DI service and has no _eventBus, so Locatable cannot be
+        // built for it -- which is what broke the first attempt at this.
+        let source_file_name = service::static_field(
             process,
             module,
             "Timberborn.ErrorReporting",
             "WorldDataService",
-            event_bus_vtable,
-        )
-        .and_then(|c| c.static_field(process, module, "SourceFileName"));
+            "SourceFileName",
+        );
         if source_file_name.is_none() {
             asr::print_message(
                 "WARNING: cannot read SourceFileName, so a loaded save cannot be \
