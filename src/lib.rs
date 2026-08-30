@@ -34,6 +34,11 @@ async fn main() {
     loop {
         let process = attach().await;
         process.until_closes(spike(&process)).await;
+        // A process on its way out can still be attachable for a while. Without
+        // this the loop re-attaches to it once per tick.
+        for _ in 0..RESCAN_DELAY_TICKS {
+            next_tick().await;
+        }
     }
 }
 
@@ -119,12 +124,11 @@ async fn spike(process: &Process) {
         ));
 
         let Some(&instance) = scan.found.first() else {
-            // Only a trustworthy negative if everything was actually readable.
-            asr::print_message(if s.bytes_unreadable == 0 {
+            asr::print_message(if scan.is_conclusive() {
                 "No instance -- no game loaded. Waiting."
             } else {
-                "No instance, but some memory was unreadable, so this negative \
-                 is not conclusive. Waiting."
+                "No instance, but the scan was incomplete, so this negative is \
+                 not conclusive. Waiting."
             });
             for _ in 0..RESCAN_DELAY_TICKS {
                 next_tick().await;

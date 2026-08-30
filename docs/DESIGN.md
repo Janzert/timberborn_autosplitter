@@ -127,10 +127,22 @@ from a component-array walk to one string read per building.
 
 ### Run start
 
-There is no `NewGameInitializedEvent` equivalent to observe from outside. The
-plan is to combine:
+There is no `NewGameInitializedEvent` equivalent to observe from outside.
 
-- `DayNightCycle` instance identity changing on scene load, plus `DayNumber == 1`, and
+**Measured caveat: the presence of a service instance is not a reliable "in a
+game" signal.** After exiting to the main menu, the `DayNightCycle` instance was
+still found at the same address ~20 seconds later, still reading the last
+in-game `DayNumber`. It is either uncollected or deliberately retained; either
+way a splitter watching for the object to disappear would think a run was still
+in progress. Absence is meaningful at process start — the class has no vtable
+until it is first instantiated, confirmed by a 41 second wait on the main menu —
+but not after a game has been loaded once.
+
+So run start needs an authoritative signal rather than an inferred one. The plan
+is to combine:
+
+- `DayNightCycle` instance identity changing on scene load, plus `DayNumber == 1`
+  — necessary but, per the above, not sufficient on its own, and
 - `Timberborn.ErrorReporting.WorldDataService.SourceFileName` — a **static**
   holding the save file being loaded, empty on a new game. This is reachable
   with no scanning at all and gives us new-game vs. loaded-save discrimination
@@ -289,14 +301,19 @@ turned up three things worth keeping written down:
   `domain_vtables[0]` lazily, so `Class::get_vtable` returns `None` in the main
   menu and during load. That is not a failure, it is "not yet" — and it doubles
   as a cheap signal that a game has actually been loaded.
-- **A failed bulk read must not be silently skipped.** A 64 KiB read spanning a
-  single unmapped page fails as a whole. Dropping the window skipped ~204 MiB in
-  one measured scan and produced a false "no instance found" for an object that
-  was located one second later. Failed chunks are now retried page by page, and
-  `Stats::bytes_unreadable` records what still could not be read — **a scan that
-  finds nothing is only trustworthy when that is 0.**
+- **Memory goes transiently unreadable during a scene teardown.** A scan taken
+  just after exiting to the menu could not read ~193 MiB, found nothing, and the
+  object turned up one second later in a clean scan. Retrying failed chunks page
+  by page recovered only ~7 MiB of that, so this is whole regions being remapped,
+  not isolated guard pages. The page-level retry is kept because it is cheap, but
+  the thing that matters is `Scan::is_conclusive()`: **an empty result only means
+  "absent" if the scan read everything it set out to read.** A dying process
+  reports no ranges at all, which is why zero bytes scanned counts as
+  inconclusive too, not as a clean negative.
 - **Nothing may return into a bare retry loop.** Bailing out on a transient
   condition and immediately re-attaching produced 6,098 log lines in 33 seconds.
+  A process on its way out stays attachable for several seconds after it starts
+  exiting, so the outer attach loop needs a delay as well.
 
 The address space also grows substantially during load — 1.2 GiB mid-load versus
 3.5 GiB in game — so scan cost depends on when it runs.

@@ -145,6 +145,16 @@ impl Scan {
         }
     }
 
+    /// Whether an empty result actually means "not present".
+    ///
+    /// A scan proves absence only if it read everything it set out to read.
+    /// Memory can be transiently unreadable -- measured at ~193 MiB during a
+    /// scene teardown under Proton -- and a dying process reports no ranges at
+    /// all, which would otherwise look like a clean negative.
+    pub fn is_conclusive(&self) -> bool {
+        self.stats.bytes_total > 0 && self.stats.bytes_unreadable == 0
+    }
+
     /// Check each match, sorting them into `found` and `rejected`.
     pub fn validating(mut self, validator: Validator) -> Self {
         self.validator = Some(validator);
