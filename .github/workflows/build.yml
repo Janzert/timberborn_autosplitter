@@ -20,7 +20,7 @@ jobs:
     steps:
       # The auto splitter builds against a fork of asr carried as a submodule,
       # so a shallow checkout without it cannot compile.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -40,7 +40,7 @@ jobs:
       - name: Checksum
         run: sha256sum target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: timberborn_autosplitter
           path: target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm
