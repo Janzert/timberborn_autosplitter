@@ -140,3 +140,83 @@ impl HashSet {
         false
     }
 }
+
+/// A `List<T>` of references.
+pub struct List {
+    pub items: Address,
+    pub size: i32,
+}
+
+impl List {
+    pub fn read(process: &Process, module: &Module, address: Address) -> Option<Self> {
+        let class = Class::of_object(process, module, address)?;
+        let items_field = class.get_field_offset(process, module, "_items")?;
+        let size_field = class.get_field_offset(process, module, "_size")?;
+        let items = read_pointer(process, address.add(items_field as u64))?;
+        let size = process.read::<i32>(address.add(size_field as u64)).ok()?;
+        let capacity = process.read::<i64>(items.add(ARRAY_LENGTH)).ok()?;
+        if size < 0 || size as i64 > capacity {
+            return None;
+        }
+        Some(Self { items, size })
+    }
+
+    /// Offset of `_size`, so it can be re-read cheaply without resolving the
+    /// class again.
+    pub fn size_offset(process: &Process, module: &Module, address: Address) -> Option<u32> {
+        Class::of_object(process, module, address)?.get_field_offset(process, module, "_size")
+    }
+
+    pub fn get(&self, process: &Process, index: i32) -> Option<Address> {
+        if index < 0 || index >= self.size {
+            return None;
+        }
+        read_pointer(process, self.items.add(ARRAY_DATA + index as u64 * 8))
+    }
+}
+
+/// The values of a `Dictionary<K, V>` where both `K` and `V` are references.
+///
+/// `Entry` is `{ int hashCode; int next; K key; V value; }`. With both type
+/// arguments references on 64-bit that is 24 bytes with the value at +16 --
+/// a consequence of the declared fields and alignment, not a layout that can
+/// drift on its own. Entries are read defensively, so a stale or free slot
+/// yields an unreadable pointer that is skipped rather than trusted.
+pub fn dictionary_values(
+    process: &Process,
+    module: &Module,
+    address: Address,
+    max: usize,
+) -> Option<alloc::vec::Vec<Address>> {
+    const ENTRY_SIZE: u64 = 24;
+    const ENTRY_VALUE: u64 = 16;
+
+    let class = Class::of_object(process, module, address)?;
+    let entries_field = class.get_field_offset(process, module, "_entries")?;
+    let count_field = class.get_field_offset(process, module, "_count")?;
+
+    let entries = read_pointer(process, address.add(entries_field as u64))?;
+    let count = process.read::<i32>(address.add(count_field as u64)).ok()?;
+    let capacity = process.read::<i64>(entries.add(ARRAY_LENGTH)).ok()?;
+    if count < 0 || count as i64 > capacity {
+        return None;
+    }
+
+    let mut values = alloc::vec::Vec::new();
+    for i in 0..(count as u64).min(max as u64) {
+        if let Some(value) =
+            read_pointer(process, entries.add(ARRAY_DATA + i * ENTRY_SIZE + ENTRY_VALUE))
+        {
+            values.push(value);
+        }
+    }
+    Some(values)
+}
+
+fn read_pointer(process: &Process, at: Address) -> Option<Address> {
+    process
+        .read::<u64>(at)
+        .ok()
+        .map(Address::new)
+        .filter(|a| !a.is_null())
+}

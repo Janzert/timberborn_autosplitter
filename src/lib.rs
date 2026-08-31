@@ -97,6 +97,10 @@ const PROCESS_GONE_DELAY_TICKS: u32 = 600;
 /// How often to retry resolving the wonder completion service, in ticks (~1s).
 const WONDER_RESOLVE_TICKS: u32 = 120;
 
+/// How often to re-enumerate the per-type component lists, in ticks (~2s). New
+/// component types appear as a run goes on.
+const BUILDING_LIST_REFRESH_TICKS: u32 = 240;
+
 /// How often to retry resolving GameInitializer, in ticks (~2s). Each attempt
 /// costs a scan, and the settlement-name dialog is up for far longer than this,
 /// so there is ample time to resolve before the state can move off Waiting.
@@ -357,7 +361,7 @@ async fn watch(
         }
 
         if let Some(b) = &mut buildings {
-            for label in b.poll(process).await {
+            for label in b.poll(process, module, ticks) {
                 let enabled = match label {
                     "Forester" => settings.forester,
                     "Gear Workshop" => settings.gear_workshop,
@@ -450,32 +454,40 @@ const WOOD_WORKSHOP: &[&str] = &["WoodWorkshop.Folktails", "WoodWorkshop.IronTee
 
 /// Finished buildings, by template name.
 ///
-/// `BlockObjectState` carries `_state` and inherits `_componentCache`, whose
-/// `_name` is the template name -- suffixed with `.EntityComponent` on a live
-/// entity. So a finished building is a scan plus two derefs, with no component
-/// walk.
+/// Read from the authoritative source: each district's finished-building
+/// registry holds a `Dictionary<Type, List<IRegisteredComponent>>`, and those
+/// lists *are* the finished buildings. Each element is a component, so
+/// `_componentCache` -> `_name` gives its template name -- suffixed with
+/// `.EntityComponent` on a live entity.
 ///
-/// Scanning is expensive, so it only happens when a district's finished-building
-/// registry changes size. That count is one read per tick; a building finishing
-/// is a handful of events per run.
+/// Nothing is scanned once the registries are located. The per-tick cost is one
+/// read per list to check its length; a full walk happens only when a length
+/// changes, which is exactly when a building finished.
 struct Buildings {
-    class: service::Locatable,
-    state_offset: u32,
+    /// Every district's list of finished buildings, with the offset of `_size`
+    /// so its length can be re-read without resolving the class again.
+    lists: Vec<(Address, u32)>,
+    /// The dictionaries the lists came from, re-enumerated periodically to pick
+    /// up component types that appear later in a run.
+    dictionaries: Vec<Address>,
     cache_offset: u32,
     name_offset: u32,
-    /// `_count` on each district's finished-building collection.
-    counters: Vec<(Address, u32)>,
     last_total: Option<i64>,
-    /// Which templates have been seen finished, including on arrival.
     finished: Vec<bool>,
-    /// Seen when we attached, so a loaded save does not split.
     on_arrival: Vec<bool>,
 }
 
-/// `BlockObjectState.State.Finished`.
-const STATE_FINISHED: i32 = 1;
-
 impl Buildings {
+    /// Four single-building splits, plus smelter and wood workshop tracked
+    /// separately for the combined one.
+    const TRACKED: usize = 6;
+    const SMELTER_INDEX: usize = 4;
+    const WOOD_WORKSHOP_INDEX: usize = 5;
+
+    /// Guards against walking a pathological registry.
+    const MAX_TYPES: usize = 256;
+    const MAX_BUILDINGS: i32 = 8192;
+
     /// `explain` makes the first attempt say why it failed. Later attempts stay
     /// quiet, since "not constructed yet" is normal during a load.
     async fn resolve(
@@ -501,20 +513,18 @@ impl Buildings {
             };
         }
 
-        let class = need!(
+        // Every finished building is a component, so the cache offset comes
+        // from BaseComponent rather than from any particular component type.
+        let cache_offset = need!(
             service::Locatable::new(
                 process,
                 module,
                 "Timberborn.BlockSystem",
                 "BlockObjectState",
                 event_bus_vtable,
-            ),
-            "BlockObjectState"
-        );
-        let state_offset = need!(class.field(process, module, "_state"), "BlockObjectState._state");
-        let cache_offset = need!(
-            class.field(process, module, "_componentCache"),
-            "BlockObjectState._componentCache"
+            )
+            .and_then(|c| c.field(process, module, "_componentCache")),
+            "BaseComponent._componentCache"
         );
 
         let cache_service = need!(
@@ -539,52 +549,45 @@ impl Buildings {
             "ComponentCache._name"
         );
 
-        let counters = Self::find_counters(process, module, explain).await;
-        if counters.is_empty() {
+        let dictionaries = Self::find_dictionaries(process, module, explain).await;
+        if dictionaries.is_empty() {
             if explain {
-                asr::print_message(
-                    "buildings: no district finished-building registries found.",
-                );
+                asr::print_message("buildings: no district finished-building registries found.");
             }
             return None;
         }
 
         let mut buildings = Self {
-            class,
-            state_offset,
+            lists: Vec::new(),
+            dictionaries,
             cache_offset,
             name_offset,
-            counters,
             last_total: None,
             finished: alloc::vec![false; Self::TRACKED],
             on_arrival: alloc::vec![false; Self::TRACKED],
         };
 
-        buildings.rescan(process).await;
+        buildings.refresh_lists(process, module);
+        buildings.walk(process, module);
         buildings.on_arrival = buildings.finished.clone();
         asr::print_message(&format!(
-            "Watching buildings across {} district registries. Already finished \
-             in this save: {}.",
-            buildings.counters.len(),
+            "Watching buildings across {} district registries ({} component \
+             lists). Already finished in this save: {}.",
+            buildings.dictionaries.len(),
+            buildings.lists.len(),
             buildings.describe_finished(),
         ));
         Some(buildings)
     }
 
-    /// Four single-building splits, plus smelter and wood workshop tracked
-    /// separately for the combined one.
-    const TRACKED: usize = 6;
-    const SMELTER_INDEX: usize = 4;
-    const WOOD_WORKSHOP_INDEX: usize = 5;
-
-    /// The `_count` of every district's finished-building collection. Watching
-    /// these is what makes a rescan rare.
-    async fn find_counters(
+    /// The `Dictionary<Type, List<IRegisteredComponent>>` behind each district's
+    /// finished buildings. This is the only part that scans.
+    async fn find_dictionaries(
         process: &Process,
         module: &Module,
         explain: bool,
-    ) -> Vec<(Address, u32)> {
-        let mut counters = Vec::new();
+    ) -> Vec<Address> {
+        let mut found = Vec::new();
 
         // DistrictBuildingRegistry has no _eventBus -- it is not a DI service --
         // so it is validated through the factory it holds instead.
@@ -597,7 +600,7 @@ impl Buildings {
             if explain {
                 asr::print_message("buildings: EntityComponentRegistryFactory not constructed.");
             }
-            return counters;
+            return found;
         };
 
         let Some(registry) = service::Locatable::with_validator(
@@ -611,69 +614,88 @@ impl Buildings {
             if explain {
                 asr::print_message("buildings: DistrictBuildingRegistry not resolvable.");
             }
-            return counters;
+            return found;
         };
         let Some(finished_field) = registry.field(process, module, "_finishedBuildings") else {
-            return counters;
+            return found;
         };
 
-        // One registry per district; a run has few, but not necessarily one.
         for instance in registry.find_upto(process, 16).await {
             let Some(entity_registry) = read_pointer(process, instance, finished_field) else {
                 continue;
             };
-            let Some(components) = service::field_of(
-                process,
-                module,
-                entity_registry,
-                "_registeredComponents",
-            )
-            .and_then(|offset| read_pointer(process, entity_registry, offset)) else {
-                continue;
-            };
-            if let Some(offset) = collections::count_offset(process, module, components) {
-                counters.push((components, offset));
+            if let Some(components) =
+                service::field_of(process, module, entity_registry, "_registeredComponents")
+                    .and_then(|offset| read_pointer(process, entity_registry, offset))
+            {
+                found.push(components);
             }
         }
-        counters
+        found
     }
 
-    fn total(&self, process: &Process) -> Option<i64> {
-        let mut total = 0i64;
-        for &(address, offset) in &self.counters {
-            total += process.read::<i32>(address.add(offset as u64)).ok()? as i64;
-        }
-        Some(total)
-    }
-
-    /// Walks every BlockObjectState and records which tracked templates are
-    /// finished. Expensive, so only called when a count changed.
-    async fn rescan(&mut self, process: &Process) {
-        let instances = self.class.find_upto(process, 8192).await;
-        for instance in instances {
-            let finished = process
-                .read::<i32>(instance.add(self.state_offset as u64))
-                .is_ok_and(|state| state == STATE_FINISHED);
-            if !finished {
-                continue;
-            }
-            let Some(cache) = read_pointer(process, instance, self.cache_offset) else {
+    /// Re-enumerates the per-type lists. Component types appear as a run goes
+    /// on, so this is repeated rather than done once.
+    fn refresh_lists(&mut self, process: &Process, module: &Module) {
+        let mut lists = Vec::new();
+        for &dictionary in &self.dictionaries {
+            let Some(values) =
+                collections::dictionary_values(process, module, dictionary, Self::MAX_TYPES)
+            else {
                 continue;
             };
-            let name = cache.add(self.name_offset as u64);
-            let Some(name) = read_pointer_raw(process, name) else {
-                continue;
-            };
-
-            for (index, templates) in Self::all_templates().enumerate() {
-                if self.finished[index] {
-                    continue;
+            for list in values {
+                if let Some(offset) = collections::List::size_offset(process, module, list) {
+                    lists.push((list, offset));
                 }
-                if templates
-                    .iter()
-                    .any(|t| collections::string_starts_with_segment(process, name, t))
-                {
-                    self.finished[index] = true;
+            }
+        }
+        if !lists.is_empty() {
+            self.lists = lists;
+        }
+    }
+
+    /// One read per list. This is the per-tick cost, and it moves the moment a
+    /// building finishes -- unlike the dictionary's own count, which only
+    /// changes when a new component *type* first appears.
+    fn total(&self, process: &Process) -> i64 {
+        self.lists
+            .iter()
+            .filter_map(|&(list, offset)| process.read::<i32>(list.add(offset as u64)).ok())
+            .map(i64::from)
+            .sum()
+    }
+
+    /// Walks every finished building and records which tracked templates are
+    /// present.
+    fn walk(&mut self, process: &Process, module: &Module) {
+        let mut budget = Self::MAX_BUILDINGS;
+        for index in 0..self.lists.len() {
+            let (address, _) = self.lists[index];
+            let Some(list) = collections::List::read(process, module, address) else {
+                continue;
+            };
+            for i in 0..list.size.min(budget) {
+                budget -= 1;
+                let Some(component) = list.get(process, i) else {
+                    continue;
+                };
+                let Some(cache) = read_pointer(process, component, self.cache_offset) else {
+                    continue;
+                };
+                let Some(name) = read_pointer(process, cache, self.name_offset) else {
+                    continue;
+                };
+                for (slot, templates) in Self::all_templates().enumerate() {
+                    if self.finished[slot] {
+                        continue;
+                    }
+                    if templates
+                        .iter()
+                        .any(|t| collections::string_starts_with_segment(process, name, t))
+                    {
+                        self.finished[slot] = true;
+                    }
                 }
             }
         }
@@ -707,25 +729,26 @@ impl Buildings {
     }
 
     fn still_valid(&self, process: &Process) -> bool {
-        self.counters
+        self.lists
             .first()
-            .is_some_and(|&(address, offset)| {
-                process.read::<i32>(address.add(offset as u64)).is_ok()
-            })
+            .is_some_and(|&(list, offset)| process.read::<i32>(list.add(offset as u64)).is_ok())
     }
 
-    /// One read per district per tick. Returns the labels that just completed.
-    async fn poll(&mut self, process: &Process) -> Vec<&'static str> {
-        let Some(total) = self.total(process) else {
-            return Vec::new();
-        };
+    /// Returns the labels that just completed.
+    fn poll(&mut self, process: &Process, module: &Module, ticks: u32) -> Vec<&'static str> {
+        // Pick up lists for component types that did not exist earlier.
+        if ticks.is_multiple_of(BUILDING_LIST_REFRESH_TICKS) {
+            self.refresh_lists(process, module);
+        }
+
+        let total = self.total(process);
         if self.last_total == Some(total) {
             return Vec::new();
         }
         self.last_total = Some(total);
 
         let before = self.finished.clone();
-        self.rescan(process).await;
+        self.walk(process, module);
 
         let mut fired = Vec::new();
         for (index, split) in BUILDING_SPLITS.iter().enumerate() {
@@ -734,7 +757,6 @@ impl Buildings {
             }
         }
 
-        // Both halves, in either order: fires when the second one lands.
         let both = self.finished[Self::SMELTER_INDEX] && self.finished[Self::WOOD_WORKSHOP_INDEX];
         let both_before = before[Self::SMELTER_INDEX] && before[Self::WOOD_WORKSHOP_INDEX];
         let both_on_arrival =

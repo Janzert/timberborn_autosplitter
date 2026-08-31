@@ -146,6 +146,26 @@ which settles how much machinery each split needs:
   `EntityComponentRegistry` holding a `Dictionary<Type, List<IRegisteredComponent>>` —
   is no longer needed, and with it the need for a `Dictionary` reader.
 
+### Watch a count that moves when the thing you care about happens
+
+The building splits fired in batches: Forester and Gear Workshop together, then
+Tapper's Shack, Observatory and Smelter + Wood Workshop all at once when the
+wonder finished — buildings that had completed minutes earlier.
+
+The trigger was `_registeredComponents._count` on the finished-building
+registry. That dictionary is `Dictionary<Type, List<IRegisteredComponent>>`, so
+its count is the number of component **types**, not of buildings. It only moves
+when a type is registered for the first time, and the rescan it triggered then
+discovered every target finished since.
+
+The fix reads the authoritative source instead. Those lists *are* the finished
+buildings, so walking them needs no scan at all, and the per-tick cost is one
+read per list to check its length — a number that moves exactly when a building
+finishes. A full walk happens only then.
+
+The lists are re-enumerated every couple of seconds, because new component types
+appear as a run goes on and each brings a new list.
+
 ### A class can only be located through a field it has
 
 `Locatable` validates a scan hit by dereferencing a field and checking what it
