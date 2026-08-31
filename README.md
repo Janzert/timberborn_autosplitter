@@ -61,13 +61,23 @@ Point LiveSplit's Auto Splitting Runtime component at it, or use
 |---|---|
 | `src/` | the auto splitter |
 | `vendor/asr` | submodule; see [docs/ASR_FORK.md](docs/ASR_FORK.md) |
-| `devtools/` | **development only** — never shipped, never run during a run |
+| `devtools/` | offline development tooling — never shipped, never runs against the game |
 
 ## devtools
 
-`devtools/` holds a Timberborn mod used as a *test oracle* when adding support
-for a new game version: it dumps ground-truth pointers, field offsets and a
-golden trace of a run, which the splitter's own results are diffed against.
+`devtools/metadata.py` reads .NET metadata straight out of the game's
+assemblies — no mod, no running game, no mono or ilspy, just the ECMA-335
+tables parsed directly.
 
-It is a build-time tool. It is never distributed to runners and must never be
-loaded during a run.
+```bash
+./devtools/metadata.py check ~/.steam/steam/steamapps/common/Timberborn/Timberborn_Data/Managed
+```
+
+That checks every class and field name `src/probe.rs` depends on against an
+install, which is the offline half of the version check — the fast answer to
+"did an update rename something", with the game closed. `dump <assembly.dll>`
+lists every class and field in an assembly, which is how the split sources in
+[docs/DESIGN.md](docs/DESIGN.md) were found.
+
+Nothing here is distributed to runners or touches a running game. See
+[devtools/README.md](devtools/README.md).

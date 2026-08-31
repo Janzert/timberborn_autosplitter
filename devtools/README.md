@@ -1,6 +1,7 @@
 # devtools — development only
 
-**Nothing in this directory is ever shipped to runners or loaded during a run.**
+**Nothing in this directory is ever shipped to runners, and nothing here
+touches a running game.**
 speedrun.com does not allow mods to be running for a submitted run, and the
 whole point of this auto splitter is that it needs none.
 
@@ -24,18 +25,9 @@ change rather than a typo in the probe.
 which is how the split sources in `docs/DESIGN.md` were found in the first
 place.
 
-## The oracle mod
+## Why there is nothing else here
 
-Not implemented, and its remit is narrower than first planned.
-
-Field offsets were originally going to come from a mod. They do not need to:
-`src/probe.rs` resolves them from outside by name, and `metadata.py` gets the
-names with the game closed. A mod is only worth building for what genuinely
-cannot be seen from outside:
-
-- ground-truth pointer addresses for each service, to confirm the heap scan
-  found the right object rather than a plausible-looking wrong one
-- a timestamped golden trace of a real run, to replay against the splitter
-  offline instead of re-running the game for every change
-
-Neither is blocking, which is why it does not exist yet.
+Field offsets were once going to come from a purpose-built mod. They do not
+need to: `metadata.py` reads the names with the game closed, and
+`src/probe.rs` resolves them against the live process from outside. Between
+them there is nothing left for a mod to tell us, so none was written.
