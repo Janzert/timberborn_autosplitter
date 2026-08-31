@@ -23,7 +23,7 @@ and every split condition on Iron Teeth:
 | Tapper's Shack | a Tapper's Shack is built |
 | Observatory / Numbercruncher | the faction's advanced science building is built (Observatory for Folktails, Numbercruncher for Iron Teeth) |
 | Smelter + Wood Workshop | both are built, in either order |
-| Wonder Research | the faction's wonder research is completed |
+| Wonder Unlocked | the faction's wonder is unlocked in the science tree |
 | Congratulations screen *(run end)* | the Congratulations screen appears |
 
 Both factions are covered: where they build different things — the advanced

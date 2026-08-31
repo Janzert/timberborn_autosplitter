@@ -132,7 +132,7 @@ All paths below were verified to exist in the shipped assemblies.
 |---|---|---|
 | Run start | `GameInitializer._initializationState` reaching `ShowUI`, gated on `WorldDataService.SourceFileName` being empty | enum, `string` (static) |
 | Buildings finished | `EntityService._entityRegistry` → `EntityRegistry._entitiesInInstantiationOrder`, each entity's `_componentCache` → `ComponentCache._name`, and its `BlockObjectState._state` | `List<EntityComponent>`, `string`, `State` enum |
-| Wonder research completed | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
+| Wonder unlocked | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
 | Wonder activated *(logged, not split)* | `WonderCompletionCountdownStarter._unlockDay` | `int` |
 | Run end | `WonderCompletionCountdownStarter.CountdownFinished` | `bool` |
 | Day | `DayNightCycle.DayNumber` | `int` |
@@ -140,9 +140,12 @@ All paths below were verified to exist in the shipped assemblies.
 Field types were read out of the assemblies offline (`devtools/metadata.py`),
 which settled how much machinery each split needs:
 
-- **Research is a string membership test**, not an object graph walk —
+- **The unlock is a string membership test**, not an object graph walk —
   `_unlockedBuildings` holds template names directly. It needs a
-  `HashSet<string>` reader and nothing else.
+  `HashSet<string>` reader and nothing else. Timberborn has no research that
+  runs over time: science is banked, and clicking a building in the science
+  tree unlocks it instantly, so the set gains a name the moment the player
+  spends. There is no progress to watch, only an event.
 - **`ComponentCache._name` holds the template name outright** — sampled from a
   live game it reads `"WoodWorkshop.Folktails"`, `"TappersShack.Folktails"`,
   and `"BlueberryBush.<guid>"` for natural entities. That removes the
@@ -247,7 +250,7 @@ buildings are found as already finished on arrival, Numbercruncher included, and
 nothing splits. On a fresh Iron Teeth game, every condition fired once, in
 order, on the day it happened rather than in a batch at the end: Forester (day
 2), Numbercruncher and Gear Workshop (day 4), Tapper's Shack (day 5), Smelter +
-Wood Workshop and the research unlock (day 8), then the wonder activating on day
+Wood Workshop and the wonder unlock (day 8), then the wonder activating on day
 11 -- logged as *not* the run end, with completion predicted for day 11.372 --
 and the Congratulations screen firing separately when it arrived.
 
@@ -296,7 +299,7 @@ settle one: `Timberborn_Data/StreamingAssets/Modding/Blueprints.zip` holds a
 Guessing costs test runs. `TributeToIngenuity.IronTeeth` reads like a wonder and
 is not one — it is a monument, alongside `FarmerMonument.Folktails` and
 `LaborerMonument.IronTeeth` — and assuming it was cost an Iron Teeth run during
-which the research split simply never fired. The confirming evidence for the
+which the unlock split simply never fired. The confirming evidence for the
 real pair is the localisation keys `Buildings.Wonder.EarthRecultivator` and
 `Buildings.Wonder.EarthRepopulator`.
 

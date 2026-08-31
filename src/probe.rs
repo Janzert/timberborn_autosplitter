@@ -44,7 +44,7 @@ const SUBJECTS: &[Subject] = &[
         image: "Timberborn.ScienceSystem",
         class: "BuildingUnlockingService",
         fields: &["_unlockedBuildings", "_eventBus"],
-        used_for: "split: research Earth Recultivator",
+        used_for: "split: the wonder unlocked with science",
     },
     Subject {
         image: "Timberborn.GameWonderCompletion",

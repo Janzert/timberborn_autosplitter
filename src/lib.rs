@@ -53,9 +53,9 @@ struct Settings {
     #[default = true]
     smelter_woodworkshop: bool,
 
-    /// Split when the faction's wonder research is completed
+    /// Split when the wonder is unlocked with science
     #[default = true]
-    research_wonder: bool,
+    unlock_wonder: bool,
 
     /// Split when the Congratulations screen appears
     ///
@@ -289,7 +289,7 @@ async fn watch(
     let mut ticks = 0u32;
     let mut last_day = None;
     let mut completion: Option<WonderCompletion> = None;
-    let mut research: Option<Research> = None;
+    let mut unlock: Option<WonderUnlock> = None;
     let mut buildings: Option<Buildings> = None;
     let mut explained_buildings = false;
     let mut ended = false;
@@ -339,8 +339,8 @@ async fn watch(
             if completion.is_none() {
                 completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
             }
-            if research.is_none() {
-                research = Research::resolve(process, module, event_bus_vtable).await;
+            if unlock.is_none() {
+                unlock = WonderUnlock::resolve(process, module, event_bus_vtable).await;
             }
             if buildings.is_none() {
                 buildings =
@@ -354,8 +354,8 @@ async fn watch(
         // clock still validating does not mean these do. Reading through a
         // torn-down object produced a denormal float in one log, and the same
         // read on CountdownFinished could fire a spurious run end.
-        if research.as_ref().is_some_and(|r| !r.still_valid(process)) {
-            research = None;
+        if unlock.as_ref().is_some_and(|u| !u.still_valid(process)) {
+            unlock = None;
         }
         if completion.as_ref().is_some_and(|c| !c.still_valid(process)) {
             completion = None;
@@ -382,13 +382,13 @@ async fn watch(
             }
         }
 
-        if let Some(r) = &mut research {
-            if r.poll(process, module) {
-                if settings.research_wonder && timer::state() == TimerState::Running {
-                    asr::print_message("Split: wonder research completed.");
+        if let Some(u) = &mut unlock {
+            if u.poll(process, module) {
+                if settings.unlock_wonder && timer::state() == TimerState::Running {
+                    asr::print_message("Split: wonder unlocked.");
                     timer::split();
                 } else {
-                    asr::print_message("Wonder research completed, but not splitting.");
+                    asr::print_message("Wonder unlocked, but not splitting.");
                 }
             }
         }
@@ -399,13 +399,13 @@ async fn watch(
             c.report_activation(process);
             if !ended && c.finished(process) {
                 ended = true;
-                // A wrong template name shows up as the research split never
+                // A wrong template name shows up as the unlock split never
                 // firing, which is otherwise silent. Reaching the end of a run
                 // without it is the symptom, so say so.
-                if research.as_ref().is_some_and(|r| !r.ever_matched()) {
+                if unlock.as_ref().is_some_and(|u| !u.ever_matched()) {
                     asr::print_message(
-                        "WARNING: the run ended but the wonder was never seen as \
-                         researched. The template name for this faction is \
+                        "WARNING: the run ended but the wonder was never seen \
+                         unlocked. The template name for this faction is \
                          probably wrong.",
                     );
                 }
@@ -892,27 +892,31 @@ fn read_pointer_raw(process: &Process, at: Address) -> Option<Address> {
         .filter(|a| !a.is_null())
 }
 
-/// The research split: the faction's wonder research completing, which is the
-/// moment the wonder becomes buildable.
+/// The unlock split: the player spending science on the wonder.
+///
+/// Timberborn has no research that runs over time. Science is produced by
+/// buildings and banked, and a building is unlocked by clicking it in the
+/// science tree, which succeeds instantly if enough is banked. So this is an
+/// event, not a progress bar, and it is the click that the split fires on.
 ///
 /// `BuildingUnlockingService._unlockedBuildings` is a `HashSet<string>` of
 /// template names, so this is a membership test rather than an object walk.
 ///
 /// Both factions are covered. The ASL script this replaces only recognised the
 /// Folktails wonder.
-struct Research {
+struct WonderUnlock {
     class: service::Locatable,
     instance: Address,
     set: Address,
     count_offset: u32,
     last_count: Option<i32>,
     /// Whether the wonder was already unlocked when we arrived. A loaded save
-    /// has its research done, and that must not read as researching it now.
+    /// may have it unlocked already, and that must not read as a fresh unlock.
     unlocked_on_arrival: bool,
     fired: bool,
 }
 
-impl Research {
+impl WonderUnlock {
     /// Whether the wonder was ever seen in the unlocked set, however it got
     /// there. False at the end of a run means the template name is wrong.
     fn ever_matched(&self) -> bool {
@@ -929,7 +933,7 @@ impl Research {
 /// sounding Tribute to Ingenuity, which is a monument.
 const WONDER_TEMPLATES: &[&str] = &["EarthRecultivator.Folktails", "EarthRepopulator.IronTeeth"];
 
-impl Research {
+impl WonderUnlock {
     async fn resolve(
         process: &Process,
         module: &Module,
@@ -953,8 +957,8 @@ impl Research {
 
         let unlocked_on_arrival = Self::wonder_unlocked(process, module, set);
         asr::print_message(&format!(
-            "Watching research at {set}. Wonder already unlocked in this save: \
-             {unlocked_on_arrival}."
+            "Watching building unlocks at {set}. Wonder already unlocked in \
+             this save: {unlocked_on_arrival}."
         ));
 
         Some(Self {
