@@ -12,10 +12,8 @@ from the game's memory, so it works on a stock, unmodified game.
 ## Status
 
 All seven splits defined by MHVandborg's splitter work, new game start to the
-"Congratulations!" screen. Verified end to end on both factions: a complete
-Folktails run, and every split condition on Iron Teeth — the buildings in build
-order, the research unlock, and the wonder activating and then completing as two
-separate events:
+"Congratulations!" screen. Verified on both factions: a complete Folktails run,
+and every split condition on Iron Teeth :
 
 | Split | Fires when |
 |---|---|
@@ -28,34 +26,13 @@ separate events:
 | Wonder Research | the faction's wonder research is completed |
 | Congratulations screen *(run end)* | the Congratulations screen appears |
 
-Buildings are found through the global entity registry rather than through the
-districts' own finished-building registries, which turned out not to list every
-building — see [docs/DESIGN.md](docs/DESIGN.md). A building is picked up when it
-is placed and its split fires on the tick it finishes.
-
 Both factions are covered: where they build different things — the advanced
 science building and the wonder itself — one split covers both, and only the
-one belonging to the faction being played can fire. Loading a save never splits
-on already completed items: every condition fires only on a change actually
-observed, so a save with the research already done or the buildings already up
-stays quiet.
+one belonging to the faction being played can fire.
 
-Two things worth knowing:
-
-- **The run end is the wonder *completing*, not activating.** Those are about
-  0.5 in-game hours apart — roughly 9.6 seconds of real time at 1x — and the
-  category rules end the run at the Congratulations screen.
-- **Splits fire in whatever order the player achieves them**, which need not
-  match the order in a `.lss` file. In testing, Research came before Smelter +
-  Wood Workshop.
-
-A full run has been verified in classic LiveSplit itself, not just
-[asr-debugger](https://github.com/LiveSplit/asr-debugger): LiveSplit 1.8.29
-running inside Timberborn's own Proton prefix split correctly all the way to the
-Congratulations screen. See [../livesplit/](../livesplit/) for that setup.
-
-Still to do: submitting to the auto splitter index, and testing on Windows —
-development has been on Linux under Proton throughout.
+One LiveSplit limitation worth noting: **Splits fire in whatever order the
+player achieves them**, which need not match the order in a `.lss` file. So an
+out of order split will get attributed to the wrong item.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for how it works and what has been
 measured.
@@ -67,15 +44,16 @@ git clone --recurse-submodules <this repo>
 cargo build --release
 ```
 
-The output is `target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm`.
-Point LiveSplit's Auto Splitting Runtime component at it, or use
-[asr-debugger](https://github.com/LiveSplit/asr-debugger) while developing.
-
-If you cloned without `--recurse-submodules`:
+If you cloned without `--recurse-submodules`, you will need to get the
+submodule with:
 
 ```bash
 git submodule update --init --recursive
 ```
+
+The output is `target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm`.
+Point LiveSplit's Auto Splitting Runtime component at it, or use
+[asr-debugger](https://github.com/LiveSplit/asr-debugger) while developing.
 
 ## Layout
 
