@@ -59,7 +59,10 @@ The Auto Splitting Runtime component ships with LiveSplit itself — this was
 tested against 1.8.29 — so there is nothing else to install, and nothing is
 added to the game.
 
-Your splits file wants the seven splits from the table above, in that order.
+Your splits file wants the seven splits from the table above, ordered to match
+the route you run rather than the order they are listed in. Each one fires when
+you achieve it, so a `.lss` ordered the way you actually play keeps every split
+attributed to the right segment.
 
 On Linux, LiveSplit has to run **inside the game's Proton prefix**: reads of
 another process's memory are served by that prefix's `wineserver`, which only
