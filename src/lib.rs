@@ -20,8 +20,9 @@ use asr::{
     Address, Process,
 };
 
-/// Which splits are enabled. Names and order match the ASL script this
-/// replaces, so existing .lss files stay compatible.
+/// Which splits are enabled. The set and order follow the mod-based splitter
+/// this replaces, except that the advanced science split covers both factions'
+/// buildings and the run end is named for the Congratulations screen.
 #[derive(Gui)]
 struct Settings {
     /// Start the run when the overlay appears after naming the settlement
@@ -40,9 +41,13 @@ struct Settings {
     #[default = true]
     tappers_shack: bool,
 
-    /// Split when the Observatory is finished
+    /// Split when the faction's advanced science building is finished
+    ///
+    /// The Observatory for Folktails, the Numbercruncher for Iron Teeth. The
+    /// two factions are separate categories, so only one can ever fire in a
+    /// given run.
     #[default = true]
-    observatory: bool,
+    advanced_science: bool,
 
     /// Split when both the Smelter and Wood Workshop are finished
     #[default = true]
@@ -52,12 +57,13 @@ struct Settings {
     #[default = true]
     research_wonder: bool,
 
-    /// Split when the wonder completes (the "Congratulations!" screen)
+    /// Split when the Congratulations screen appears
     ///
     /// The category rules end the run here, which is roughly 0.5 in-game hours
-    /// after the wonder is activated -- not at activation itself.
+    /// after the wonder is activated -- not at activation itself. The wonder is
+    /// the prerequisite; this screen is the official end time.
     #[default = true]
-    wonder_completed: bool,
+    congratulations_screen: bool,
 }
 
 asr::async_main!(stable);
@@ -358,7 +364,7 @@ async fn watch(
                     "Forester" => settings.forester,
                     "Gear Workshop" => settings.gear_workshop,
                     "Tapper's Shack" => settings.tappers_shack,
-                    "Observatory" => settings.observatory,
+                    "Observatory / Numbercruncher" => settings.advanced_science,
                     _ => settings.smelter_woodworkshop,
                 };
                 if enabled && timer::state() == TimerState::Running {
@@ -397,12 +403,13 @@ async fn watch(
                          probably wrong.",
                     );
                 }
-                if settings.wonder_completed && timer::state() == TimerState::Running {
-                    asr::print_message("Run end: wonder completed. Splitting.");
+                if settings.congratulations_screen && timer::state() == TimerState::Running {
+                    asr::print_message("Run end: Congratulations screen. Splitting.");
                     timer::split();
                 } else {
                     asr::print_message(
-                        "Wonder completed, but the timer is not running so nothing was split.",
+                        "Congratulations screen reached, but the timer is not \
+                         running so nothing was split.",
                     );
                 }
             }
@@ -419,8 +426,9 @@ struct BuildingSplit {
     templates: &'static [&'static str],
 }
 
-/// Mirrors the ASL script's split set and order. Each entry lists both
-/// factions' template names where both exist.
+/// The split set and order. Each entry lists both factions' template names,
+/// which are the same building under different names where the factions
+/// differ.
 const BUILDING_SPLITS: &[BuildingSplit] = &[
     BuildingSplit {
         label: "Forester",
@@ -434,9 +442,11 @@ const BUILDING_SPLITS: &[BuildingSplit] = &[
         label: "Tapper's Shack",
         templates: &["TappersShack.Folktails", "TappersShack.IronTeeth"],
     },
+    // The two factions' advanced science buildings share one split: they are
+    // separate categories, so only one of these can be built in a given run.
     BuildingSplit {
-        label: "Observatory",
-        templates: &["Observatory.Folktails"],
+        label: "Observatory / Numbercruncher",
+        templates: &["Observatory.Folktails", "Numbercruncher.IronTeeth"],
     },
 ];
 
