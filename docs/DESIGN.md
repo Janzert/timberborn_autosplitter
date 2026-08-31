@@ -9,8 +9,12 @@ ASL script that reads it. It works, and it did the genuinely hard part — worki
 out which in-game events the Wonder category should split on, and proving the
 whole thing was worth having. This project would not exist without it.
 
-We keep that split set exactly, in the same order, so existing `.lss` files stay
-compatible.
+The split set and order follow it closely, with two deliberate departures. The
+advanced science split covers both factions' buildings (Observatory for
+Folktails, Numbercruncher for Iron Teeth) rather than Folktails' alone, and the
+final split is named for the Congratulations screen rather than for launching
+the wonder, because that screen is the run end the rules describe and the
+wonder is only its prerequisite.
 
 The reason for a second implementation is a constraint rather than a
 shortcoming: speedrun.com does not allow mods to be running for a submitted run.
@@ -84,8 +88,10 @@ that simply did not lead to an `EventBus`, so a null check alone would have
 admitted it.
 
 Because validation is reliable, a scan for a singleton stops at the first match
-that survives it. Classes that are legitimately multi-instance —
-`DistrictBuildingRegistry` is per-district — need the full scan instead.
+that survives it. Nothing the splitter reads now needs the multi-instance form:
+the one class that did, `DistrictBuildingRegistry`, is no longer used, and its
+scan is a cautionary tale in its own right — it reliably found four instances,
+two of which were stale leftovers.
 
 The scan runs on attach and on scene change, not per tick. A located instance is
 revalidated each tick, which is two reads and detects a scene change directly
@@ -98,17 +104,25 @@ is replaced, i.e. on a scene change. If Unity ever switched this build to SGen,
 which is a compacting collector, cached pointers would need revalidating against
 the vtable every tick.
 
-### The asr change this needs
+### The asr changes this needs
 
 `mono::Class` keeps its address in a `pub(super)` field, so from outside the
-crate there is no way to get a class identity handle to compare against.
+crate there is no way to get a class identity handle to compare against, and no
+way to go the other way either — from an object found at runtime back to a
+`Class` whose field offsets can be looked up by name.
 
-The fix turned out smaller than expected. asr already computes the vtable
-internally for static table lookups — `class.runtime_info` -> `domain_vtables[0]`
-— so rather than exposing the raw class address, `vendor/asr` adds
-`Class::get_vtable()`, which is exactly the value the scan compares against and
-does not leak offset internals. That is a better upstreaming proposition too;
-see `docs/ASR_FORK.md`.
+`vendor/asr` therefore carries two accessors, both deliberately narrow:
+
+- `Class::get_vtable()` — asr already computes this internally for static table
+  lookups (`class.runtime_info` -> `domain_vtables[0]`), so this exposes the
+  exact value the scan compares against rather than the raw class address.
+- `Class::of_object()` — reads an object's `MonoVTable` -> `MonoClass` and
+  returns it as a `Class`. This is what makes BCL collections resolvable by
+  name: a generic instantiation like `HashSet<string>` cannot be looked up in an
+  image by name, but any instance points at its own class.
+
+Neither leaks offset internals, which makes both better upstreaming
+propositions than a raw address getter. See `docs/ASR_FORK.md`.
 
 ## Split sources
 
@@ -116,55 +130,126 @@ All paths below were verified to exist in the shipped assemblies.
 
 | Split | Path | Type |
 |---|---|---|
-| Wonder activated | instances of `Timberborn.Wonders.Wonder` → `IsActive` | `bool` |
-| Research Earth Recultivator | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
-| Buildings finished | instances of `BlockSystem.BlockObjectState` → `_state`, and `_componentCache` → `ComponentCache._name` | `State` enum, `string` |
-| Population / day | `PopulationService.GlobalPopulationData` → `NumberOfAdults`; `DayNightCycle.DayNumber` | `int` |
+| Run start | `GameInitializer._initializationState` reaching `ShowUI`, gated on `WorldDataService.SourceFileName` being empty | enum, `string` (static) |
+| Buildings finished | `EntityService._entityRegistry` → `EntityRegistry._entitiesInInstantiationOrder`, each entity's `_componentCache` → `ComponentCache._name`, and its `BlockObjectState._state` | `List<EntityComponent>`, `string`, `State` enum |
+| Wonder researchable | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
+| Wonder activated *(logged, not split)* | `WonderCompletionCountdownStarter._unlockDay` | `int` |
+| Run end | `WonderCompletionCountdownStarter.CountdownFinished` | `bool` |
+| Day | `DayNightCycle.DayNumber` | `int` |
 
 Field types were read out of the assemblies offline (`devtools/metadata.py`),
-which settles how much machinery each split needs:
+which settled how much machinery each split needs:
 
-- **Wonder activated needs none.** `IsActive` is a plain `bool`. A wonder is a
-  building rather than a singleton, so all instances are scanned and any active
-  one counts.
 - **Research is a string membership test**, not an object graph walk —
-  `_unlockedBuildings` holds template names directly. It does need a
-  `HashSet<string>` reader.
-- **Buildings finished turned out cheap.** `ComponentCache._name` holds the
-  template name outright — sampled from a live game it reads
-  `"WoodWorkshop.Folktails"`, `"TappersShack.Folktails"`, and
-  `"BlueberryBush.<guid>"` for natural entities. That removes the component-list
-  walk and the `TemplateSpec` lookup entirely.
+  `_unlockedBuildings` holds template names directly. It needs a
+  `HashSet<string>` reader and nothing else.
+- **`ComponentCache._name` holds the template name outright** — sampled from a
+  live game it reads `"WoodWorkshop.Folktails"`, `"TappersShack.Folktails"`,
+  and `"BlueberryBush.<guid>"` for natural entities. That removes the
+  `TemplateSpec` lookup the buildings split would otherwise need. On a live
+  entity the name is suffixed `.EntityComponent`, while prefabs carry the bare
+  template name, so matching is on a `.`-separated prefix — which also stops
+  one template matching a longer one that merely starts the same way.
+- **The run end is a single bool** on a located singleton. See *Category rules*
+  below for why it is not wonder activation.
 
-  Finished state comes from `BlockSystem.BlockObjectState`, which carries
-  `_state` (`Unfinished`, `Finished`, `Preview`) and, being a component,
-  inherits `_componentCache`. It also has an `_eventBus`, so the ordinary
-  validator finds it. A finished building of a given type is therefore one scan
-  plus two derefs.
-
-  The registry route through `DistrictBuildingRegistry._finishedBuildings` —
-  `EntityComponentRegistry` holding a `Dictionary<Type, List<IRegisteredComponent>>` —
-  is no longer needed, and with it the need for a `Dictionary` reader.
+The buildings split reads `BlockObjectState._state` (`Unfinished`, `Finished`,
+`Preview`) directly, but never scans for it: the entity is found first, and the
+state is one of its components. See *Every building, not just the ones a
+district happens to know about* below for why the districts' own
+finished-building registries turned out not to be usable.
 
 ### Watch a count that moves when the thing you care about happens
 
-The building splits fired in batches: Forester and Gear Workshop together, then
-Tapper's Shack, Observatory and Smelter + Wood Workshop all at once when the
-wonder finished — buildings that had completed minutes earlier.
+The building splits once fired in batches: Forester and Gear Workshop together,
+then the remaining three all at once when the wonder finished — buildings that
+had completed minutes earlier.
 
-The trigger was `_registeredComponents._count` on the finished-building
+The trigger was `_registeredComponents._count` on a district's finished-building
 registry. That dictionary is `Dictionary<Type, List<IRegisteredComponent>>`, so
 its count is the number of component **types**, not of buildings. It only moves
 when a type is registered for the first time, and the rescan it triggered then
 discovered every target finished since.
 
-The fix reads the authoritative source instead. Those lists *are* the finished
-buildings, so walking them needs no scan at all, and the per-tick cost is one
-read per list to check its length — a number that moves exactly when a building
-finishes. A full walk happens only then.
+The lesson survives the redesign that followed: **poll a number that moves when
+your event happens, not one that merely tends to.** The count now watched is
+the length of the global entity list, which moves the moment anything is
+created — and each building's own `_state` is read every tick once found, so
+the split fires on the tick it changes.
 
-The lists are re-enumerated every couple of seconds, because new component types
-appear as a run goes on and each brings a new list.
+### Every building, not just the ones a district happens to know about
+
+The registries that replaced that count were `DistrictBuildingRegistry._finishedBuildings`,
+one per district, and they are **not a complete list of finished buildings**.
+
+Measured on an Iron Teeth endgame save with two districts:
+
+| | |
+|---|---|
+| `DistrictBuildingRegistry` instances found | 4 (stable across repeated scans) |
+| ...with a non-empty `_registeredComponents` | 2 |
+| districts actually in the settlement | 2 |
+| distinct building templates visible across those registries | 66 |
+| Numbercrunchers built, and visible in them | 4, and **none** |
+
+The two empty registries are stale objects — the same lingering-after-teardown
+behaviour documented under *The presence of an object is not an "in a game"
+signal*. The other two are live and hold 2,704 components, including every
+other tracked building, but no Numbercruncher and no ScienceCounter, though
+four and five of those respectively exist as live entities. Nothing about the
+scan is at fault: it finds exactly four registries, twice, matching the four
+`DistrictBuildingRegistry` objects in memory.
+
+A wrong answer here is silent. The split simply never fires, which is
+indistinguishable from the building never being built.
+
+So the source is now the **global entity registry**, which has no district in
+it at all:
+
+```
+EntityService (a DI service, so the ordinary _eventBus validator finds it)
+  -> _entityRegistry
+     -> _entitiesInInstantiationOrder : List<EntityComponent>   (16,177 on that save)
+        -> entity._componentCache -> _name          e.g. "Numbercruncher.IronTeeth.EntityComponent"
+        -> entity._componentCache -> _components -> the BlockObjectState -> _state
+```
+
+`EntityRegistry` has no `_eventBus` of its own, so it is reached by dereference
+from `EntityService`, the same way `DistrictBuildingRegistry` was reached
+through its factory.
+
+Two properties make this cheap despite the list being tens of thousands long:
+
+- **Buildings are entities from the moment they are placed**, not from the
+  moment they finish. So a tracked building is discovered while it is still
+  under construction, and from then on the split needs one read per tick of its
+  own `_state`. On that save, 20 buildings are watched out of 16,177 entities.
+- **Entities are appended**, so ordinarily only the tail is new. A removal
+  shifts the tail down by one, which can slide an uninspected entity below the
+  mark — so a shrink of `k` rewinds the mark by `k`. The work is proportional to
+  churn, never to the length of the list. Re-inspecting an entity is harmless:
+  watches are keyed by address.
+
+That second point was learned by measurement. The first version re-walked all
+16,000 entities whenever the count shrank, and the count on a live endgame save
+changes by ±1 every few seconds — so a re-walk was running much of the time,
+and the tick rate fell to 82/s. Rewinding by the shortfall instead brought it to
+98.6/s, faster than the district registries it replaced (88.8/s) and close to
+the 107/s floor of an idle splitter.
+
+A watched building can also be demolished, leaving an address the allocator may
+reuse. So the state is read every tick, but the object's vtable is confirmed
+before anything splits — a check that costs nothing until something claims to
+be finished.
+
+Verified both ways on the live game. On the endgame save, all six tracked
+buildings are found as already finished on arrival, Numbercruncher included, and
+nothing splits. On a fresh Iron Teeth game, every condition fired once, in
+order, on the day it happened rather than in a batch at the end: Forester (day
+2), Numbercruncher and Gear Workshop (day 4), Tapper's Shack (day 5), Smelter +
+Wood Workshop and the research unlock (day 8), then the wonder activating on day
+11 -- logged as *not* the run end, with completion predicted for day 11.372 --
+and the Congratulations screen firing separately when it arrived.
 
 ### A class can only be located through a field it has
 
@@ -177,7 +262,9 @@ and the result is indistinguishable from "not present".
 This has bitten twice: `WorldDataService` (not a DI service, statics only) and
 `DistrictBuildingRegistry` (validated through `_entityComponentRegistryFactory`
 instead). Both failed silently — the second cost a full test run in which the
-building splits simply never appeared.
+building splits simply never appeared. `EntityRegistry`, which the buildings
+split uses now, has the same shape and is handled the same way: it is reached
+by dereference from `EntityService` rather than located on its own.
 
 Two defences:
 
@@ -190,19 +277,28 @@ Two defences:
 
 ### Faction-specific template names
 
-The wonder is a different building per faction, and the names are not
-guessable:
+Where the factions build different things, the names are not guessable and one
+split carries both — only the one belonging to the faction being played can
+ever fire, since the two factions are separate categories:
 
-| faction | wonder template |
-|---|---|
-| Folktails | `EarthRecultivator.Folktails` |
-| Iron Teeth | `EarthRepopulator.IronTeeth` |
+| faction | wonder | advanced science building |
+|---|---|---|
+| Folktails | `EarthRecultivator.Folktails` | `Observatory.Folktails` |
+| Iron Teeth | `EarthRepopulator.IronTeeth` | `Numbercruncher.IronTeeth` |
 
-`TributeToIngenuity.IronTeeth` reads like a wonder and is not one — it is a
-monument, alongside `FarmerMonument.Folktails` and `LaborerMonument.IronTeeth`.
-Guessing it cost an Iron Teeth test run, during which the research split simply
-never fired. The confirming evidence is the pair of localisation keys
-`Buildings.Wonder.EarthRecultivator` and `Buildings.Wonder.EarthRepopulator`.
+Note the lowercase `c` in `Numbercruncher`, and that Iron Teeth have no
+Observatory at all.
+
+Template names are checkable with the game closed, which is the cheap way to
+settle one: `Timberborn_Data/StreamingAssets/Modding/Blueprints.zip` holds a
+`*.blueprint.json` per building, each carrying its own `TemplateName`.
+
+Guessing costs test runs. `TributeToIngenuity.IronTeeth` reads like a wonder and
+is not one — it is a monument, alongside `FarmerMonument.Folktails` and
+`LaborerMonument.IronTeeth` — and assuming it was cost an Iron Teeth run during
+which the research split simply never fired. The confirming evidence for the
+real pair is the localisation keys `Buildings.Wonder.EarthRecultivator` and
+`Buildings.Wonder.EarthRepopulator`.
 
 A wrong name fails **silently** — the split just never happens. So reaching the
 run end without ever having seen the wonder in the unlocked set now logs a
@@ -228,8 +324,9 @@ one, especially for anything polled. Scans are for finding things once.
 
 ### Split latency
 
-Run start (initial load) and run end (wonder activated) are the two splits whose
-accuracy actually matters; the intermediate ones only affect segment times.
+Run start (the overlay appearing) and run end (the Congratulations screen) are
+the two splits whose accuracy actually matters; the intermediate ones only
+affect segment times.
 
 There is **no watchpoint mechanism**. The sandbox offers read-only memory access
 — no ptrace, no debug registers, no write traps — so a change can only be
@@ -241,37 +338,74 @@ timing-critical is located once and then polled **every tick**, and only the
 scan is throttled. Getting this wrong is easy: the first version rescanned every
 2 seconds, which would have put 2 seconds of error on the run-end split.
 
-Resulting error is one tick, worst case:
+Resulting error is one tick, worst case. Both hosts were measured on this
+machine, by counting ticks in the module against a wall clock:
 
 | host | tick rate | worst-case error |
 |---|---|---|
-| asr-debugger | 120/s (measured) | ~8 ms |
-| LiveSplit (Auto Splitting Runtime) | ~66/s — the component drives it from a `Timer { Interval = 15 }` | ~15 ms |
+| asr-debugger | 120/s | ~8.3 ms |
+| LiveSplit 1.8.29 (ASR, under Proton), no game attached | ~107/s | ~9.4 ms |
+| LiveSplit, attached and watching a loaded endgame save | ~99/s | ~10.1 ms |
 
-Average error is half of that. `asr::runtime::set_tick_rate` can ask for more,
-but the host's own polling interval is the real ceiling, so raising it does
-nothing in LiveSplit. ~15 ms is comfortably inside speedrun.com's 0.01 s
-display precision and is the best achievable from outside the process.
+Average error is half of that. The bottom row is the one that matters, and it
+is still an order of magnitude inside speedrun.com's 0.01 s display precision.
 
-The same treatment is needed for run start once its signal is settled.
+The LiveSplit figure is a **ceiling of 120/s that it does not quite reach**,
+not a slower clock. `ASRComponent` runs a `System.Timers.Timer` whose interval
+is initially 15 ms, but every `UpdateTimerElapsed` re-reads
+`Runtime_tick_rate()` and assigns it to `Interval` — so after the first tick
+the interval is whatever the module asked for, which is asr's default 8.33 ms.
+The gap to 9.4 ms is the handler stopping the timer for the duration of the
+step and restarting it afterwards: the period is the interval *plus* the work,
+so a heavier step means a slower tick. Idle, with no game attached, that
+overhead measured a steady ~1.0 ms.
+
+**The splitter's own per-tick work is the rest of the gap**, ~0.8 ms per tick
+on top of the idle 9.4 ms while watching that save. Most of it is one read per
+watched building, so it scales with how many tracked buildings have been built
+(20 on that save), not with the size of the settlement.
+
+The district-registry design it replaced cost ~1.9 ms, and that one *did* scale
+with the settlement — one read per per-type component list, 35 of them across
+4 registries. Both numbers come from the same save, with the watcher disabled
+for comparison.
+
+Two further consequences:
+
+- **Under scan load the rate drops further still.** A scan slice costs 10–19 ms.
+  This is exactly why the splits themselves never wait on a scan, and why
+  everything timing-critical is located before it is needed.
+- **Every tick-count constant in `lib.rs` is a lower bound on wall time** —
+  ~12% longer than its "~Ns" comment when idle, ~35% longer when watching this
+  save. They are all retry and log intervals, so this does not matter, but it
+  is why they are phrased as approximations.
+
+`asr::runtime::set_tick_rate` can ask for a different rate and LiveSplit will
+honour it, since it re-reads it every step. There is no reason to: asking for
+more would only shrink the interval that the step time is added to, and the
+step time is what is actually limiting us.
+
+Both run start and run end get this treatment: `GameInitializer` exists while
+the settlement-name dialog is still up and `WonderCompletionCountdownStarter`
+long before the countdown ends, so each is located well in advance and then
+polled every tick, with no scanning in either critical window.
 
 ### Reading BCL collections
 
 `HashSet<T>`, `List<T>` and `Dictionary<K, V>` layouts belong to Unity's Mono
 BCL, not to Timberborn, so they move on a Unity upgrade rather than a game
-patch. They should be resolved by name like everything else rather than
-hardcoded.
+patch. They are resolved by name like everything else (`src/collections.rs`),
+via `Class::of_object` — a generic instantiation such as `HashSet<string>`
+cannot be looked up in an image by name, but any instance points at its own
+class, and from there field offsets resolve normally.
 
-That needs something the fork does not expose yet: given an arbitrary object we
-find at runtime, there is no way to turn its `MonoClass` pointer back into an
-`mono::Class` to call `get_field_offset` on. `Class`'s address field is
-`pub(super)` and there is no constructor from an address. Adding one is a small
-addition to the same fork that already carries `get_vtable`, and it is needed
-for both the research and buildings splits.
-
-Open question for the dumper: does `ComponentCache._name` already hold the
-template name (e.g. `Forester.Folktails`)? If so the buildings split collapses
-from a component-array walk to one string read per building.
+What genuinely has to be hardcoded is the shape of the Mono runtime's own
+object headers — `MonoArray`'s length and data offsets, `MonoString`'s length
+and characters, and `Slot<T>`'s layout inside a `HashSet`. These are not
+managed types and have no named fields to resolve. They are part of the Mono
+ABI rather than of a BCL implementation, and correspondingly more stable: if
+`Slot<T>` ever changed shape, its declared fields would have changed with it
+and the name lookups would fail first, loudly.
 
 ### Category rules, and what they mean in memory
 
@@ -296,9 +430,11 @@ So the run-end signal is `WonderCompletionCountdownStarter.CountdownFinished`
 (`bool`, on a singleton with `_eventBus`, so the ordinary locator finds it).
 `Wonder.IsActive` is strictly earlier by the countdown.
 
-This matters beyond this implementation: the existing ASL splitter's final split
-is "Earth Recultivator (Launch)", which fires on activation. If the countdown is
-non-zero, that splits early relative to the rules.
+This matters beyond this implementation: the mod-based splitter's final split is
+"Earth Recultivator (Launch)", which fires on activation. If the countdown is
+non-zero, that splits early relative to the rules. Ours is named
+`congratulations_screen` for the same reason — the wonder is the prerequisite,
+the screen is the end time.
 
 **Measured: 0.5 in-game hours, which is 9.6s of real time at 1x** (a day is
 16+8 hours in 460.8s). So the existing ASL splitter ends its runs roughly that
@@ -399,44 +535,41 @@ saved `true` — which looks exactly like a completion happening.
 
 The "only fire on an observed transition" guard is necessary but not
 sufficient: the baseline has to be taken at the right time as well. So anything
-reading persisted state waits for `initializationState == Finished`. Run start
+reading persisted state waits for `_initializationState` reaching `Finished`. Run start
 is the exception, and has to be, since it fires at `ShowUI` one step earlier —
 but it reads only a state machine, never saved data.
 
-### Run start: earlier notes
+### The presence of an object is not an "in a game" signal
 
-There is no `NewGameInitializedEvent` equivalent to observe from outside.
+Worth keeping in mind for any future condition, because it is tempting and
+wrong. After exiting to the main menu, the `DayNightCycle` instance was still
+found at the same address ~20 seconds later, still reading the last in-game
+`DayNumber`. It is either uncollected or deliberately retained; either way a
+splitter watching for the object to disappear would think a run was still in
+progress.
 
-**Measured caveat: the presence of a service instance is not a reliable "in a
-game" signal.** After exiting to the main menu, the `DayNightCycle` instance was
-still found at the same address ~20 seconds later, still reading the last
-in-game `DayNumber`. It is either uncollected or deliberately retained; either
-way a splitter watching for the object to disappear would think a run was still
-in progress. Absence is meaningful at process start — the class has no vtable
-until it is first instantiated, confirmed by a 41 second wait on the main menu —
-but not after a game has been loaded once.
-
-So run start needs an authoritative signal rather than an inferred one. The plan
-is to combine:
-
-- `DayNightCycle` instance identity changing on scene load, plus `DayNumber == 1`
-  — necessary but, per the above, not sufficient on its own, and
-- `Timberborn.ErrorReporting.WorldDataService.SourceFileName` — a **static**
-  holding the save file being loaded, empty on a new game. This is reachable
-  with no scanning at all and gives us new-game vs. loaded-save discrimination
-  nearly for free.
-
-This is the fiddliest part of the splitter and needs the most testing.
+Absence is meaningful at process start — a class has no vtable until it is
+first instantiated, confirmed by a 41 second wait on the main menu — but not
+after a game has been loaded once. Anything that needs to know whether a game
+is in progress has to read a state machine, not infer it from object lifetime.
+That is why run start reads `GameInitializer` rather than watching for
+`DayNightCycle` to appear.
 
 ## Risks
 
-1. ~~**Heap scan performance**~~ — **answered, see Spike results.** A full
-   scan of 3.3 GiB takes 1–2s, and with early stop a singleton lookup does not
-   need anything like the full sweep. The scan is resumable, so it never stalls
-   the splitter's update loop.
-2. `List<T>` / `HashSet<T>` internal layout is Unity's Mono BCL — stable across
-   game patches, but moves on a Unity upgrade.
-3. Class or field renames in a game update. Caught immediately by the dumper.
+1. **Heap scan performance** — settled, see *Measurements* below. A full scan of
+   3.3 GiB takes 1–2s, and with early stop a singleton lookup does not need
+   anything like the full sweep. The scan is resumable, so it never stalls the
+   splitter's update loop.
+2. `List<T>` / `HashSet<T>` / `Dictionary<K, V>` internal layout is Unity's Mono
+   BCL — stable across game patches, but moves on a Unity upgrade. Resolved by
+   name, so a move shows up as a failed lookup rather than a bad read.
+3. Class or field renames in a game update. Caught by `devtools/metadata.py
+   check` offline, and by the probe at runtime — see *Checking a new game
+   version*.
+4. New template names for a future faction. These fail silently by nature and
+   are the one thing name resolution cannot catch for us; see *Faction-specific
+   template names*.
 
 ## Naming and distribution
 
@@ -535,19 +668,20 @@ a technical one:
 - Re-pointing the `<Game>Timberborn</Game>` entry needs MHVandborg's agreement,
   or LiveSplit maintainer arbitration.
 - On the next index refresh, *every* runner with Timberborn splits picks up
-  whatever that entry points at. So it must be at least as good on day one, and
-  the split set has to stay compatible — which is why we keep the same seven
-  splits in the same order.
+  whatever that entry points at. So it must be at least as good on day one. The
+  split set stays close to the existing one for that reason; the two departures
+  (see *Background*) change what a split is named and which factions it covers,
+  not how many there are or their order, so an existing `.lss` still lines up.
 
 Worth opening that conversation early rather than at the end. A joint handoff is
 a much better outcome than arriving with a finished competing implementation,
 and it may be that the right home for this is `timberborn_speedrun` itself — in
 which case the `_wasm` naming question above comes back.
 
-## Spike results
+## Measurements
 
-Run against the game (Timberborn under Proton, long-running save loaded,
-`asr-debugger`). The approach is confirmed end to end.
+Taken against the game (Timberborn under Proton, `asr-debugger`), and kept
+because they are the evidence behind decisions above rather than history.
 
 **Everything resolves by name.** Mono attach, image, class, and field offsets
 all resolved without a single hardcoded offset: `DayNumber` at `+0x48`,
@@ -631,7 +765,9 @@ Recorded as evidence, not relied on: everything is resolved by name at runtime.
 | `DayNightCycle` | `DayNumber` / `_eventBus` | `+0x48` / `+0x10` | same |
 | `BuildingUnlockingService` | `_unlockedBuildings` / `_eventBus` | `+0x48` / `+0x30` | same |
 | `Wonder` | `IsActive` / `_eventBus` | `+0x48` / `+0x38` | same |
-| `DistrictBuildingRegistry` | `_finishedBuildings` / `_instantFinishedBuildings` | `+0x48` / `+0x50` | same |
+| `EntityService` | `_entityRegistry` / `_eventBus` | `+0x20` / `+0x28` | not measured |
+| `EntityRegistry` | `_entitiesInInstantiationOrder` | `+0x18` | not measured |
+| `BlockObjectState` | `_state` | `+0x30` | not measured |
 | `BaseComponent` | `_componentCache` | `+0x10` | same |
 | `ComponentCache` | `_components` / `_name` | `+0x48` / **`+0x68`** | `+0x48` / **`+0x60`** |
 | `TemplateSpec` | `TemplateName` | `+0x20` | same |
@@ -645,8 +781,11 @@ argued: a hardcoded offset would have silently read the adjacent field, and
 `_name` is on the path for the buildings split. Everything else held, so the
 churn is real but narrow.
 
-Mono reports as V3, 64-bit on both. The runtime ticks at **120/s**, confirmed
-by a 1800-tick timer firing every 15 seconds.
+Mono reports as V3, 64-bit on both. asr-debugger ticks at **120/s**, confirmed
+by a 1800-tick counter firing every 15 seconds; LiveSplit measures **~107/s**
+idle and **~89/s** attached, see *Split latency*. Both were measured by counting ticks in the module against
+a wall clock — for LiveSplit, by capturing its log output, which
+`livesplit/README.md` explains how to do.
 
 ## Checking a new game version
 
@@ -671,11 +810,7 @@ what the next release breaks. Old release branches (0.6, 0.7) are also allowed
 for submitted runs, though nobody appears to be using them, so supporting them
 is worth having only if it turns out to be close to free.
 
-## Running the spike
-
-`src/scan.rs` plus `spike()` in `src/lib.rs` locate `DayNightCycle` and watch
-`DayNumber` — a singleton with a trivially checkable field, which should be >= 1
-in a loaded game and tick over as days pass.
+## Running it in asr-debugger
 
 ```bash
 cargo build --release
@@ -683,9 +818,9 @@ cargo build --release
 
 Load `target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm` in
 [asr-debugger](https://github.com/LiveSplit/asr-debugger), then **load a save**.
-`DayNightCycle` does not exist in the main menu, so a scan from there correctly
-finds nothing. Re-running after a code change is a "restart" in the debugger;
-the game can keep running.
+`DayNightCycle` is located first and gates everything else; it does not exist in
+the main menu, so a scan from there correctly finds nothing. Re-running after a
+code change is a "restart" in the debugger; the game can keep running.
 
 Expect roughly:
 
@@ -699,4 +834,5 @@ DayNumber = 546
 The percentage is the early stop working: the scan should finish well short of
 the full sweep. `rejected` counts Mono-metadata matches encountered *before* the
 real one, so it depends on where the object falls in range order and may be
-zero.
+zero. The probe (see above) runs once at this point and logs every class and
+field it resolved.
