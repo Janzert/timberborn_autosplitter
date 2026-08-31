@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      # Only used by the release step, which runs on tags.
+      contents: write
+
+    steps:
+      # The auto splitter builds against a fork of asr carried as a submodule,
+      # so a shallow checkout without it cannot compile.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # rust-toolchain pins stable; the target comes from .cargo/config.toml
+      # and has to be installed for it.
+      - name: Install the wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Clippy
+        run: cargo clippy --release -- -D warnings
+
+      # Printed so a downloaded artifact can be checked against the build it
+      # claims to come from.
+      - name: Checksum
+        run: sha256sum target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timberborn_autosplitter
+          path: target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm
+          if-no-files-found: error
+
+      # On a tag, attach the build to its release, creating the release if it
+      # does not exist yet. --clobber so re-running a tag replaces the asset
+      # rather than failing.
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" \
+            target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm --clobber
