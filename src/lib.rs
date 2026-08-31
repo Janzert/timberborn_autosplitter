@@ -280,7 +280,6 @@ async fn watch(
     let mut research: Option<Research> = None;
     let mut buildings: Option<Buildings> = None;
     let mut explained_buildings = false;
-    let mut sampled_names = false;
     let mut ended = false;
 
     // Resolved lazily and retried: on a fresh load GameInitializer exists
@@ -323,13 +322,6 @@ async fn watch(
         // earlier captures a stale "false" baseline and the restore then looks
         // like the run ending.
         let initialized = run_start.as_ref().is_some_and(|s| s.initialized());
-
-        // ComponentCache does not exist until the game has entities, so this
-        // has to wait for initialization like anything else reading game state.
-        if initialized && !sampled_names && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
-            sampled_names = probe::sample_component_names(process, module, 6).await
-                && probe::sample_block_objects(process, module, event_bus_vtable, 20).await;
-        }
 
         if initialized && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
             if completion.is_none() {

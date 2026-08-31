@@ -9,19 +9,35 @@ submitted to speedrun.com.
 
 ## Status
 
-Working for the two splits that decide a run's time, both verified against the
-game:
+All seven splits work, verified across a complete run from a new game to the
+"Congratulations!" screen:
 
-- **Run start** — when the overlay appears after naming the settlement, per the
-  category rules. Correctly ignores loading an existing save.
-- **Run end** — when the wonder completes and the "Congratulations!" screen
-  appears. Note this is *not* wonder activation, which precedes it by about
-  0.5 in-game hours.
+| Split | Fires when |
+|---|---|
+| *(run start)* | the overlay appears after naming the settlement |
+| Forester | the Forester's Hut is finished |
+| Gear Workshop | the Gear Workshop is finished |
+| Tapper's Shack | the Tapper's Shack is finished |
+| Observatory | the Observatory is finished |
+| Smelter + Wood Workshop | both are finished, in either order |
+| Research | the faction's wonder becomes researchable |
+| *(run end)* | the wonder completes and the Congratulations screen appears |
 
-All seven splits are implemented, matching the ASL script's set and order so
-existing `.lss` files stay compatible: Forester, Gear Workshop, Tapper's Shack,
-Observatory, Smelter + Wood Workshop, Research, and the wonder completing. The
-five building splits have not yet been seen firing in a real run.
+Both factions are covered. Loading a save never splits: every condition fires
+only on a change actually observed, so a save with the research already done or
+the buildings already up stays quiet.
+
+Two things worth knowing:
+
+- **The run end is the wonder *completing*, not activating.** Those are about
+  0.5 in-game hours apart — roughly 9.6 seconds of real time at 1x — and the
+  category rules end the run at the Congratulations screen.
+- **Splits fire in whatever order the player achieves them**, which need not
+  match the order in a `.lss` file. In testing, Research came before Smelter +
+  Wood Workshop.
+
+Still to do: submitting to the auto splitter index, and testing on Windows —
+development has been on Linux under Proton throughout.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for how it works and what has been
 measured.
