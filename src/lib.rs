@@ -88,9 +88,19 @@ const AMBIGUOUS_NAMES: &[&str] = &["Unity Main Thre"];
 /// The module that confirms an ambiguous match really is Timberborn.
 const GAME_MODULE: &str = "Timberborn.exe";
 
-/// When to first say we are still looking, in ticks. The runtime ticks at
-/// 120/s, so this is 15 seconds. Silence and failure looked identical before
-/// this, which cost an evening of forensics.
+// The "~Ns" figures on the constants below are at 120 ticks/s, which is what
+// asr asks the host for and what asr-debugger delivers. LiveSplit measures at
+// ~107/s (9.4ms) with no game attached, and ~89/s (11.3ms) while watching a
+// loaded save: its update timer is stopped for the duration of each step and
+// restarted afterwards, so the period is the interval plus our own per-tick
+// work, and that work scales with the settlement. Every duration below is
+// therefore a lower bound, ~12% to ~35% longer in LiveSplit than the figure in
+// its comment. None of them are timing-critical -- they are retry and log
+// intervals, and the splits themselves are polled every tick.
+
+/// When to first say we are still looking, in ticks: ~15s at 120/s, ~17s in
+/// LiveSplit. Silence and failure looked identical before this, which cost an
+/// evening of forensics.
 const FIRST_SEARCH_NOTICE_TICKS: u32 = 1800;
 
 /// How often to repeat it: every 5 minutes. Frequent enough to be visible in a
@@ -102,10 +112,6 @@ const PROCESS_GONE_DELAY_TICKS: u32 = 600;
 
 /// How often to retry resolving the wonder completion service, in ticks (~1s).
 const WONDER_RESOLVE_TICKS: u32 = 120;
-
-/// How often to re-enumerate the per-type component lists, in ticks (~2s). New
-/// component types appear as a run goes on.
-const BUILDING_LIST_REFRESH_TICKS: u32 = 240;
 
 /// How often to retry resolving GameInitializer, in ticks (~2s). Each attempt
 /// costs a scan, and the settlement-name dialog is up for far longer than this,
@@ -359,7 +365,7 @@ async fn watch(
         }
 
         if let Some(b) = &mut buildings {
-            for label in b.poll(process, module, ticks) {
+            for label in b.poll(process) {
                 let enabled = match label {
                     "Forester" => settings.forester,
                     "Gear Workshop" => settings.gear_workshop,
@@ -454,29 +460,64 @@ const BUILDING_SPLITS: &[BuildingSplit] = &[
 const SMELTER: &[&str] = &["Smelter.Folktails", "Smelter.IronTeeth"];
 const WOOD_WORKSHOP: &[&str] = &["WoodWorkshop.Folktails", "WoodWorkshop.IronTeeth"];
 
-/// Finished buildings, by template name.
+/// Where a `T[]`'s elements start, past the object header, bounds and length.
+/// Part of the Mono ABI rather than of any managed type, so there is no named
+/// field to resolve it from.
+const ENTRY_DATA: u64 = 0x20;
+
+/// Finished buildings, discovered through the global entity registry.
 ///
-/// Read from the authoritative source: each district's finished-building
-/// registry holds a `Dictionary<Type, List<IRegisteredComponent>>`, and those
-/// lists *are* the finished buildings. Each element is a component, so
-/// `_componentCache` -> `_name` gives its template name -- suffixed with
-/// `.EntityComponent` on a live entity.
+/// Every entity in the game is in `EntityRegistry._entitiesInInstantiationOrder`,
+/// which is reached from `EntityService._entityRegistry` -- so no scan of its
+/// own, and no dependence on districts. An entity's `_componentCache` gives its
+/// template name (`_name`), and the `BlockObjectState` among its components
+/// gives whether it is finished.
 ///
-/// Nothing is scanned once the registries are located. The per-tick cost is one
-/// read per list to check its length; a full walk happens only when a length
-/// changes, which is exactly when a building finished.
+/// Buildings exist as entities from the moment they are placed, so a tracked
+/// one is found while it is still unfinished and then watched. The per-tick
+/// cost is one read for the entity count plus one per watched building -- a
+/// handful -- and the split fires on the tick `_state` becomes `Finished`.
+///
+/// This replaces reading the districts' finished-building registries, which
+/// turned out not to see every building: on an Iron Teeth endgame save with two
+/// districts, four built Numbercrunchers appeared in no district registry at
+/// all. See `docs/DESIGN.md`.
 struct Buildings {
-    /// Every district's list of finished buildings, with the offset of `_size`
-    /// so its length can be re-read without resolving the class again.
-    lists: Vec<(Address, u32)>,
-    /// The dictionaries the lists came from, re-enumerated periodically to pick
-    /// up component types that appear later in a run.
-    dictionaries: Vec<Address>,
+    /// `_entitiesInInstantiationOrder`, with the offsets of its `_size` and
+    /// `_items` so neither the class nor the backing array has to be resolved
+    /// again. `_items` is re-read each time, since a growing list reallocates.
+    entities: Address,
+    size_offset: u32,
+    items_offset: u32,
+    /// `BaseComponent._componentCache`, then `ComponentCache._name` and
+    /// `ComponentCache._components`.
     cache_offset: u32,
     name_offset: u32,
-    last_total: Option<i64>,
+    components_offset: u32,
+    /// How a `BlockObjectState` is recognised among an entity's components,
+    /// and where its `_state` sits.
+    block_state_vtable: Address,
+    state_offset: u32,
+
+    /// Tracked buildings found so far: the address of the building's
+    /// `BlockObjectState`, and which split slot it belongs to. Small -- only
+    /// tracked templates go in here.
+    watched: Vec<(Address, usize)>,
+    /// How much of the list has been inspected, as a count of leading entries.
+    ///
+    /// Entities are appended, so ordinarily only the tail is new. A removal
+    /// shifts everything after it down by one, which can slide an uninspected
+    /// entity below this mark -- so a shrink of `k` rewinds it by `k`, and the
+    /// re-inspected window costs churn, not the length of the list. Inspecting
+    /// the same entity twice is harmless: watches are keyed by address.
+    inspected: i32,
+    /// Entity count as of the last poll, to spot growth and shrinkage.
+    last_count: i32,
+
     finished: Vec<bool>,
     on_arrival: Vec<bool>,
+    /// The combined split fires once, on whichever of the two comes second.
+    combined_fired: bool,
 }
 
 impl Buildings {
@@ -486,9 +527,24 @@ impl Buildings {
     const SMELTER_INDEX: usize = 4;
     const WOOD_WORKSHOP_INDEX: usize = 5;
 
+    /// `BlockObjectState.State`: `Unfinished`, `Finished`, `Preview`.
+    const FINISHED: i32 = 1;
+
+    /// Longest component list looked at. Entities have a handful of
+    /// components; anything near this is a misread rather than a real list.
+    const MAX_COMPONENTS: i32 = 256;
+
+    /// Entities inspected per tick while catching up. Each costs about five
+    /// reads, and a read through Wine is ~30us, so this stays around a
+    /// millisecond in the worst case.
+    const CHUNK: i32 = 32;
+
+    /// Entities inspected per tick during the opening baseline walk. That one
+    /// runs while the game is still loading, so it can afford more.
+    const BASELINE_CHUNK: i32 = 256;
+
     /// Guards against walking a pathological registry.
-    const MAX_TYPES: usize = 256;
-    const MAX_BUILDINGS: i32 = 8192;
+    const MAX_ENTITIES: i32 = 500_000;
 
     /// `explain` makes the first attempt say why it failed. Later attempts stay
     /// quiet, since "not constructed yet" is normal during a load.
@@ -515,192 +571,237 @@ impl Buildings {
             };
         }
 
-        // Every finished building is a component, so the cache offset comes
-        // from BaseComponent rather than from any particular component type.
+        // Every entity is a component, so the cache offset comes from
+        // BaseComponent rather than from any particular component type.
         let cache_offset = need!(
-            service::Locatable::new(
-                process,
-                module,
-                "Timberborn.BlockSystem",
-                "BlockObjectState",
-                event_bus_vtable,
-            )
-            .and_then(|c| c.field(process, module, "_componentCache")),
-            "BaseComponent._componentCache"
-        );
-
-        let cache_service = need!(
-            service::class_vtable(
+            service::field_offset(
                 process,
                 module,
                 "Timberborn.BaseComponentSystem",
-                "ComponentCacheService",
+                "BaseComponent",
+                "_componentCache",
             ),
-            "ComponentCacheService"
+            "BaseComponent._componentCache"
         );
         let name_offset = need!(
-            service::Locatable::with_validator(
+            service::field_offset(
                 process,
                 module,
                 "Timberborn.BaseComponentSystem",
                 "ComponentCache",
-                "_componentCacheService",
-                cache_service,
-            )
-            .and_then(|cache| cache.field(process, module, "_name")),
+                "_name",
+            ),
             "ComponentCache._name"
         );
+        let components_offset = need!(
+            service::field_offset(
+                process,
+                module,
+                "Timberborn.BaseComponentSystem",
+                "ComponentCache",
+                "_components",
+            ),
+            "ComponentCache._components"
+        );
+        let state_offset = need!(
+            service::field_offset(
+                process,
+                module,
+                "Timberborn.BlockSystem",
+                "BlockObjectState",
+                "_state",
+            ),
+            "BlockObjectState._state"
+        );
+        // A vtable, unlike a field offset, only exists once the class has been
+        // constructed -- so this one is a "not yet", not a rename.
+        let block_state_vtable = need!(
+            service::class_vtable(process, module, "Timberborn.BlockSystem", "BlockObjectState"),
+            "BlockObjectState not constructed yet"
+        );
 
-        let dictionaries = Self::find_dictionaries(process, module, explain).await;
-        if dictionaries.is_empty() {
-            if explain {
-                asr::print_message("buildings: no district finished-building registries found.");
-            }
-            return None;
-        }
+        // EntityRegistry has no _eventBus and so cannot be located directly.
+        // EntityService is an ordinary DI service and holds it, which is the
+        // same trick DistrictBuildingRegistry needed.
+        let entity_service = need!(
+            service::Locatable::new(
+                process,
+                module,
+                "Timberborn.EntitySystem",
+                "EntityService",
+                event_bus_vtable,
+            ),
+            "EntityService"
+        );
+        let registry_field = need!(
+            entity_service.field(process, module, "_entityRegistry"),
+            "EntityService._entityRegistry"
+        );
+        let instance = need!(
+            entity_service.find_one(process).await.first,
+            "EntityService instance"
+        );
+        let registry = need!(
+            read_pointer(process, instance, registry_field),
+            "EntityService._entityRegistry is null"
+        );
+        let order_field = need!(
+            service::field_of(process, module, registry, "_entitiesInInstantiationOrder"),
+            "EntityRegistry._entitiesInInstantiationOrder"
+        );
+        let entities = need!(
+            read_pointer(process, registry, order_field),
+            "the entity list is null"
+        );
+        let size_offset = need!(
+            collections::List::size_offset(process, module, entities),
+            "the entity list is not a List"
+        );
+        let items_offset = need!(
+            service::field_of(process, module, entities, "_items"),
+            "the entity list has no _items"
+        );
 
         let mut buildings = Self {
-            lists: Vec::new(),
-            dictionaries,
+            entities,
+            size_offset,
+            items_offset,
             cache_offset,
             name_offset,
-            last_total: None,
+            components_offset,
+            block_state_vtable,
+            state_offset,
+            watched: Vec::new(),
+            inspected: 0,
+            last_count: 0,
             finished: alloc::vec![false; Self::TRACKED],
             on_arrival: alloc::vec![false; Self::TRACKED],
+            combined_fired: false,
         };
 
-        buildings.refresh_lists(process, module);
-        buildings.walk(process, module);
+        // The opening walk covers every entity in the save -- tens of thousands
+        // on a long-running one -- so it yields between chunks rather than
+        // stalling the runtime for a second or more.
+        let total = buildings.count(process);
+        let mut index = 0;
+        while index < total {
+            let end = (index + Self::BASELINE_CHUNK).min(total);
+            buildings.inspect_range(process, index, end);
+            index = end;
+            next_tick().await;
+        }
+        buildings.inspected = total;
+        buildings.last_count = total;
+
+        // Anything already finished when we arrived is not a split.
+        buildings.poll_watched(process);
         buildings.on_arrival = buildings.finished.clone();
+
         asr::print_message(&format!(
-            "Watching buildings across {} district registries ({} component \
-             lists). Already finished in this save: {}.",
-            buildings.dictionaries.len(),
-            buildings.lists.len(),
+            "Watching {} entities for {} tracked buildings. Already finished in \
+             this save: {}.",
+            total,
+            buildings.watched.len(),
             buildings.describe_finished(),
         ));
         Some(buildings)
     }
 
-    /// The `Dictionary<Type, List<IRegisteredComponent>>` behind each district's
-    /// finished buildings. This is the only part that scans.
-    async fn find_dictionaries(
-        process: &Process,
-        module: &Module,
-        explain: bool,
-    ) -> Vec<Address> {
-        let mut found = Vec::new();
-
-        // DistrictBuildingRegistry has no _eventBus -- it is not a DI service --
-        // so it is validated through the factory it holds instead.
-        let Some(factory_vtable) = service::class_vtable(
-            process,
-            module,
-            "Timberborn.EntitySystem",
-            "EntityComponentRegistryFactory",
-        ) else {
-            if explain {
-                asr::print_message("buildings: EntityComponentRegistryFactory not constructed.");
-            }
-            return found;
-        };
-
-        let Some(registry) = service::Locatable::with_validator(
-            process,
-            module,
-            "Timberborn.GameDistricts",
-            "DistrictBuildingRegistry",
-            "_entityComponentRegistryFactory",
-            factory_vtable,
-        ) else {
-            if explain {
-                asr::print_message("buildings: DistrictBuildingRegistry not resolvable.");
-            }
-            return found;
-        };
-        let Some(finished_field) = registry.field(process, module, "_finishedBuildings") else {
-            return found;
-        };
-
-        for instance in registry.find_upto(process, 16).await {
-            let Some(entity_registry) = read_pointer(process, instance, finished_field) else {
-                continue;
-            };
-            if let Some(components) =
-                service::field_of(process, module, entity_registry, "_registeredComponents")
-                    .and_then(|offset| read_pointer(process, entity_registry, offset))
-            {
-                found.push(components);
-            }
-        }
-        found
+    /// The entity count. One read, and the whole per-tick trigger.
+    fn count(&self, process: &Process) -> i32 {
+        process
+            .read::<i32>(self.entities.add(self.size_offset as u64))
+            .ok()
+            .filter(|n| (0..Self::MAX_ENTITIES).contains(n))
+            .unwrap_or(0)
     }
 
-    /// Re-enumerates the per-type lists. Component types appear as a run goes
-    /// on, so this is repeated rather than done once.
-    fn refresh_lists(&mut self, process: &Process, module: &Module) {
-        let mut lists = Vec::new();
-        for &dictionary in &self.dictionaries {
-            let Some(values) =
-                collections::dictionary_values(process, module, dictionary, Self::MAX_TYPES)
+    /// Looks at entities `[from, to)` and remembers the tracked ones.
+    ///
+    /// The backing array is read once per call rather than per entity, and
+    /// nothing here resolves a class: every offset was settled at resolve time.
+    fn inspect_range(&mut self, process: &Process, from: i32, to: i32) {
+        let Some(items) = read_pointer(process, self.entities, self.items_offset) else {
+            return;
+        };
+        for i in from.max(0)..to {
+            let Some(entity) = read_pointer_raw(process, items.add(ENTRY_DATA + i as u64 * 8))
             else {
                 continue;
             };
-            for list in values {
-                if let Some(offset) = collections::List::size_offset(process, module, list) {
-                    lists.push((list, offset));
-                }
-            }
-        }
-        if !lists.is_empty() {
-            self.lists = lists;
-        }
-    }
-
-    /// One read per list. This is the per-tick cost, and it moves the moment a
-    /// building finishes -- unlike the dictionary's own count, which only
-    /// changes when a new component *type* first appears.
-    fn total(&self, process: &Process) -> i64 {
-        self.lists
-            .iter()
-            .filter_map(|&(list, offset)| process.read::<i32>(list.add(offset as u64)).ok())
-            .map(i64::from)
-            .sum()
-    }
-
-    /// Walks every finished building and records which tracked templates are
-    /// present.
-    fn walk(&mut self, process: &Process, module: &Module) {
-        let mut budget = Self::MAX_BUILDINGS;
-        for index in 0..self.lists.len() {
-            let (address, _) = self.lists[index];
-            let Some(list) = collections::List::read(process, module, address) else {
+            let Some(cache) = read_pointer(process, entity, self.cache_offset) else {
                 continue;
             };
-            for i in 0..list.size.min(budget) {
-                budget -= 1;
-                let Some(component) = list.get(process, i) else {
-                    continue;
-                };
-                let Some(cache) = read_pointer(process, component, self.cache_offset) else {
-                    continue;
-                };
-                let Some(name) = read_pointer(process, cache, self.name_offset) else {
-                    continue;
-                };
-                for (slot, templates) in Self::all_templates().enumerate() {
-                    if self.finished[slot] {
-                        continue;
-                    }
-                    if templates
-                        .iter()
-                        .any(|t| collections::string_starts_with_segment(process, name, t))
-                    {
-                        self.finished[slot] = true;
-                    }
-                }
+            let Some(name) = read_pointer(process, cache, self.name_offset) else {
+                continue;
+            };
+            let Some(slot) = Self::slot_for(process, name) else {
+                continue;
+            };
+            let Some(state) = self.block_state_of(process, cache) else {
+                continue;
+            };
+            if !self.watched.iter().any(|&(address, _)| address == state) {
+                self.watched.push((state, slot));
             }
         }
+    }
+
+    /// Which split slot an entity's template name belongs to, if any.
+    fn slot_for(process: &Process, name: Address) -> Option<usize> {
+        Self::all_templates().position(|templates| {
+            templates
+                .iter()
+                .any(|t| collections::string_starts_with_segment(process, name, t))
+        })
+    }
+
+    /// The entity's `BlockObjectState`, if it has one.
+    ///
+    /// An entity's components are a plain list, and the one we want is
+    /// identified by its vtable -- there is no named field to reach it by.
+    fn block_state_of(&self, process: &Process, cache: Address) -> Option<Address> {
+        let components = read_pointer(process, cache, self.components_offset)?;
+        // A List<T> of references has the same layout whatever T is, so the
+        // offsets taken from the entity list serve here too.
+        let size = process
+            .read::<i32>(components.add(self.size_offset as u64))
+            .ok()?;
+        let items = read_pointer(process, components, self.items_offset)?;
+        (0..size.min(Self::MAX_COMPONENTS)).find_map(|i| {
+            let component = read_pointer_raw(process, items.add(ENTRY_DATA + i as u64 * 8))?;
+            let vtable = read_pointer_raw(process, component)?;
+            (vtable == self.block_state_vtable).then_some(component)
+        })
+    }
+
+    /// Reads every watched building's state. Returns the slots that just
+    /// reached `Finished`.
+    ///
+    /// One read per watched building, and a second only when one of them says
+    /// it is finished: a demolished building leaves an address that the
+    /// allocator may hand to something else, and the value there could then be
+    /// anything. Confirming the vtable before firing costs nothing in the case
+    /// that happens every tick, and makes a stale address unable to split.
+    fn poll_watched(&mut self, process: &Process) -> Vec<usize> {
+        let mut newly = Vec::new();
+        for &(state, slot) in &self.watched {
+            if self.finished[slot] {
+                continue;
+            }
+            let finished = process
+                .read::<i32>(state.add(self.state_offset as u64))
+                .is_ok_and(|value| value == Self::FINISHED);
+            if !finished {
+                continue;
+            }
+            if read_pointer_raw(process, state) != Some(self.block_state_vtable) {
+                continue;
+            }
+            self.finished[slot] = true;
+            newly.push(slot);
+        }
+        newly
     }
 
     fn all_templates() -> impl Iterator<Item = &'static [&'static str]> {
@@ -731,39 +832,48 @@ impl Buildings {
     }
 
     fn still_valid(&self, process: &Process) -> bool {
-        self.lists
-            .first()
-            .is_some_and(|&(list, offset)| process.read::<i32>(list.add(offset as u64)).is_ok())
+        process
+            .read::<i32>(self.entities.add(self.size_offset as u64))
+            .is_ok()
     }
 
     /// Returns the labels that just completed.
-    fn poll(&mut self, process: &Process, module: &Module, ticks: u32) -> Vec<&'static str> {
-        // Pick up lists for component types that did not exist earlier.
-        if ticks.is_multiple_of(BUILDING_LIST_REFRESH_TICKS) {
-            self.refresh_lists(process, module);
-        }
+    fn poll(&mut self, process: &Process) -> Vec<&'static str> {
+        let count = self.count(process);
 
-        let total = self.total(process);
-        if self.last_total == Some(total) {
-            return Vec::new();
+        // A removal slid part of the tail down past the mark, so give back as
+        // much ground as was lost. Re-inspecting is cheap and idempotent.
+        if count < self.last_count {
+            self.inspected = (self.inspected - (self.last_count - count)).max(0);
         }
-        self.last_total = Some(total);
+        self.last_count = count;
 
-        let before = self.finished.clone();
-        self.walk(process, module);
+        // Catch up on anything not yet inspected, a chunk at a time so a large
+        // backlog is spread over ticks instead of stalling one.
+        if self.inspected < count {
+            let end = (self.inspected + Self::CHUNK).min(count);
+            self.inspect_range(process, self.inspected, end);
+            self.inspected = end;
+        } else {
+            self.inspected = self.inspected.min(count);
+        }
 
         let mut fired = Vec::new();
-        for (index, split) in BUILDING_SPLITS.iter().enumerate() {
-            if self.finished[index] && !before[index] && !self.on_arrival[index] {
+        for slot in self.poll_watched(process) {
+            if self.on_arrival[slot] {
+                continue;
+            }
+            if let Some(split) = BUILDING_SPLITS.get(slot) {
                 fired.push(split.label);
             }
         }
 
+        // The combined split fires on the later of the two, in either order.
         let both = self.finished[Self::SMELTER_INDEX] && self.finished[Self::WOOD_WORKSHOP_INDEX];
-        let both_before = before[Self::SMELTER_INDEX] && before[Self::WOOD_WORKSHOP_INDEX];
         let both_on_arrival =
             self.on_arrival[Self::SMELTER_INDEX] && self.on_arrival[Self::WOOD_WORKSHOP_INDEX];
-        if both && !both_before && !both_on_arrival {
+        if both && !both_on_arrival && !self.combined_fired {
+            self.combined_fired = true;
             fired.push("Smelter + Wood Workshop");
         }
         fired

@@ -47,16 +47,28 @@ const SUBJECTS: &[Subject] = &[
         used_for: "split: research Earth Recultivator",
     },
     Subject {
-        image: "Timberborn.Wonders",
-        class: "Wonder",
-        fields: &["IsActive", "_eventBus"],
-        used_for: "split: wonder activated",
+        image: "Timberborn.GameWonderCompletion",
+        class: "WonderCompletionCountdownStarter",
+        fields: &["CountdownFinished", "_unlockDay", "_eventBus"],
+        used_for: "run end: the Congratulations screen",
     },
     Subject {
-        image: "Timberborn.GameDistricts",
-        class: "DistrictBuildingRegistry",
-        fields: &["_finishedBuildings", "_instantFinishedBuildings"],
+        image: "Timberborn.EntitySystem",
+        class: "EntityService",
+        fields: &["_entityRegistry", "_eventBus"],
         used_for: "split: buildings finished",
+    },
+    Subject {
+        image: "Timberborn.EntitySystem",
+        class: "EntityRegistry",
+        fields: &["_entitiesInInstantiationOrder"],
+        used_for: "split: buildings finished",
+    },
+    Subject {
+        image: "Timberborn.BlockSystem",
+        class: "BlockObjectState",
+        fields: &["_state"],
+        used_for: "split: buildings finished (is it finished yet)",
     },
     Subject {
         image: "Timberborn.BaseComponentSystem",
@@ -67,15 +79,9 @@ const SUBJECTS: &[Subject] = &[
     Subject {
         image: "Timberborn.BaseComponentSystem",
         class: "ComponentCache",
-        // _name may already hold the template name. If so the buildings split
-        // is one string read instead of a component walk.
+        // _name is the template name; _components is where the entity's
+        // BlockObjectState is found.
         fields: &["_components", "_name"],
-        used_for: "split: buildings finished",
-    },
-    Subject {
-        image: "Timberborn.TemplateSystem",
-        class: "TemplateSpec",
-        fields: &["TemplateName"],
         used_for: "split: buildings finished",
     },
     Subject {

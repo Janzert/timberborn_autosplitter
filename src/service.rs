@@ -82,6 +82,23 @@ pub struct Found {
     pub conclusive: bool,
 }
 
+/// Offset of a named field on a class named at compile time.
+///
+/// For classes we never need to locate an instance of -- the offset comes from
+/// metadata, so it resolves whether or not one has ever been constructed.
+pub fn field_offset(
+    process: &Process,
+    module: &Module,
+    image_name: &str,
+    class_name: &str,
+    field: &str,
+) -> Option<u32> {
+    let image: Image = module.get_image(process, image_name)?;
+    image
+        .get_class(process, module, class_name)?
+        .get_field_offset(process, module, field)
+}
+
 /// Offset of a named field on an object whose class is discovered at runtime.
 ///
 /// For objects reached by dereference rather than by scanning, where there is
@@ -184,17 +201,6 @@ impl Locatable {
             first: scan.found.first().copied(),
             conclusive: scan.is_conclusive(),
         }
-    }
-
-    /// Finds up to `limit` instances. For classes with many instances, where
-    /// a sample is enough.
-    pub async fn find_upto(&self, process: &Process, limit: usize) -> alloc::vec::Vec<Address> {
-        scan::Scan::new(process, self.vtable)
-            .validating(self.validator)
-            .limit(limit)
-            .run(process, scan::DEFAULT_BUDGET)
-            .await
-            .found
     }
 
     /// Whether a previously located instance is still the object we think it
