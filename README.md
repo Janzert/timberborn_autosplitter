@@ -13,12 +13,12 @@ from the game's memory, so it works on a stock, unmodified game.
 
 All seven splits defined by MHVandborg's splitter work, new game start to the
 "Congratulations!" screen. Verified on both factions: a complete Folktails run,
-and every split condition on Iron Teeth :
+and every split condition on Iron Teeth:
 
 | Split | Fires when |
 |---|---|
 | *(run start)* | the overlay appears after naming the settlement |
-| Forester | a Forester's Hut is built |
+| Forester | a Forester is built |
 | Gear Workshop | a Gear Workshop is built |
 | Tapper's Shack | a Tapper's Shack is built |
 | Observatory / Numbercruncher | the faction's advanced science building is built (Observatory for Folktails, Numbercruncher for Iron Teeth) |

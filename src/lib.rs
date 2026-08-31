@@ -53,7 +53,7 @@ struct Settings {
     #[default = true]
     smelter_woodworkshop: bool,
 
-    /// Split when the wonder becomes researchable
+    /// Split when the faction's wonder research is completed
     #[default = true]
     research_wonder: bool,
 
@@ -385,10 +385,10 @@ async fn watch(
         if let Some(r) = &mut research {
             if r.poll(process, module) {
                 if settings.research_wonder && timer::state() == TimerState::Running {
-                    asr::print_message("Split: wonder research unlocked.");
+                    asr::print_message("Split: wonder research completed.");
                     timer::split();
                 } else {
-                    asr::print_message("Wonder research unlocked, but not splitting.");
+                    asr::print_message("Wonder research completed, but not splitting.");
                 }
             }
         }
@@ -892,7 +892,8 @@ fn read_pointer_raw(process: &Process, at: Address) -> Option<Address> {
         .filter(|a| !a.is_null())
 }
 
-/// The research split: the faction's wonder becoming buildable.
+/// The research split: the faction's wonder research completing, which is the
+/// moment the wonder becomes buildable.
 ///
 /// `BuildingUnlockingService._unlockedBuildings` is a `HashSet<string>` of
 /// template names, so this is a membership test rather than an object walk.

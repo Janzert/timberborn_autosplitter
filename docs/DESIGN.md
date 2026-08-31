@@ -132,7 +132,7 @@ All paths below were verified to exist in the shipped assemblies.
 |---|---|---|
 | Run start | `GameInitializer._initializationState` reaching `ShowUI`, gated on `WorldDataService.SourceFileName` being empty | enum, `string` (static) |
 | Buildings finished | `EntityService._entityRegistry` → `EntityRegistry._entitiesInInstantiationOrder`, each entity's `_componentCache` → `ComponentCache._name`, and its `BlockObjectState._state` | `List<EntityComponent>`, `string`, `State` enum |
-| Wonder researchable | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
+| Wonder research completed | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
 | Wonder activated *(logged, not split)* | `WonderCompletionCountdownStarter._unlockDay` | `int` |
 | Run end | `WonderCompletionCountdownStarter.CountdownFinished` | `bool` |
 | Day | `DayNightCycle.DayNumber` | `int` |
