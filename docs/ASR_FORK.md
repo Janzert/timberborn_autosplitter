@@ -27,26 +27,34 @@ and a splitter can already `read` any address, enumerate every memory range via
 addresses from `get_static_table()`, `UnityPointer::deref_offsets()` and
 `MemoryRange::address()`.
 
-## Pointing the submodule at your fork
+## Where the submodule points
 
-The submodule starts out pointing at upstream. Once you have a fork:
+`.gitmodules` points at the fork, <https://github.com/Janzert/asr>, and inside
+the submodule:
+
+| remote | |
+|---|---|
+| `origin` | the fork — fetch over https, push over ssh |
+| `upstream` | <https://github.com/LiveSplit/asr> — pull from it to stay current |
+
+The two accessors live on the `class-vtable` branch, which is what the parent
+repo's gitlink points at.
+
+Note that `git submodule sync` rewrites `origin`'s fetch URL from `.gitmodules`
+but leaves the push URL alone, which is why the two differ. If the push URL is
+ever lost:
 
 ```bash
-git submodule set-url vendor/asr https://github.com/YOURNAME/asr.git
-git -C vendor/asr remote add upstream https://github.com/LiveSplit/asr.git
-git submodule sync
+git -C vendor/asr remote set-url --push origin git@github.com:Janzert/asr.git
 ```
-
-Then `origin` is your fork (push branches and open PRs from there) and
-`upstream` is LiveSplit's (pull from it to stay current).
 
 ## Making a change
 
 ```bash
-git -C vendor/asr checkout -b class-address
+git -C vendor/asr checkout class-vtable      # or a new branch off it
 # edit, then commit inside the submodule
-git -C vendor/asr commit -am "expose Class address"
-git -C vendor/asr push -u origin class-address
+git -C vendor/asr commit -am "expose whatever it is"
+git -C vendor/asr push origin class-vtable
 ```
 
 Then record the new revision in the parent repo — this is the pin, and it is
