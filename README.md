@@ -11,6 +11,10 @@ from the game's memory, so it works on a stock, unmodified game.
 
 ## Status
 
+Currently this is barely beyond prototype stage in a minimally working state.
+Any feedback would certainly be appreciated, but be cautious if using this in
+an actual run.
+
 All seven splits defined by MHVandborg's splitter work, new game start to the
 "Congratulations!" screen. Verified on both factions: a complete Folktails run,
 and every split condition on Iron Teeth:
@@ -26,9 +30,9 @@ and every split condition on Iron Teeth:
 | Wonder Unlocked | the faction's wonder is unlocked in the science tree |
 | Congratulations screen *(run end)* | the Congratulations screen appears |
 
-Both factions are covered: where they build different things — the advanced
-science building and the wonder itself — one split covers both, and only the
-one belonging to the faction being played can fire.
+Both factions are covered: where they have faction specific buildings — the
+advanced science building and the wonder itself — one split covers both, and
+only the one belonging to the faction being played can fire.
 
 One LiveSplit limitation worth noting: **Splits fire in whatever order the
 player achieves them**, which need not match the order in a `.lss` file. So an
@@ -40,7 +44,7 @@ measured.
 ## Building
 
 ```bash
-git clone --recurse-submodules <this repo>
+git clone --recurse-submodules https://github.com/Janzert/timberborn_autosplitter.git
 cargo build --release
 ```
 
@@ -81,3 +85,8 @@ lists every class and field in an assembly, which is how the split sources in
 
 Nothing here is distributed to runners or touches a running game. See
 [devtools/README.md](devtools/README.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE). The vendored asr submodule is separately
+licensed; see `vendor/asr`.

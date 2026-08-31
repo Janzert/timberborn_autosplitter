@@ -433,15 +433,12 @@ So the run-end signal is `WonderCompletionCountdownStarter.CountdownFinished`
 (`bool`, on a singleton with `_eventBus`, so the ordinary locator finds it).
 `Wonder.IsActive` is strictly earlier by the countdown.
 
-This matters beyond this implementation: the mod-based splitter's final split is
-"Earth Recultivator (Launch)", which fires on activation. If the countdown is
-non-zero, that splits early relative to the rules. Ours is named
-`congratulations_screen` for the same reason — the wonder is the prerequisite,
-the screen is the end time.
+That is why the split is named `congratulations_screen` rather than for the
+wonder: the wonder is the prerequisite, the screen is the end time. Splitting on
+activation would be early by the length of the countdown.
 
 **Measured: 0.5 in-game hours, which is 9.6s of real time at 1x** (a day is
-16+8 hours in 460.8s). So the existing ASL splitter ends its runs roughly that
-much early relative to the rules.
+16+8 hours in 460.8s).
 
 Treat 9.6s as an order of magnitude, not a constant. The countdown is in in-game
 hours, so its real-time length scales with game speed — a run at 3x sees ~3.2s —
@@ -451,7 +448,7 @@ appears not to be population-scaled: it read 460.80002 in both a brand-new game
 and a day-1511 save.
 
 None of that affects the splitter, which reads `CountdownFinished` directly. The
-conversion exists only to size the discrepancy for discussion.
+conversion exists only to put a real-time size on the gap.
 
 The gap does not have to be observed to be known. The countdown is in in-game
 hours and `DayNightCycle` knows both the length of a day in hours
@@ -786,9 +783,25 @@ churn is real but narrow.
 
 Mono reports as V3, 64-bit on both. asr-debugger ticks at **120/s**, confirmed
 by a 1800-tick counter firing every 15 seconds; LiveSplit measures **~107/s**
-idle and **~89/s** attached, see *Split latency*. Both were measured by counting ticks in the module against
-a wall clock — for LiveSplit, by capturing its log output, which
-`livesplit/README.md` explains how to do.
+idle and **~99/s** attached, see *Split latency*. Both were measured by counting
+ticks in the module against a wall clock.
+
+Doing that in LiveSplit means capturing its log output, which takes a little
+setup: LiveSplit writes no log of its own, and `print_message` reaches
+`Trace.TraceInformation`, which goes nowhere until a listener is configured.
+Adding one inside `<configuration>` in `LiveSplit.exe.config` is enough, with
+`autoflush` so lines are not left sitting in a buffer:
+
+```xml
+<system.diagnostics>
+  <trace autoflush="true">
+    <listeners>
+      <add name="file" type="System.Diagnostics.TextWriterTraceListener"
+           initializeData="asr.log" />
+    </listeners>
+  </trace>
+</system.diagnostics>
+```
 
 ## Checking a new game version
 
