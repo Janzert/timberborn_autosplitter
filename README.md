@@ -41,7 +41,34 @@ out of order split will get attributed to the wrong item.
 See [docs/DESIGN.md](docs/DESIGN.md) for how it works and what has been
 measured.
 
+## Setup
+
+No build needed to try it — the release carries a prebuilt module.
+
+1. Download `timberborn_autosplitter.wasm` from the
+   [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest).
+2. In LiveSplit, right-click → **Edit Layout...** → `+` → **Control** →
+   **Auto Splitting Runtime**.
+3. Still in the layout editor, open **Layout Settings** → the **Auto Splitting
+   Runtime** tab, and use **Browse...** next to **Script Path** to pick the
+   file you downloaded.
+4. The individual splits appear as checkboxes under it and can be turned off
+   there. Save the layout when done.
+
+The Auto Splitting Runtime component ships with LiveSplit itself — this was
+tested against 1.8.29 — so there is nothing else to install, and nothing is
+added to the game.
+
+Your splits file wants the seven splits from the table above, in that order.
+
+On Linux, LiveSplit has to run **inside the game's Proton prefix**: reads of
+another process's memory are served by that prefix's `wineserver`, which only
+knows the processes belonging to it, so a LiveSplit in a prefix of its own can
+see the game but never read it.
+
 ## Building
+
+Only needed to work on it — see [Setup](#setup) to just use it.
 
 ```bash
 git clone --recurse-submodules https://github.com/Janzert/timberborn_autosplitter.git
