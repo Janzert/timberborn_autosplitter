@@ -77,13 +77,6 @@ The Auto Splitting Runtime component ships with LiveSplit itself — this was
 tested against 1.8.29 — so there is nothing else to install, and nothing is
 added to the game.
 
-### Setting it up by hand
-
-If you would rather build the layout yourself: right-click → **Edit Layout...**
-→ `+` → **Control** → **Auto Splitting Runtime**, then step 3 above.
-
-![The Layout Editor with the Auto Splitting Runtime component added](docs/images/layout-editor.png)
-
 The example splits are named for a Folktails route and carry the buildings'
 icons. Order the seven splits to match the route **you** run rather than the
 order they are listed in: each fires when you achieve it, so a `.lss` ordered
@@ -93,6 +86,14 @@ On Linux, LiveSplit has to run **inside the game's Proton prefix**: reads of
 another process's memory are served by that prefix's `wineserver`, which only
 knows the processes belonging to it, so a LiveSplit in a prefix of its own can
 see the game but never read it.
+
+### Adding the auto splitter to your own layout
+
+Already have a layout you like? Skip the example `.lsl` and add the component
+to yours instead: right-click → **Edit Layout...** → `+` → **Control** →
+**Auto Splitting Runtime**, then step 3 above.
+
+![The Layout Editor with the Auto Splitting Runtime component added](docs/images/layout-editor.png)
 
 ## Building
 
