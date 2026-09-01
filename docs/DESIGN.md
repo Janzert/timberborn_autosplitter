@@ -130,7 +130,7 @@ All paths below were verified to exist in the shipped assemblies.
 
 | Split | Path | Type |
 |---|---|---|
-| Run start | `GameInitializer._initializationState` reaching `ShowUI`, gated on `WorldDataService.SourceFileName` being empty | enum, `string` (static) |
+| Run start | `GameInitializer._initializationState` crossing into `ShowUI`, gated on the scene load saying a new game | enum, object graph |
 | Buildings finished | `EntityService._entityRegistry` → `EntityRegistry._entitiesInInstantiationOrder`, each entity's `_componentCache` → `ComponentCache._name`, and its `BlockObjectState._state` | `List<EntityComponent>`, `string`, `State` enum |
 | Wonder unlocked | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
 | Wonder activated *(logged, not split)* | `WonderCompletionCountdownStarter._unlockDay` | `int` |
@@ -388,10 +388,10 @@ honour it, since it re-reads it every step. There is no reason to: asking for
 more would only shrink the interval that the step time is added to, and the
 step time is what is actually limiting us.
 
-Both run start and run end get this treatment: `GameInitializer` exists while
-the settlement-name dialog is still up and `WonderCompletionCountdownStarter`
-long before the countdown ends, so each is located well in advance and then
-polled every tick, with no scanning in either critical window.
+Both run start and run end get this treatment: `GameInitializer` is bound while
+the scene is still loading and `WonderCompletionCountdownStarter` long before
+the countdown ends, so each is located well in advance and then polled every
+tick, with no scanning in either critical window.
 
 ### Reading BCL collections
 
@@ -481,24 +481,31 @@ settlement-name dialog is up, then steps through 1-5 within a few ticks of
 confirming the name. **`ShowUI` is the split** — the rules say the run starts
 when the overlay appears, and that is the step that shows it.
 
+What is watched for is the *crossing* into it, not the state itself: `ShowUI`
+can last less than a tick and be missed entirely. See *Binding the run start
+before the overlay*, which is where the whole of this turned out to be harder
+than it looks.
+
 `SpeedManager.CurrentSpeed` was the other candidate and is unusable. It becomes
 1 at `UnpauseGame`, one step early, and then toggles every time the player
 pauses, so it is neither correctly placed nor monotonic.
 
-`GameInitializer` exists while the dialog is up, so it is located in advance and
-then polled every tick. Run start gets the same one-tick accuracy as run end,
-with no scanning in the critical window.
+`GameInitializer` is bound while the scene is still loading and then polled
+every tick, including through the clock scan. Run start gets the same one-tick
+accuracy as run end, with no scanning in the critical window. Binding it any
+later does not work at all.
 
 Like the run end, this fires only on an observed transition: a state below
-`ShowUI` has to be seen first, so attaching to a game already in progress does
-not count as a start.
+`ShowUI` has to be seen on that same instance first, so attaching to a game
+already in progress does not count as a start.
 
 **Loading a save walks the identical sequence**, confirmed by measurement, so
 `initializationState` alone cannot tell a load from a new game and would fire a
-run start on both. The discriminator is the static
-`WorldDataService.SourceFileName`: null on a new game, set to the save being
-loaded otherwise. It is read when `ShowUI` is reached, and a non-empty name
-suppresses the start.
+run start on both. The discriminator is the scene load's own parameters — see
+*What is being loaded, and where it came from*. The static
+`WorldDataService.SourceFileName` (null on a new game, set to the save being
+loaded otherwise) was the original discriminator and remains the fallback for
+attaching with no load watched.
 
 Reading it needs no instance and no validation. The service locator requires an
 `_eventBus` so it can validate the objects it finds, but `WorldDataService` is a
@@ -519,9 +526,12 @@ resolved once at load. `RunStart` was resolved once, failed that way, and run
 start went unwatched for an entire session while every other watcher worked, so
 the failure looked like a detection bug rather than a resolution one.
 
-Retries cost a scan, so they are spaced (~2s). That is comfortable here because
-the settlement-name dialog is open far longer than that, giving ample time to
-resolve before the state can leave `Waiting`.
+Retries cost a scan, so they are spaced (~2s). That is fine for every watcher
+except the run start, which cannot be resolved on a retry interval at all —
+see *Binding the run start before the overlay*. It was once believed that the
+settlement-name dialog left ample time to resolve before the state could leave
+`Waiting`. Measurement says the opposite, and that belief cost several test
+runs.
 
 ### Nothing may sample saved state before initialization finishes
 
@@ -536,8 +546,8 @@ saved `true` — which looks exactly like a completion happening.
 The "only fire on an observed transition" guard is necessary but not
 sufficient: the baseline has to be taken at the right time as well. So anything
 reading persisted state waits for `_initializationState` reaching `Finished`. Run start
-is the exception, and has to be, since it fires at `ShowUI` one step earlier —
-but it reads only a state machine, never saved data.
+is the exception, and has to be, since it fires on the crossing into `ShowUI`,
+one step earlier — but it reads only a state machine, never saved data.
 
 ### The presence of an object is not an "in a game" signal
 
@@ -554,6 +564,124 @@ after a game has been loaded once. Anything that needs to know whether a game
 is in progress has to read a state machine, not infer it from object lifetime.
 That is why run start reads `GameInitializer` rather than watching for
 `DayNightCycle` to appear.
+
+The same reasoning, applied to "is this still the same game?", is what replaced
+object lifetime with the scene loader — see the next section. Inferring it from
+whether a held object still read was the single longest-lived bug in this
+project.
+
+## Lifecycle: telling one game from the next
+
+Everything above finds objects. This section is about knowing which *game* they
+belong to — which is where the splitter's worst bugs have lived. Symptoms were
+always the same shape: splits that fired on one run and silently did not on the
+next, depending on nothing the runner could see.
+
+### The scene loader is the anchor, not object lifetime
+
+The splitter used to decide "are we still in the same game?" by checking whether
+an object it held still read successfully. That does not work, and the way it
+fails is instructive: a freed object keeps returning values until its memory is
+reused, and then returns whatever now owns it. Captured in a log, the previous
+game's `GameInitializer` read as a garbage number and then as a plausible `0` —
+indistinguishable from a game beginning to load. Watchers stayed bound to the
+*previous* game and its splits could never fire. Whether it broke at all
+depended on GC timing, which is why it presented as "sometimes works".
+
+`Timberborn.SceneLoading.SceneLoader` replaces that inference with an
+observation. It loads every scene including the main menu and outlives all of
+them — measured at one address across two new games, the load-game menu,
+deleting saves, and a LiveSplit restart. Its `_isLoading` gives a positive edge,
+so a scene change is *seen* rather than deduced.
+
+It is not a DI service and has no `_eventBus`, so it is validated through the
+`_assetLoader` it holds.
+
+Three rules follow:
+
+- A load starting ends the watch. Everything held belongs to the scene being
+  replaced, whether or not it still reads.
+- Nothing found during a load is trusted for the world coming out of it, with
+  one deliberate exception below.
+- A search skips the instance just left, since the outgoing game's objects can
+  still be alive and a scan would happily hand one back.
+
+### What is being loaded, and where it came from
+
+`SceneLoader._sceneParameters` says which scene is coming: the parameters'
+class distinguishes `MainMenuSceneParameters`, `MapEditorSceneParameters` and
+`GameSceneParameters`, and for a game scene, whichever of
+`<NewGameConfiguration>` and `<SaveReference>` is set says new game versus
+loaded save.
+
+That belongs to *this* load. `WorldDataService.SourceFileName`, which the
+splitter used before, is a process-wide static that keeps a stale value — a
+live suspect for the original Windows failure to start on a second game. It
+survives only as the fallback for attaching with no load watched.
+
+The field is sampled throughout the load, not on the rising edge: on the tick a
+load starts, it still holds the *previous* load's parameters.
+
+### Binding the run start before the overlay
+
+Run start is the one watcher that cannot be resolved on a retry interval, and
+it took four separate bugs to get right. It is worth spelling out, because
+every one of them is a trap the next watcher could fall into.
+
+**It must be bound during the load.** Resolving it after the load finished is
+always too late. The window between the load ending and the overlay is about as
+wide as one heap scan — settlement naming happens inside it — so the first read
+said `Finished` every time. During the load there are seconds of slack, and the
+incoming game's initializer already exists in a pre-overlay state. This is the
+deliberate exception to "nothing found during a load is trusted".
+
+**A pre-overlay state is not enough to identify it.** The initializer of the
+game just left is freed, and its reused memory reads as a plausible `0` —
+`Waiting`. That is the same failure the scene anchor exists to avoid, and it
+was observed binding to the previous game's address on a second run. The
+address just left is skipped, exactly as the clock's is.
+
+**Binding early is not enough if it is not polled.** Bound during the load but
+first read only once `watch()` started — after the clock scan — it saw
+`Finished` every time, because `ShowUI` came and went inside that one scan. The
+clock scan now polls the run start between slices.
+
+**The firing rule is the crossing, not the state.** `ShowUI` can last less than
+a tick: an instance watched from `Waiting` was seen going `1 → 3 → 5`, with
+neither `2` nor `4` ever sampled. Waiting to observe `state == ShowUI` therefore
+discards starts that were tracked perfectly. The test is instead that a
+pre-overlay state was seen *on this instance* and the state is now past it,
+which is accurate to one tick and is the only rule that can work at all. Never
+having seen one is the genuinely late case: the watcher arrived after the
+overlay, how late is unknowable, and it warns rather than starting the timer.
+
+A run start also drops and re-binds the other watchers and clears their
+"already done on arrival" state, so one bad bind cannot poison the session.
+`WonderUnlock` is why: binding to a game where the wonder was already unlocked
+latches `unlocked_on_arrival` and disables that split for good.
+
+### Skipping the instance just left can lock out the only one there is
+
+Skipping is right when the outgoing game's object is still alive. It is wrong
+when the object was found *during* the load and belongs to the game coming in —
+and then the skip excludes the only instance in the process, conclusively, on
+every later scan. Observed as a permanent spin of "No DayNightCycle" with a
+fully loaded game on screen.
+
+So the skip is given up after three conclusive empty scans. Conclusive matters:
+an inconclusive empty scan says nothing (see *Scanning and attaching, learned
+the hard way*),
+and counting those would give the skip up during an ordinary teardown.
+
+### What this is verified against
+
+One session, on Linux, against the live game: two consecutive menu → new game →
+Forester → unlock cycles, both starting the timer and both splitting, plus a
+save loaded afterwards correctly refusing to start. The second cycle is the case
+the whole design exists for — the first game alone cannot exhibit any of the
+stale-address bugs, because there is nothing stale yet.
+
+**Not verified on Windows.**
 
 ## Risks
 
@@ -704,7 +832,7 @@ These numbers are from Proton, so the range layout (1492 scanned, 1809 skipped)
 and read costs are Wine's, not Windows'. Worth re-measuring natively before
 tuning anything against them.
 
-### Lifecycle, learned the hard way
+### Scanning and attaching, learned the hard way
 
 A full-lifecycle run (start splitter, launch game, load save, exit to menu, quit)
 turned up three things worth keeping written down:
