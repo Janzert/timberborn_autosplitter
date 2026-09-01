@@ -9,6 +9,9 @@ which uses a game mod to collect the split information.
 For this autosplitter **nothing runs inside the game.** It reads state directly
 from the game's memory, so it works on a stock, unmodified game.
 
+![LiveSplit part way through a Folktails run, with the splitter attached and
+the first three splits already fired](docs/images/running.png)
+
 ## Status
 
 Currently this is barely beyond prototype stage in a minimally working state.
