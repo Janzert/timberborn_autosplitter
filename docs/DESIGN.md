@@ -622,6 +622,20 @@ survives only as the fallback for attaching with no load watched.
 The field is sampled throughout the load, not on the rising edge: on the tick a
 load starts, it still holds the *previous* load's parameters.
 
+That same staleness is useful on attach. The loader is persistent, so its
+parameters still describe the last load even though we were not watching when
+it happened -- so attaching reads them once and starts from a real answer
+instead of `Unknown`. This matters because `Unknown` has to assume a game may
+be loaded, and on the main menu that is wrong: the previous game's objects are
+still alive and readable there, so the splitter bound to the last game's
+`GameInitializer`, read `Finished`, and announced "Game already in progress"
+while the runner sat on the menu.
+
+The same reasoning says not to go looking for a `GameInitializer` at all when
+the scene is the menu or the map editor. The watch loop retries resolving one
+on an interval, and that retry ignored the scene, so seeding the state was not
+by itself enough to stop the message.
+
 ### Binding the run start before the overlay
 
 Run start is the one watcher that cannot be resolved on a retry interval, and
@@ -682,6 +696,85 @@ the whole design exists for — the first game alone cannot exhibit any of the
 stale-address bugs, because there is nothing stale yet.
 
 **Not verified on Windows.**
+
+## Saying something to the runner
+
+`asr::print_message` goes to the host's log. In LiveSplit that is `Trace`, which
+with no listener configured is nowhere at all -- so every warning the splitter
+can produce was invisible in normal use. The one that matters is "bound too
+late, not starting the timer": to the runner that is a timer that silently did
+not start, which is the same symptom as the bug this splitter exists to fix.
+
+`asr::timer::set_variable` is the way out. The chain, read out of the source
+rather than assumed:
+
+1. `timer_set_variable` reaches the ASR component's `setCustomVariable`
+   delegate (`ComponentSettings.cs`).
+2. That calls `model.CurrentState.Run.Metadata.SetCustomVariable(name, value)`.
+3. LiveSplit's **Text** component displays it when "Custom Variable" is ticked
+   and the variable's name is in the second box.
+
+`src/status.rs` wraps this. Warnings only: a status line that usually says
+something is a status line nobody reads.
+
+### It does not reach the runner's splits file
+
+Worth being certain about, since writing status strings into someone's `.lss`
+would be unforgivable:
+
+- `SetCustomVariable` goes through `GetOrAddCustomVariable`, which constructs
+  the variable with `IsPermanent = false`.
+- `XMLRunSaver` writes a custom variable only `if (entry.Value.IsPermanent)`.
+- `SetCustomVariable` sets `HasChanged` only for permanent variables, so this
+  does not even make LiveSplit think the splits need saving.
+
+Only a variable the runner added by hand in the Run Editor is permanent, so the
+one hazard is a name collision with one -- which is why the name is
+`Timberborn Autosplitter` rather than something like `Status`.
+
+livesplit-core agrees, for LiveSplit One and asr-debugger: its `CustomVariable`
+documents auto splitter variables as temporary, and its `.lss` saver filters on
+`is_permanent` the same way.
+
+### Blank when there is nothing to say
+
+Setting the variable to the empty string blanks it in desktop LiveSplit:
+`CustomVariableValue` returns `""`, which is not null and so does not hit the
+component's `?? DASH` fallback. Leaving the component's first text box empty as
+well means the row draws nothing at all. It still occupies its height -- a
+component cannot give that up -- but it is blank.
+
+That reserved height is why the component sits under the split list rather than
+under the title, where an always-empty row separating the title from the first
+split was too conspicuous to live with.
+
+livesplit-core hosts differ: their text component filters empty values
+(`.filter(|value| !value.trim_start().is_empty())`) and substitute a dash, so
+there an empty message shows `—`. No value is blank in both.
+
+### Verified
+
+Against LiveSplit under Proton: the warning renders in amber, and the shipping
+configuration -- empty label, empty value -- draws a blank row. Both confirmed
+by screenshot, along with a blank line on the main menu and through a full
+menu -> new game -> Forester -> unlock cycle that started the timer and split
+twice without saying anything.
+
+The two ways of arriving after the overlay say different things -- `Run start
+missed` and `Game already in progress` -- even though the runner's response to
+both is the same. A screenshot in a bug report should say which happened
+without needing the log.
+
+Two things cost time getting there and are worth knowing:
+
+- **The layout LiveSplit opens is the last entry in `RecentLayouts` in
+  `settings.cfg`**, not whichever `.lsl` looks like the obvious one. Edits went
+  to a file nothing was reading for several rounds.
+- **A hand-written Text component node must carry `Font1` and `Font2`.** The
+  installed build writes them back out even when `OverrideFont` is false, and
+  `getFontHashCode` throws on null -- once per layout-hash check, so it spams
+  rather than failing once. `SetSettings` tolerates their absence, so the
+  component loads and renders correctly; only saving breaks.
 
 ## Risks
 

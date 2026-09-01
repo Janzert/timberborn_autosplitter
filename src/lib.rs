@@ -9,6 +9,7 @@ mod collections;
 mod probe;
 mod scan;
 mod service;
+mod status;
 
 use alloc::{format, vec::Vec};
 
@@ -114,8 +115,12 @@ const PROCESS_GONE_DELAY_TICKS: u32 = 600;
 const WONDER_RESOLVE_TICKS: u32 = 120;
 
 /// How often to retry resolving GameInitializer, in ticks (~2s). Each attempt
-/// costs a scan, and the settlement-name dialog is up for far longer than this,
-/// so there is ample time to resolve before the state can move off Waiting.
+/// costs a scan.
+///
+/// This is the recovery path only, for an initializer that failed validation
+/// while being watched. It is far too slow to catch a run start: that has to be
+/// bound during the scene load, because the window between the load ending and
+/// the overlay is about one scan wide. See `RunStart::resolve_during_load`.
 const RUN_START_RESOLVE_TICKS: u32 = 240;
 
 /// How often to forget which candidates were ruled out, in ticks. Pids are
@@ -145,6 +150,10 @@ const GIVE_UP_SKIPPING_AFTER: u32 = 3;
 
 async fn main() {
     asr::print_message("Timberborn auto splitter.");
+    // A message from a previous session survives a module reload, so start
+    // from a blank one rather than showing a stale warning about a game that
+    // is no longer running.
+    status::clear();
     let mut settings = Settings::register();
 
     loop {
@@ -246,7 +255,7 @@ async fn run(process: &Process, settings: &mut Settings) {
     .await;
 
     let Some(day_number) = clock.field(process, &module, "DayNumber") else {
-        asr::print_message("FAIL: DayNightCycle has no DayNumber. Renamed?");
+        status::warn("Game version not supported: DayNumber missing");
         return;
     };
 
@@ -302,6 +311,9 @@ async fn run(process: &Process, settings: &mut Settings) {
         // anything else. Queued behind the clock scan it routinely arrived
         // after the overlay had been shown, and the start was simply missed.
         if let Scene::Game { new_game } = scene.loaded {
+            // A fresh game is a fresh slate: a warning about the last one must
+            // not sit on screen through this one.
+            status::clear();
             asr::print_message(&format!(
                 "A game scene loaded ({}), run start {}.",
                 if new_game { "new game" } else { "loaded save" },
@@ -381,7 +393,9 @@ async fn run(process: &Process, settings: &mut Settings) {
         empty_scans = 0;
 
         if !probed {
-            probe::run(process, &module);
+            if !probe::run(process, &module) {
+                status::warn("Game version may not be supported -- see the log");
+            }
             probed = true;
         }
 
@@ -465,14 +479,28 @@ impl SceneLoad {
         )?;
         let offset = class.field(process, module, "_isLoading")?;
         let instance = class.find_one(process).await.first?;
-        asr::print_message(&format!("Watching scene loads at {instance}."));
-        Some(Self {
+        let scene = Self {
             class,
             instance,
             offset,
             loading: false,
             loaded: Scene::Unknown,
-        })
+        };
+        // The loader is persistent, so its parameters still describe the last
+        // load even though we were not watching when it happened. Without this
+        // an attach starts from Unknown, and Unknown has to assume a game may
+        // be loaded -- which at the main menu is wrong, because the previous
+        // game's objects are still alive and readable there. The splitter
+        // announced "Game already in progress" while sitting on the menu.
+        let scene = Self {
+            loaded: scene.pending(process, module),
+            ..scene
+        };
+        asr::print_message(&format!(
+            "Watching scene loads at {instance}. Last load: {:?}.",
+            scene.loaded
+        ));
+        Some(scene)
     }
 
     /// One byte per tick. `None` if the read failed, which happens while a
@@ -599,6 +627,12 @@ async fn watch(
         _ => None,
     };
 
+    // Nothing to start a run in, so do not go looking for a GameInitializer.
+    // The previous game's is still alive and readable on the menu, and binding
+    // to it reads Finished and reports a game already in progress -- which the
+    // runner saw on screen while sitting on the main menu.
+    let want_run_start = !matches!(scene.loaded, Scene::MainMenu | Scene::MapEditor);
+
     loop {
         // The authoritative end of this world. Everything held here belongs to
         // the scene being replaced, whether or not it still reads.
@@ -619,7 +653,7 @@ async fn watch(
             run_start = None;
         }
 
-        if run_start.is_none() && ticks.is_multiple_of(RUN_START_RESOLVE_TICKS) {
+        if want_run_start && run_start.is_none() && ticks.is_multiple_of(RUN_START_RESOLVE_TICKS) {
             run_start = RunStart::resolve(
                 process,
                 module,
@@ -642,6 +676,8 @@ async fn watch(
                 completion = None;
                 buildings = None;
 
+                // Whatever went wrong before, it was about a previous game.
+                status::clear();
                 start_timer(settings);
             }
         }
@@ -1684,10 +1720,7 @@ impl RunStart {
             "SourceFileName",
         );
         if source_file_name.is_none() {
-            asr::print_message(
-                "WARNING: cannot read SourceFileName, so a loaded save cannot be \
-                 told from a new game. Run start would fire on both.",
-            );
+            status::warn("Cannot tell a new game from a loaded save");
         }
 
         asr::print_message(&format!("Watching run start at {instance}."));
@@ -1752,16 +1785,38 @@ impl RunStart {
         // is now past it: the crossing then happened since the last poll,
         // which is one tick ago at worst.
         //
-        // Never having seen one is the genuinely late case: the watcher
-        // arrived after the overlay, and how late is unknowable.
+        // Never having seen one means the watcher arrived after the overlay,
+        // and how late is unknowable, so the timer is not started.
+        //
+        // This covers two ways of getting here and warns about both, because
+        // the consequence is the same: this game will not be timed. Either a
+        // watched load said a new game was starting and binding lost the race,
+        // or there was no load to watch and the game was already up when the
+        // splitter attached. The second is not a malfunction, but the runner
+        // still needs to know the timer is not going to start by itself.
         if !self.seen_before_ui {
             if !self.warned_late {
                 self.warned_late = true;
-                asr::print_message(
-                    "WARNING: a new game was loading, but this watcher was \
-                     bound after the overlay had already appeared. Not \
-                     starting the timer, since the start time would be wrong.",
-                );
+                // Deliberately two different strings for what is, to the
+                // runner, the same situation: start the timer yourself. They
+                // differ so that a screenshot in a bug report says which of
+                // the two happened, which the log would otherwise be the only
+                // way to tell.
+                if self.new_game == Some(true) {
+                    asr::print_message(
+                        "WARNING: a new game was loading, but this watcher was \
+                         bound after the overlay had already appeared. Not \
+                         starting the timer, since the start time would be wrong.",
+                    );
+                    status::warn("Run start missed");
+                } else {
+                    asr::print_message(
+                        "WARNING: the overlay was already shown when this \
+                         watcher bound, and no load was watched, so this is a \
+                         game already in progress. Not starting the timer.",
+                    );
+                    status::warn("Game already in progress");
+                }
             }
             return false;
         }
