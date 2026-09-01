@@ -49,11 +49,13 @@ measured.
 No build needed to try it — the release carries a prebuilt module, and
 [`examples/`](examples/) has a splits file and a layout to start from.
 
-1. Download `timberborn_autosplitter.wasm` from the
-   [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest),
+1. From the [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest),
+   download
+   [`timberborn_autosplitter.wasm`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/timberborn_autosplitter.wasm),
    and the two example files:
-   [the splits](<examples/Timberborn - Wonder (Earth Recultivator).lss>) and
-   [the layout](examples/Timberborn.lsl).
+   [`Timberborn-Wonder.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder.lss)
+   and
+   [`Timberborn.lsl`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn.lsl).
 2. In LiveSplit, right-click → **Open Splits** → **From File...** and pick the
    `.lss`. Then right-click → **Open Layout** → **From File...** and pick the
    `.lsl`, which already has the **Auto Splitting Runtime** component in it.
