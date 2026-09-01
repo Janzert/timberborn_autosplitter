@@ -276,8 +276,24 @@ impl Scan {
     }
 
     /// Runs the scan to completion, yielding between slices.
-    pub async fn run(mut self, process: &Process, budget: u64) -> Self {
+    pub async fn run(self, process: &Process, budget: u64) -> Self {
+        self.run_polling(process, budget, || {}).await
+    }
+
+    /// [`run`](Self::run), with `on_tick` called between slices.
+    ///
+    /// A scan is seconds long under Proton, and anything that must be read
+    /// every tick goes unread for all of it. The run start is the case that
+    /// matters: `ShowUI` came and went inside a single clock scan, so a
+    /// correctly bound watcher still missed the only moment it exists for.
+    pub async fn run_polling(
+        mut self,
+        process: &Process,
+        budget: u64,
+        mut on_tick: impl FnMut(),
+    ) -> Self {
         while !self.step(process, budget) {
+            on_tick();
             next_tick().await;
         }
         self

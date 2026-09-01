@@ -132,6 +132,16 @@ const AMBIGUOUS_RETRY_TICKS: u32 = 60;
 /// timescale anyway.
 const RESCAN_DELAY_TICKS: u32 = 120;
 
+/// How many conclusive empty scans it takes to give up skipping the instance
+/// just left.
+///
+/// Skipping it is right when the outgoing game's clock is still alive. It is
+/// wrong when the clock was found during the load and belongs to the game
+/// coming in -- and then the skip locks out the only instance there is, which
+/// was observed as a permanent spin of "No DayNightCycle" with a fully loaded
+/// game on screen.
+const GIVE_UP_SKIPPING_AFTER: u32 = 3;
+
 
 async fn main() {
     asr::print_message("Timberborn auto splitter.");
@@ -240,9 +250,105 @@ async fn run(process: &Process, settings: &mut Settings) {
         return;
     };
 
+    let mut scene = loop {
+        if let Some(scene) = SceneLoad::resolve(process, &module).await {
+            break scene;
+        }
+        for _ in 0..RESCAN_DELAY_TICKS {
+            next_tick().await;
+        }
+    };
+
     let mut probed = false;
+    let mut previous: Option<Address> = None;
+    // The initializer of the game just left, skipped for the same reason the
+    // clock instance is: freed, its memory reads as a plausible pre-overlay
+    // state and binding to it loses the run start entirely.
+    let mut previous_run_start: Option<Address> = None;
+    let mut empty_scans = 0;
     loop {
-        let found = clock.find_one(process).await;
+        // Nothing found during a load belongs to the world that comes out of
+        // it, so wait the load out first. The parameters the loader holds are
+        // sampled throughout, since on the rising edge they are still the
+        // previous load's.
+        let mut run_start = None;
+        while scene.is_loading(process).unwrap_or(false) {
+            let pending = scene.pending(process, &module);
+            if pending != Scene::Unknown {
+                scene.loaded = pending;
+            }
+            // Bind the run start here rather than after the load: once the
+            // load has finished, the settlement-name dialog is the only thing
+            // left before the overlay, and that window is about one heap scan
+            // wide. Retried until it takes, since the initializer may not
+            // exist yet on the first passes.
+            if run_start.is_none() {
+                if let Scene::Game { new_game } = scene.loaded {
+                    run_start = RunStart::resolve_during_load(
+                        process,
+                        &module,
+                        event_bus_vtable,
+                        Some(new_game),
+                        previous_run_start,
+                    )
+                    .await;
+                }
+            }
+            next_tick().await;
+        }
+
+        // Run start is the timing-critical watcher, and the settlement-name
+        // dialog is the entire window for binding it, so it is resolved before
+        // anything else. Queued behind the clock scan it routinely arrived
+        // after the overlay had been shown, and the start was simply missed.
+        if let Scene::Game { new_game } = scene.loaded {
+            asr::print_message(&format!(
+                "A game scene loaded ({}), run start {}.",
+                if new_game { "new game" } else { "loaded save" },
+                if run_start.is_some() {
+                    "bound during the load"
+                } else {
+                    "not bound during the load"
+                },
+            ));
+        }
+        // Only reached when binding during the load did not happen: the load
+        // was already over when it was watched, or no load was watched at all.
+        let mut run_start = match (run_start, scene.loaded) {
+            (Some(run_start), _) => Some(run_start),
+            (None, Scene::Game { new_game }) => {
+                RunStart::resolve(
+                    process,
+                    &module,
+                    event_bus_vtable,
+                    Some(new_game),
+                    previous_run_start,
+                )
+                .await
+            }
+            (None, Scene::MainMenu | Scene::MapEditor) => None,
+            // Attached with no load watched yet, so fall back to the save name
+            // static and to requiring the pre-overlay states to be seen.
+            (None, Scene::Unknown) => {
+                RunStart::resolve(process, &module, event_bus_vtable, None, previous_run_start)
+                    .await
+            }
+        };
+
+        // The outgoing game's objects can still be alive here, and a scan
+        // would happily hand one back, so the instance just left is skipped.
+        // The run start is polled through the scan. Bound during the load but
+        // first read only afterwards, it saw `Finished` every time: the whole
+        // ShowUI transition happens inside this one scan.
+        let found = clock
+            .find_excluding_polling(process, previous, || {
+                if let Some(start) = run_start.as_mut() {
+                    if start.poll(process) {
+                        start_timer(settings);
+                    }
+                }
+            })
+            .await;
         let Some(instance) = found.first else {
             asr::print_message(if found.conclusive {
                 "No DayNightCycle -- no game loaded. Waiting."
@@ -250,16 +356,39 @@ async fn run(process: &Process, settings: &mut Settings) {
                 "No DayNightCycle, but the scan was incomplete, so this is not \
                  conclusive. Waiting."
             });
+            // Repeated conclusive nothing means the skipped instance is the
+            // only one in the process, so it cannot be a game we left: it is
+            // this game's, found early. Keeping the skip would refuse to bind
+            // anything for the rest of the session.
+            if found.conclusive && previous.is_some() {
+                empty_scans += 1;
+                if empty_scans >= GIVE_UP_SKIPPING_AFTER {
+                    empty_scans = 0;
+                    previous = None;
+                    asr::print_message(
+                        "Nothing found but the instance just left, so it belongs \
+                         to this game after all. No longer skipping it.",
+                    );
+                }
+            }
             for _ in 0..RESCAN_DELAY_TICKS {
                 next_tick().await;
             }
             continue;
         };
         asr::print_message(&format!("Found {} at {instance}.", clock.name()));
+        previous = Some(instance);
+        empty_scans = 0;
 
         if !probed {
             probe::run(process, &module);
             probed = true;
+        }
+
+        // Remembered before it is handed over, so the next game does not bind
+        // to this one's freed initializer.
+        if let Some(start) = &run_start {
+            previous_run_start = Some(start.instance);
         }
 
         watch(
@@ -269,14 +398,171 @@ async fn run(process: &Process, settings: &mut Settings) {
             instance,
             day_number,
             event_bus_vtable,
+            &mut scene,
+            run_start,
             settings,
         )
         .await;
-        asr::print_message("Scene change. Rescanning.");
+
+        if !scene.still_valid(process) {
+            asr::print_message("The scene loader is gone. Re-resolving it.");
+            scene = loop {
+                if let Some(scene) = SceneLoad::resolve(process, &module).await {
+                    break scene;
+                }
+                for _ in 0..RESCAN_DELAY_TICKS {
+                    next_tick().await;
+                }
+            };
+        }
+        asr::print_message("A scene is loading. Everything will be resolved again.");
+    }
+}
+
+/// Whether a scene is being loaded.
+///
+/// `SceneLoader` loads every scene including the main menu, and outlives all of
+/// them: measured across two new games, the load-game menu and deleting saves,
+/// it stayed at one address throughout. That makes it the one thing that can be
+/// asked "did the world just change?" rather than inferred from whether some
+/// object still reads.
+///
+/// Inference was the previous approach and it does not work. A freed object
+/// keeps returning values until its memory is reused, and then returns whatever
+/// now owns it -- observed as a garbage `initializationState` followed by a
+/// plausible `0`, which is indistinguishable from a game starting to load.
+struct SceneLoad {
+    class: service::Locatable,
+    instance: Address,
+    offset: u32,
+    loading: bool,
+    /// What the last load produced, or `Unknown` before one has been watched.
+    loaded: Scene,
+}
+
+/// Which scene a load is producing, and for a game, how it was started.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Scene {
+    Game { new_game: bool },
+    MainMenu,
+    MapEditor,
+    Unknown,
+}
+
+impl SceneLoad {
+    async fn resolve(process: &Process, module: &Module) -> Option<Self> {
+        // Not a DI service, so no _eventBus: validated through the asset loader
+        // it holds, the same way DistrictBuildingRegistry was.
+        let asset_loader =
+            service::class_vtable(process, module, "Timberborn.AssetSystem", "AssetLoader")?;
+        let class = service::Locatable::with_validator(
+            process,
+            module,
+            "Timberborn.SceneLoading",
+            "SceneLoader",
+            "_assetLoader",
+            asset_loader,
+        )?;
+        let offset = class.field(process, module, "_isLoading")?;
+        let instance = class.find_one(process).await.first?;
+        asr::print_message(&format!("Watching scene loads at {instance}."));
+        Some(Self {
+            class,
+            instance,
+            offset,
+            loading: false,
+            loaded: Scene::Unknown,
+        })
+    }
+
+    /// One byte per tick. `None` if the read failed, which happens while a
+    /// scene is being torn down and means nothing on its own.
+    /// Every observation is remembered, so whoever asks next sees an edge
+    /// against what was last actually true. Reading it somewhere that did not
+    /// record it left the flag stuck across a whole load, and the next load's
+    /// edge was then computed against a stale `true` and missed entirely.
+    fn is_loading(&mut self, process: &Process) -> Option<bool> {
+        let loading = process
+            .read::<u8>(self.instance.add(self.offset as u64))
+            .ok()
+            .map(|byte| byte != 0)?;
+        self.loading = loading;
+        Some(loading)
+    }
+
+    /// What is being loaded, read off the parameters object the loader holds.
+    ///
+    /// The parameters' class says which scene, and a game scene's parameters
+    /// say whether it is a new game or a save -- which beats the process-wide
+    /// `WorldDataService.SourceFileName` static, since these belong to this
+    /// load and cannot hold a value left over from an earlier one.
+    ///
+    /// Sampled repeatedly while a load runs: on the tick the load starts, the
+    /// field still holds the *previous* load's parameters.
+    fn pending(&self, process: &Process, module: &Module) -> Scene {
+        let Some(params) = self
+            .class
+            .field(process, module, "_sceneParameters")
+            .and_then(|offset| read_pointer(process, self.instance, offset))
+        else {
+            return Scene::Unknown;
+        };
+        let Some(vtable) = read_pointer_raw(process, params) else {
+            return Scene::Unknown;
+        };
+        let is = |image, class| {
+            service::class_vtable(process, module, image, class) == Some(vtable)
+        };
+        if is("Timberborn.MainMenuSceneLoading", "MainMenuSceneParameters") {
+            return Scene::MainMenu;
+        }
+        if is("Timberborn.MapEditorSceneLoading", "MapEditorSceneParameters") {
+            return Scene::MapEditor;
+        }
+        if !is("Timberborn.GameSceneLoading", "GameSceneParameters") {
+            return Scene::Unknown;
+        }
+        let set = |field| {
+            service::field_of(process, module, params, field)
+                .and_then(|offset| read_pointer(process, params, offset))
+                .is_some()
+        };
+        Scene::Game {
+            new_game: set("<NewGameConfiguration>k__BackingField")
+                && !set("<SaveReference>k__BackingField"),
+        }
+    }
+
+    /// Whether a load has started since the last observation.
+    fn started_loading(&mut self, process: &Process) -> bool {
+        let was_loading = self.loading;
+        matches!(self.is_loading(process), Some(true)) && !was_loading
+    }
+
+    fn still_valid(&self, process: &Process) -> bool {
+        self.class.still_valid(process, self.instance)
+    }
+}
+
+/// The timer side of a run start.
+///
+/// Needed from two places: the watch loop, and the clock scan that runs before
+/// it -- during which the overlay can come and go.
+fn start_timer(settings: &Settings) {
+    if !settings.start {
+        return;
+    }
+    // Only from a stopped timer: never restart a run in progress.
+    if timer::state() == TimerState::NotRunning {
+        asr::print_message("Run start: overlay shown. Starting the timer.");
+        timer::start();
+    } else {
+        asr::print_message("Run start seen, but the timer is already running.");
     }
 }
 
 /// Watches the loaded game until the scene changes.
+#[allow(clippy::too_many_arguments)] // Everything the loop watches, passed in.
 async fn watch(
     process: &Process,
     module: &Module,
@@ -284,6 +570,8 @@ async fn watch(
     instance: Address,
     day_number: u32,
     event_bus_vtable: Address,
+    scene: &mut SceneLoad,
+    mut run_start: Option<RunStart>,
     settings: &mut Settings,
 ) {
     let mut ticks = 0u32;
@@ -293,32 +581,68 @@ async fn watch(
     let mut buildings: Option<Buildings> = None;
     let mut explained_buildings = false;
     let mut ended = false;
+    // Whether a run start was observed while watching this scene. Anything
+    // resolved afterwards belongs to a run already under way, so "already done
+    // when we arrived" is not a reason to stay quiet.
+    // Already true when the start fired during the clock scan that got here:
+    // every watcher below is then resolved into a run already under way.
+    let mut run_began = run_start.as_ref().is_some_and(|start| start.fired);
 
-    // Resolved lazily and retried: on a fresh load GameInitializer exists
-    // before its dependencies are injected, so the first attempt finds an
-    // object that fails validation and comes back empty. Resolving once and
-    // giving up meant run start was never watched for that whole session.
-    let mut run_start: Option<RunStart> = None;
+    // Resolved before the loop where the scene said a game was coming. Still
+    // retried here, because on a fresh load GameInitializer exists before its
+    // dependencies are injected and an early attempt fails validation.
+    // A GameInitializer that was being watched and then failed validation.
+    let mut lost_run_start: Option<Address> = None;
+
+    let expect_new_game = match scene.loaded {
+        Scene::Game { new_game } => Some(new_game),
+        _ => None,
+    };
 
     loop {
-        if !clock.still_valid(process, instance) {
+        // The authoritative end of this world. Everything held here belongs to
+        // the scene being replaced, whether or not it still reads.
+        if scene.started_loading(process) {
             return;
         }
 
+        // Before the state is read, not after: a freed GameInitializer keeps
+        // returning values from whatever now owns the memory, and one of those
+        // could look like a game starting.
+        if run_start.as_ref().is_some_and(|r| !r.still_valid(process)) {
+            asr::print_message(
+                "The GameInitializer being watched is gone. Re-resolving run start.",
+            );
+            // Skipped from here on: its memory is free to be reused as
+            // something that reads like a game starting.
+            lost_run_start = run_start.as_ref().map(|r| r.instance);
+            run_start = None;
+        }
+
         if run_start.is_none() && ticks.is_multiple_of(RUN_START_RESOLVE_TICKS) {
-            run_start = RunStart::resolve(process, module, event_bus_vtable).await;
+            run_start = RunStart::resolve(
+                process,
+                module,
+                event_bus_vtable,
+                expect_new_game,
+                lost_run_start,
+            )
+            .await;
         }
         settings.update();
 
         if let Some(start) = &mut run_start {
-            if start.poll(process) && settings.start {
-                // Only from a stopped timer: never restart a run in progress.
-                if timer::state() == TimerState::NotRunning {
-                    asr::print_message("Run start: overlay shown. Starting the timer.");
-                    timer::start();
-                } else {
-                    asr::print_message("Run start seen, but the timer is already running.");
-                }
+            if start.poll(process) {
+                // A run is beginning, so nothing the other watchers hold
+                // belongs to it: they were bound to whatever came before.
+                // Re-resolving from here also means anything they then find
+                // already done really was done during this run.
+                run_began = true;
+                unlock = None;
+                completion = None;
+                buildings = None;
+
+                start_timer(settings);
             }
         }
 
@@ -338,15 +662,30 @@ async fn watch(
         if initialized && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
             if completion.is_none() {
                 completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
+                if run_began {
+                    if let Some(c) = &mut completion {
+                        c.arrived_mid_run();
+                    }
+                }
             }
             if unlock.is_none() {
                 unlock = WonderUnlock::resolve(process, module, event_bus_vtable).await;
+                if run_began {
+                    if let Some(u) = &mut unlock {
+                        u.arrived_mid_run();
+                    }
+                }
             }
             if buildings.is_none() {
                 buildings =
                     Buildings::resolve(process, module, event_bus_vtable, !explained_buildings)
                         .await;
                 explained_buildings = true;
+                if run_began {
+                    if let Some(b) = &mut buildings {
+                        b.arrived_mid_run();
+                    }
+                }
             }
         }
 
@@ -837,6 +1176,20 @@ impl Buildings {
             .is_ok()
     }
 
+    /// Bound part way through a run, so anything standing now was built during
+    /// it and its split is still owed.
+    fn arrived_mid_run(&mut self) {
+        if self.finished.iter().any(|&done| done) {
+            asr::print_message(&format!(
+                "Bound after the run started, so treating these as built during \
+                 it rather than already there: {}.",
+                self.describe_finished()
+            ));
+        }
+        self.on_arrival = alloc::vec![false; Self::TRACKED];
+        self.finished = alloc::vec![false; Self::TRACKED];
+    }
+
     /// Returns the labels that just completed.
     fn poll(&mut self, process: &Process) -> Vec<&'static str> {
         let count = self.count(process);
@@ -907,7 +1260,7 @@ fn read_pointer_raw(process: &Process, at: Address) -> Option<Address> {
 struct WonderUnlock {
     class: service::Locatable,
     instance: Address,
-    set: Address,
+    pub set: Address,
     count_offset: u32,
     last_count: Option<i32>,
     /// Whether the wonder was already unlocked when we arrived. A loaded save
@@ -921,6 +1274,19 @@ impl WonderUnlock {
     /// there. False at the end of a run means the template name is wrong.
     fn ever_matched(&self) -> bool {
         self.fired || self.unlocked_on_arrival
+    }
+
+    /// Bound part way through a run rather than on arriving at a loaded game,
+    /// so whatever is unlocked now was unlocked during it.
+    fn arrived_mid_run(&mut self) {
+        if self.unlocked_on_arrival {
+            asr::print_message(
+                "The wonder reads as unlocked, but this watcher was bound after \
+                 the run started, so that belongs to the game before it. \
+                 Watching for the unlock anyway.",
+            );
+        }
+        self.unlocked_on_arrival = false;
     }
 
     fn still_valid(&self, process: &Process) -> bool {
@@ -1029,6 +1395,19 @@ struct WonderCompletion {
 }
 
 impl WonderCompletion {
+    /// Bound part way through a run. A completion that reads as already done
+    /// belongs to the game before this one, so do not let it suppress the end.
+    fn arrived_mid_run(&mut self) {
+        if self.was_finished_on_arrival {
+            asr::print_message(
+                "The countdown reads as already finished, but this watcher was \
+                 bound after the run started, so that belongs to the game before \
+                 it. Watching for the run end anyway.",
+            );
+        }
+        self.was_finished_on_arrival = false;
+    }
+
     fn still_valid(&self, process: &Process) -> bool {
         self.class.still_valid(process, self.instance)
     }
@@ -1189,15 +1568,23 @@ fn report_countdown_length(
 /// to 1 at `UnpauseGame`, one step early, and then toggles every time the
 /// player pauses.
 struct RunStart {
-    instance: Address,
-    offset: u32,
+    /// Kept so the instance can be re-validated. Without this the watcher
+    /// cannot tell that its object has been freed: the address still reads,
+    /// and returns whatever now occupies the memory.
+    class: service::Locatable,
+    pub instance: Address,
+    pub offset: u32,
     /// Static `WorldDataService.SourceFileName`: the save being loaded, and
     /// null on a new game. `initializationState` alone cannot tell the two
     /// apart -- loading a save walks the same Waiting -> ShowUI sequence.
     source_file_name: Option<Address>,
     /// Whether a state before `ShowUI` has been seen. Attaching to a game
-    /// already in progress must not count as a start.
+    /// already in progress must not count as a start. Not needed when the
+    /// scene load already said a new game was starting.
     seen_before_ui: bool,
+    /// What the scene load said, if one was watched.
+    new_game: Option<bool>,
+    warned_late: bool,
     fired: bool,
     last: Option<i32>,
 }
@@ -1209,10 +1596,61 @@ const FINISHED: i32 = 5;
 const SHOW_UI: i32 = 4;
 
 impl RunStart {
+    /// Whether the object being watched is still a `GameInitializer`.
+    ///
+    /// A freed one gets its memory reused, and the state field then reads as
+    /// whatever the new occupant holds -- observed as a garbage number and
+    /// then a plausible-looking `0`, which is indistinguishable from a game
+    /// beginning to load.
+    fn still_valid(&self, process: &Process) -> bool {
+        self.class.still_valid(process, self.instance)
+    }
+
+    /// `new_game` is what the scene load said, when one was watched:
+    /// `Some(true)` for a new game, `Some(false)` for a save, `None` when no
+    /// load has been seen and the save-name static has to answer instead.
     async fn resolve(
         process: &Process,
         module: &Module,
         event_bus_vtable: Address,
+        new_game: Option<bool>,
+        skip: Option<Address>,
+    ) -> Option<Self> {
+        Self::bind(process, module, event_bus_vtable, new_game, skip, false).await
+    }
+
+    /// Binds while the scene load is still running, taking only an initializer
+    /// that has not reached the overlay yet.
+    ///
+    /// Binding after the load finished was measured as always too late: the
+    /// gap between the load ending and `ShowUI` is about as wide as one heap
+    /// scan, and the first read said `Finished` every time. The incoming
+    /// game's initializer already exists during the load, in a pre-overlay
+    /// state, while the outgoing game's reads `Finished`.
+    ///
+    /// A pre-overlay state is not enough on its own. The initializer of the
+    /// game just left is freed, and its reused memory reads as a plausible
+    /// `0` -- `Waiting` -- which is the failure this whole approach exists to
+    /// avoid, and it was observed binding to the previous game's address on a
+    /// second run. `skip` is that address, and skipping it is what makes the
+    /// state test safe.
+    async fn resolve_during_load(
+        process: &Process,
+        module: &Module,
+        event_bus_vtable: Address,
+        new_game: Option<bool>,
+        skip: Option<Address>,
+    ) -> Option<Self> {
+        Self::bind(process, module, event_bus_vtable, new_game, skip, true).await
+    }
+
+    async fn bind(
+        process: &Process,
+        module: &Module,
+        event_bus_vtable: Address,
+        new_game: Option<bool>,
+        skip: Option<Address>,
+        require_pre_ui: bool,
     ) -> Option<Self> {
         let class = service::Locatable::new(
             process,
@@ -1222,7 +1660,18 @@ impl RunStart {
             event_bus_vtable,
         )?;
         let offset = class.field(process, module, "_initializationState")?;
-        let instance = class.find_one(process).await.first?;
+        let instance = class
+            .find_matching(process, 4, |address| {
+                if Some(address) == skip {
+                    return false;
+                }
+                !require_pre_ui
+                    || process
+                        .read::<i32>(address.add(offset as u64))
+                        .is_ok_and(|state| state < SHOW_UI)
+            })
+            .await
+            .first?;
 
         // Static, so no instance and no validator are needed. WorldDataService
         // is not a DI service and has no _eventBus, so Locatable cannot be
@@ -1243,12 +1692,15 @@ impl RunStart {
 
         asr::print_message(&format!("Watching run start at {instance}."));
         Some(Self {
+            class,
             instance,
             offset,
             source_file_name,
             seen_before_ui: false,
             fired: false,
             last: None,
+            new_game,
+            warned_late: false,
         })
     }
 
@@ -1274,20 +1726,62 @@ impl RunStart {
             self.seen_before_ui = true;
             // A fresh game start after a previous one, so allow firing again.
             self.fired = false;
-        } else if self.seen_before_ui && !self.fired {
-            self.fired = true;
-            return match self.loaded_from_save(process) {
-                Some(name_len) => {
-                    asr::print_message(&format!(
-                        "Overlay shown, but this is a loaded save \
-                         (SourceFileName is {name_len} chars). Not a run start."
-                    ));
-                    false
-                }
-                None => true,
-            };
+            return false;
         }
-        false
+
+        if self.fired {
+            return false;
+        }
+
+        if self.new_game == Some(false) {
+            if !self.warned_late {
+                self.warned_late = true;
+                asr::print_message(
+                    "Overlay shown, but this game was loaded from a save. \
+                     Not a run start.",
+                );
+            }
+            return false;
+        }
+
+        // The test is not "the state is ShowUI". That state can be over in
+        // less than a tick -- observed going 1 -> 3 -> 5 with neither 2 nor 4
+        // ever sampled, on an instance watched from Waiting -- so waiting to
+        // see it discards starts that were tracked perfectly. What matters is
+        // that a pre-overlay state was seen on *this* instance and the state
+        // is now past it: the crossing then happened since the last poll,
+        // which is one tick ago at worst.
+        //
+        // Never having seen one is the genuinely late case: the watcher
+        // arrived after the overlay, and how late is unknowable.
+        if !self.seen_before_ui {
+            if !self.warned_late {
+                self.warned_late = true;
+                asr::print_message(
+                    "WARNING: a new game was loading, but this watcher was \
+                     bound after the overlay had already appeared. Not \
+                     starting the timer, since the start time would be wrong.",
+                );
+            }
+            return false;
+        }
+
+        self.fired = true;
+        if self.new_game == Some(true) {
+            return true;
+        }
+        // No load was watched, so the save-name static has to say whether this
+        // is a new game.
+        match self.loaded_from_save(process) {
+            Some(name_len) => {
+                asr::print_message(&format!(
+                    "Overlay shown, but this is a loaded save \
+                     (SourceFileName is {name_len} chars). Not a run start."
+                ));
+                false
+            }
+            None => true,
+        }
     }
 
     /// `Some(length)` when a save file name is set, i.e. this is a load rather

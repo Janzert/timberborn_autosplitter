@@ -97,12 +97,47 @@ const SUBJECTS: &[Subject] = &[
         used_for: "population",
     },
     Subject {
+        image: "Timberborn.SceneLoading",
+        class: "SceneLoader",
+        fields: &["_isLoading", "_assetLoader", "_sceneParameters"],
+        used_for: "the scene-load anchor the whole lifecycle hangs on",
+    },
+    Subject {
+        image: "Timberborn.AssetSystem",
+        class: "AssetLoader",
+        fields: &[],
+        used_for: "validating the SceneLoader instance",
+    },
+    Subject {
+        image: "Timberborn.GameSceneLoading",
+        class: "GameSceneParameters",
+        // Which of the two is set says new game versus loaded save.
+        fields: &[
+            "<NewGameConfiguration>k__BackingField",
+            "<SaveReference>k__BackingField",
+        ],
+        used_for: "run start: is the incoming game new or a save",
+    },
+    Subject {
+        image: "Timberborn.MainMenuSceneLoading",
+        class: "MainMenuSceneParameters",
+        fields: &[],
+        used_for: "classifying an incoming scene",
+    },
+    Subject {
+        image: "Timberborn.MapEditorSceneLoading",
+        class: "MapEditorSceneParameters",
+        fields: &[],
+        used_for: "classifying an incoming scene",
+    },
+    Subject {
         image: "Timberborn.ErrorReporting",
         class: "WorldDataService",
-        // Static, and empty on a new game: the most promising authoritative
-        // new-game-vs-loaded-save signal.
+        // A process-wide static, so it can hold a value left over from an
+        // earlier load. Only the fallback now, for attaching with no load
+        // watched; the scene parameters above are the real answer.
         fields: &["SourceFileName"],
-        used_for: "run start",
+        used_for: "run start (fallback)",
     },
 ];
 

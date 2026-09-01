@@ -203,6 +203,60 @@ impl Locatable {
         }
     }
 
+    /// Finds one instance, ignoring `excluded`.
+    ///
+    /// After a scene load the previous world's objects can still be alive, and
+    /// an ordinary search would return whichever comes first in range order --
+    /// which may be the one just left. Skipping it makes the search pick the
+    /// object belonging to the world that just loaded.
+    ///
+    /// `on_tick` runs between scan slices, for watchers that cannot afford to
+    /// go unread for the seconds a scan takes -- the run start above all.
+    pub async fn find_excluding_polling(
+        &self,
+        process: &Process,
+        excluded: Option<Address>,
+        on_tick: impl FnMut(),
+    ) -> Found {
+        let scan = scan::Scan::new(process, self.vtable)
+            .validating(self.validator)
+            .limit(4)
+            .run_polling(process, scan::DEFAULT_BUDGET, on_tick)
+            .await;
+        Found {
+            first: scan
+                .found
+                .iter()
+                .copied()
+                .find(|&address| Some(address) != excluded),
+            conclusive: scan.is_conclusive(),
+        }
+    }
+
+    /// Finds one instance the caller is willing to accept.
+    ///
+    /// Scanning during a scene load can turn up the outgoing world's object
+    /// alongside the incoming one's, and neither address is known ahead of
+    /// time, so [`find_excluding`](Self::find_excluding) has nothing to
+    /// exclude. A predicate on the object's own state can still tell them
+    /// apart.
+    pub async fn find_matching(
+        &self,
+        process: &Process,
+        limit: usize,
+        accept: impl Fn(Address) -> bool,
+    ) -> Found {
+        let scan = scan::Scan::new(process, self.vtable)
+            .validating(self.validator)
+            .limit(limit)
+            .run(process, scan::DEFAULT_BUDGET)
+            .await;
+        Found {
+            first: scan.found.iter().copied().find(|&address| accept(address)),
+            conclusive: scan.is_conclusive(),
+        }
+    }
+
     /// Whether a previously located instance is still the object we think it
     /// is. Two reads, cheap enough to do every tick.
     pub fn still_valid(&self, process: &Process, instance: Address) -> bool {
