@@ -61,9 +61,8 @@ No build needed to try it — the release carries a prebuilt module, and
    ![The LiveSplit context menu with Open Splits expanded](docs/images/open-splits.png)
 3. Right-click → **Edit Layout...**, then double-click **Auto Splitting
    Runtime** in the component list. Use **Browse...** next to **Script Path**
-   to pick the `.wasm` you downloaded. (The **Layout Settings** button reaches the
-   same place via its **Auto Splitting Runtime** tab. Under Wine its label is
-   clipped to just "Layout".)
+   to pick the `.wasm` you downloaded. (The **Layout Settings** button and its
+   **Auto Splitting Runtime** tab reach the same place.)
 4. The individual splits appear as checkboxes below it and can be turned off
    there. **Save Layout** and **Save Splits** when done.
 
@@ -83,11 +82,6 @@ The example splits are named for a Folktails route and carry the buildings'
 icons. Order the seven splits to match the route **you** run rather than the
 order they are listed in: each fires when you achieve it, so a `.lss` ordered
 the way you actually play keeps every split attributed to the right segment.
-
-On Linux, LiveSplit has to run **inside the game's Proton prefix**: reads of
-another process's memory are served by that prefix's `wineserver`, which only
-knows the processes belonging to it, so a LiveSplit in a prefix of its own can
-see the game but never read it.
 
 ### Adding the auto splitter to your own layout
 
@@ -143,6 +137,14 @@ lists every class and field in an assembly, which is how the split sources in
 
 Nothing here is distributed to runners or touches a running game. See
 [devtools/README.md](devtools/README.md).
+
+## Linux notes
+
+LiveSplit has to run **inside the game's Proton prefix**, not in one of its
+own. Reads of another process's memory are served by that prefix's
+`wineserver`, and a `wineserver` only knows the processes belonging to it — so
+a LiveSplit started separately can see the game running but never read it, and
+the splitter waits forever for a process it cannot attach to.
 
 ## License
 
