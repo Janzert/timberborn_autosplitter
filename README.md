@@ -43,26 +43,42 @@ measured.
 
 ## Setup
 
-No build needed to try it — the release carries a prebuilt module.
+No build needed to try it — the release carries a prebuilt module, and
+[`examples/`](examples/) has a splits file and a layout to start from.
 
 1. Download `timberborn_autosplitter.wasm` from the
-   [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest).
-2. In LiveSplit, right-click → **Edit Layout...** → `+` → **Control** →
-   **Auto Splitting Runtime**.
-3. Still in the layout editor, open **Layout Settings** → the **Auto Splitting
-   Runtime** tab, and use **Browse...** next to **Script Path** to pick the
-   file you downloaded.
-4. The individual splits appear as checkboxes under it and can be turned off
-   there. Save the layout when done.
+   [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest),
+   and the two example files:
+   [the splits](<examples/Timberborn - Wonder (Earth Recultivator).lss>) and
+   [the layout](examples/Timberborn.lsl).
+2. In LiveSplit, right-click → **Open Splits** → **From File...** and pick the
+   `.lss`. Then right-click → **Open Layout** → **From File...** and pick the
+   `.lsl`, which already has the **Auto Splitting Runtime** component in it.
+3. Right-click → **Edit Layout...** → **Layout Settings** → the **Auto
+   Splitting Runtime** tab. Use **Browse...** next to **Script Path** to pick
+   the `.wasm` you downloaded.
+4. The individual splits appear as checkboxes below it and can be turned off
+   there. **Save Layout** and **Save Splits** when done.
+
+The layout ships with **Script Path** deliberately empty, because the path is
+stored in the layout and only you know where you put the file. For the same
+reason, moving the `.wasm` afterwards breaks it until you browse to it again. A
+relative path is resolved against LiveSplit's own working directory rather than
+the layout's, so it only works if the `.wasm` sits next to `LiveSplit.exe`.
 
 The Auto Splitting Runtime component ships with LiveSplit itself — this was
 tested against 1.8.29 — so there is nothing else to install, and nothing is
 added to the game.
 
-Your splits file wants the seven splits from the table above, ordered to match
-the route you run rather than the order they are listed in. Each one fires when
-you achieve it, so a `.lss` ordered the way you actually play keeps every split
-attributed to the right segment.
+### Setting it up by hand
+
+If you would rather build the layout yourself: right-click → **Edit Layout...**
+→ `+` → **Control** → **Auto Splitting Runtime**, then step 3 above.
+
+The example splits are named for a Folktails route and carry the buildings'
+icons. Order the seven splits to match the route **you** run rather than the
+order they are listed in: each fires when you achieve it, so a `.lss` ordered
+the way you actually play keeps every split attributed to the right segment.
 
 On Linux, LiveSplit has to run **inside the game's Proton prefix**: reads of
 another process's memory are served by that prefix's `wineserver`, which only
