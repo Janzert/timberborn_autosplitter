@@ -61,8 +61,9 @@ No build needed to try it — the release carries a prebuilt module, and
    ![The LiveSplit context menu with Open Splits expanded](docs/images/open-splits.png)
 3. Right-click → **Edit Layout...**, then double-click **Auto Splitting
    Runtime** in the component list. Use **Browse...** next to **Script Path**
-   to pick the `.wasm` you downloaded. (The **Layout Settings** button and its
-   **Auto Splitting Runtime** tab reach the same place.)
+   to pick the `.wasm` you downloaded. (The **Layout Settings** button reaches the
+   same place via its **Auto Splitting Runtime** tab. Under Wine its label is
+   clipped to just "Layout".)
 4. The individual splits appear as checkboxes below it and can be turned off
    there. **Save Layout** and **Save Splits** when done.
 
