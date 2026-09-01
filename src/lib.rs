@@ -9,6 +9,7 @@ mod collections;
 mod probe;
 mod scan;
 mod service;
+mod singletons;
 mod status;
 
 use alloc::{format, vec::Vec};
@@ -269,9 +270,12 @@ async fn run(process: &Process, settings: &mut Settings) {
     };
 
     let mut probed = false;
-    let mut previous: Option<Address> = None;
+    // The DI container of the game just left, skipped for the same reason its
+    // objects are: it stays alive, and it holds a clock that is not this
+    // game's.
+    let mut previous_registry: Option<Address> = None;
     // The initializer of the game just left, skipped for the same reason the
-    // clock instance is: freed, its memory reads as a plausible pre-overlay
+    // container is: freed, its memory reads as a plausible pre-overlay
     // state and binding to it loses the run start entirely.
     let mut previous_run_start: Option<Address> = None;
     let mut empty_scans = 0;
@@ -282,6 +286,8 @@ async fn run(process: &Process, settings: &mut Settings) {
         // previous load's.
         let mut run_start = None;
         while scene.is_loading(process).unwrap_or(false) {
+            // We are here for this one, whatever it turns out to be.
+            scene.observed = true;
             let pending = scene.pending(process, &module);
             if pending != Scene::Unknown {
                 scene.loaded = pending;
@@ -298,6 +304,8 @@ async fn run(process: &Process, settings: &mut Settings) {
                         &module,
                         event_bus_vtable,
                         Some(new_game),
+                        // Inside this loop, so by definition watched.
+                        true,
                         previous_run_start,
                     )
                     .await;
@@ -311,6 +319,15 @@ async fn run(process: &Process, settings: &mut Settings) {
         // anything else. Queued behind the clock scan it routinely arrived
         // after the overlay had been shown, and the start was simply missed.
         if let Scene::Game { new_game } = scene.loaded {
+            // Binding happens inside the loop above, where the loader may still
+            // be holding the *previous* load's parameters -- so what the
+            // watcher was told about this game can be a load out of date. Now
+            // that the load has finished the answer is final, so correct it.
+            // Bound during a save load and then told "new game", it announced
+            // a run start was not one.
+            if let Some(start) = run_start.as_mut() {
+                start.expect_new_game(new_game);
+            }
             // A fresh game is a fresh slate: a warning about the last one must
             // not sit on screen through this one.
             status::clear();
@@ -334,6 +351,7 @@ async fn run(process: &Process, settings: &mut Settings) {
                     &module,
                     event_bus_vtable,
                     Some(new_game),
+                    scene.observed,
                     previous_run_start,
                 )
                 .await
@@ -342,44 +360,76 @@ async fn run(process: &Process, settings: &mut Settings) {
             // Attached with no load watched yet, so fall back to the save name
             // static and to requiring the pre-overlay states to be seen.
             (None, Scene::Unknown) => {
-                RunStart::resolve(process, &module, event_bus_vtable, None, previous_run_start)
-                    .await
+                RunStart::resolve(
+                    process,
+                    &module,
+                    event_bus_vtable,
+                    None,
+                    scene.observed,
+                    previous_run_start,
+                )
+                .await
             }
         };
 
-        // The outgoing game's objects can still be alive here, and a scan
-        // would happily hand one back, so the instance just left is skipped.
+        // Not in a game, so there is nothing to watch. The containers still
+        // lying around belong to games already left, and looking for one here
+        // only finds a dead one -- which is what "no longer skipping it" then
+        // latched onto, binding the previous game's services on the menu.
+        if matches!(scene.loaded, Scene::MainMenu | Scene::MapEditor) {
+            for _ in 0..RESCAN_DELAY_TICKS {
+                next_tick().await;
+            }
+            continue;
+        }
+
+        // The one scan a loaded game costs. Everything the splitter watches is
+        // a singleton in this container, so finding it once replaces a scan
+        // apiece for the clock, the wonder unlock, the run end and the
+        // entities.
+        //
+        // The container of the game just left stays alive and holds a clock of
+        // its own -- measured, still at the same address after exiting to the
+        // menu -- so it is skipped, exactly as the loose clock instance used to
+        // be.
+        //
         // The run start is polled through the scan. Bound during the load but
         // first read only afterwards, it saw `Finished` every time: the whole
-        // ShowUI transition happens inside this one scan.
-        let found = clock
-            .find_excluding_polling(process, previous, || {
+        // ShowUI transition happens inside one scan.
+        let found = singletons::Registry::resolve(
+            process,
+            &module,
+            previous_registry,
+            clock.vtable(),
+            || {
                 if let Some(start) = run_start.as_mut() {
                     if start.poll(process) {
                         start_timer(settings);
                     }
                 }
-            })
-            .await;
-        let Some(instance) = found.first else {
+            },
+        )
+        .await;
+        let Some(mut registry) = found.registry else {
             asr::print_message(if found.conclusive {
-                "No DayNightCycle -- no game loaded. Waiting."
+                "No singleton container with a clock in it -- no game loaded. Waiting."
             } else {
-                "No DayNightCycle, but the scan was incomplete, so this is not \
-                 conclusive. Waiting."
+                "No singleton container found, but the scan was incomplete, so \
+                 this is not conclusive. Waiting."
             });
-            // Repeated conclusive nothing means the skipped instance is the
-            // only one in the process, so it cannot be a game we left: it is
-            // this game's, found early. Keeping the skip would refuse to bind
-            // anything for the rest of the session.
-            if found.conclusive && previous.is_some() {
+            // Repeatedly finding nothing else means the skipped container is
+            // the only one there is, so it cannot be a game we left: it is this
+            // game's, found early. Keeping the skip would refuse to bind
+            // anything for the rest of the session. Only a conclusive scan
+            // counts: an incomplete one says nothing.
+            if found.conclusive && previous_registry.is_some() {
                 empty_scans += 1;
                 if empty_scans >= GIVE_UP_SKIPPING_AFTER {
                     empty_scans = 0;
-                    previous = None;
+                    previous_registry = None;
                     asr::print_message(
-                        "Nothing found but the instance just left, so it belongs \
-                         to this game after all. No longer skipping it.",
+                        "Nothing found but the container just left, so it \
+                         belongs to this game after all. No longer skipping it.",
                     );
                 }
             }
@@ -388,9 +438,17 @@ async fn run(process: &Process, settings: &mut Settings) {
             }
             continue;
         };
-        asr::print_message(&format!("Found {} at {instance}.", clock.name()));
-        previous = Some(instance);
         empty_scans = 0;
+        previous_registry = Some(registry.address());
+
+        let Some(instance) = registry.lookup(clock.vtable()) else {
+            asr::print_message("The container lost its clock between scans. Waiting.");
+            for _ in 0..RESCAN_DELAY_TICKS {
+                next_tick().await;
+            }
+            continue;
+        };
+        asr::print_message(&format!("Found {} at {instance}.", clock.name()));
 
         if !probed {
             if !probe::run(process, &module) {
@@ -409,6 +467,7 @@ async fn run(process: &Process, settings: &mut Settings) {
             process,
             &module,
             &clock,
+            &mut registry,
             instance,
             day_number,
             event_bus_vtable,
@@ -452,6 +511,10 @@ struct SceneLoad {
     loading: bool,
     /// What the last load produced, or `Unknown` before one has been watched.
     loaded: Scene,
+    /// Whether `loaded` came from watching a load happen, rather than from
+    /// reading the loader's parameters on attach. Both give the same answer
+    /// about *what* loaded; only the first means we were there for it.
+    observed: bool,
 }
 
 /// Which scene a load is producing, and for a game, how it was started.
@@ -478,13 +541,14 @@ impl SceneLoad {
             asset_loader,
         )?;
         let offset = class.field(process, module, "_isLoading")?;
-        let instance = class.find_one(process).await.first?;
+        let instance = class.find_one(process).await?;
         let scene = Self {
             class,
             instance,
             offset,
             loading: false,
             loaded: Scene::Unknown,
+            observed: false,
         };
         // The loader is persistent, so its parameters still describe the last
         // load even though we were not watching when it happened. Without this
@@ -595,6 +659,7 @@ async fn watch(
     process: &Process,
     module: &Module,
     clock: &service::Locatable,
+    registry: &mut singletons::Registry,
     instance: Address,
     day_number: u32,
     event_bus_vtable: Address,
@@ -632,6 +697,7 @@ async fn watch(
     // to it reads Finished and reports a game already in progress -- which the
     // runner saw on screen while sitting on the main menu.
     let want_run_start = !matches!(scene.loaded, Scene::MainMenu | Scene::MapEditor);
+    let watched_load = scene.observed;
 
     loop {
         // The authoritative end of this world. Everything held here belongs to
@@ -659,6 +725,7 @@ async fn watch(
                 module,
                 event_bus_vtable,
                 expect_new_game,
+                watched_load,
                 lost_run_start,
             )
             .await;
@@ -695,9 +762,24 @@ async fn watch(
         // like the run ending.
         let initialized = run_start.as_ref().is_some_and(|s| s.initialized());
 
-        if initialized && ticks.is_multiple_of(WONDER_RESOLVE_TICKS) {
+        // Looking anything up in a container that is no longer a container
+        // would read whatever now owns the memory. The scene loader, not this,
+        // is what says the game has ended -- this only says the lookups cannot
+        // be trusted meanwhile.
+        if initialized
+            && ticks.is_multiple_of(WONDER_RESOLVE_TICKS)
+            && registry.still_valid(process)
+        {
+            // The snapshot is only as new as the last time it was taken, and
+            // these are retried precisely because the services do not all
+            // exist at once. Registering one replaces the container's array,
+            // so nothing short of re-reading it will show the new arrival.
+            if completion.is_none() || unlock.is_none() || buildings.is_none() {
+                registry.refresh(process).await;
+            }
             if completion.is_none() {
-                completion = WonderCompletion::resolve(process, module, event_bus_vtable).await;
+                completion =
+                    WonderCompletion::resolve(process, module, event_bus_vtable, registry);
                 if run_began {
                     if let Some(c) = &mut completion {
                         c.arrived_mid_run();
@@ -705,7 +787,7 @@ async fn watch(
                 }
             }
             if unlock.is_none() {
-                unlock = WonderUnlock::resolve(process, module, event_bus_vtable).await;
+                unlock = WonderUnlock::resolve(process, module, event_bus_vtable, registry);
                 if run_began {
                     if let Some(u) = &mut unlock {
                         u.arrived_mid_run();
@@ -714,8 +796,7 @@ async fn watch(
             }
             if buildings.is_none() {
                 buildings =
-                    Buildings::resolve(process, module, event_bus_vtable, !explained_buildings)
-                        .await;
+                    Buildings::resolve(process, module, registry, !explained_buildings).await;
                 explained_buildings = true;
                 if run_began {
                     if let Some(b) = &mut buildings {
@@ -926,7 +1007,7 @@ impl Buildings {
     async fn resolve(
         process: &Process,
         module: &Module,
-        event_bus_vtable: Address,
+        container: &singletons::Registry,
         explain: bool,
     ) -> Option<Self> {
         macro_rules! need {
@@ -995,37 +1076,42 @@ impl Buildings {
             "BlockObjectState not constructed yet"
         );
 
-        // EntityRegistry has no _eventBus and so cannot be located directly.
-        // EntityService is an ordinary DI service and holds it, which is the
-        // same trick DistrictBuildingRegistry needed.
-        let entity_service = need!(
-            service::Locatable::new(
-                process,
-                module,
-                "Timberborn.EntitySystem",
-                "EntityService",
-                event_bus_vtable,
-            ),
-            "EntityService"
+        // EntityRegistry has no _eventBus, so it cannot be located directly,
+        // and EntityService -- which holds it -- turns out not to be a
+        // singleton and so is not in the container either. GameOverChecker is,
+        // and holds the same registry, so it is one hop instead of a scan.
+        //
+        // Nothing else about the game-over feature is used or wanted here; it
+        // is simply a singleton with a reference to the registry. If a game
+        // update removes it, this fails by name like everything else and the
+        // probe says so.
+        let checker_vtable = need!(
+            service::class_vtable(process, module, "Timberborn.GameOver", "GameOverChecker"),
+            "GameOverChecker not constructed yet"
+        );
+        let checker = need!(
+            container.lookup(checker_vtable),
+            "GameOverChecker is not in the container yet"
         );
         let registry_field = need!(
-            entity_service.field(process, module, "_entityRegistry"),
-            "EntityService._entityRegistry"
+            service::field_of(process, module, checker, "_entityRegistry"),
+            "GameOverChecker._entityRegistry"
         );
-        let instance = need!(
-            entity_service.find_one(process).await.first,
-            "EntityService instance"
-        );
-        let registry = need!(
-            read_pointer(process, instance, registry_field),
-            "EntityService._entityRegistry is null"
+        let entity_registry = need!(
+            read_pointer(process, checker, registry_field),
+            "GameOverChecker._entityRegistry is null"
         );
         let order_field = need!(
-            service::field_of(process, module, registry, "_entitiesInInstantiationOrder"),
+            service::field_of(
+                process,
+                module,
+                entity_registry,
+                "_entitiesInInstantiationOrder"
+            ),
             "EntityRegistry._entitiesInInstantiationOrder"
         );
         let entities = need!(
-            read_pointer(process, registry, order_field),
+            read_pointer(process, entity_registry, order_field),
             "the entity list is null"
         );
         let size_offset = need!(
@@ -1336,10 +1422,11 @@ impl WonderUnlock {
 const WONDER_TEMPLATES: &[&str] = &["EarthRecultivator.Folktails", "EarthRepopulator.IronTeeth"];
 
 impl WonderUnlock {
-    async fn resolve(
+    fn resolve(
         process: &Process,
         module: &Module,
         event_bus_vtable: Address,
+        registry: &singletons::Registry,
     ) -> Option<Self> {
         let class = service::Locatable::new(
             process,
@@ -1349,7 +1436,7 @@ impl WonderUnlock {
             event_bus_vtable,
         )?;
         let field = class.field(process, module, "_unlockedBuildings")?;
-        let instance = class.find_one(process).await.first?;
+        let instance = registry.lookup(class.vtable())?;
 
         let set = process
             .read_pointer(instance.add(field as u64), module.get_pointer_size())
@@ -1450,10 +1537,11 @@ impl WonderCompletion {
 }
 
 impl WonderCompletion {
-    async fn resolve(
+    fn resolve(
         process: &Process,
         module: &Module,
         event_bus_vtable: Address,
+        registry: &singletons::Registry,
     ) -> Option<Self> {
         let class = service::Locatable::new(
             process,
@@ -1462,12 +1550,9 @@ impl WonderCompletion {
             "WonderCompletionCountdownStarter",
             event_bus_vtable,
         )?;
-
-
-
         let countdown_finished = class.field(process, module, "CountdownFinished")?;
         let unlock_day = class.field(process, module, "_unlockDay")?;
-        let instance = class.find_one(process).await.first?;
+        let instance = registry.lookup(class.vtable())?;
 
         let already = process
             .read::<u8>(instance.add(countdown_finished as u64))
@@ -1620,6 +1705,11 @@ struct RunStart {
     seen_before_ui: bool,
     /// What the scene load said, if one was watched.
     new_game: Option<bool>,
+    /// Whether the load into this game was actually watched. Losing the race on
+    /// a load we watched is a malfunction; arriving at a game that was already
+    /// up is not, and the two need to be told apart in a bug report even though
+    /// the runner does the same thing about both.
+    watched_load: bool,
     warned_late: bool,
     fired: bool,
     last: Option<i32>,
@@ -1650,9 +1740,19 @@ impl RunStart {
         module: &Module,
         event_bus_vtable: Address,
         new_game: Option<bool>,
+        watched_load: bool,
         skip: Option<Address>,
     ) -> Option<Self> {
-        Self::bind(process, module, event_bus_vtable, new_game, skip, false).await
+        Self::bind(
+            process,
+            module,
+            event_bus_vtable,
+            new_game,
+            watched_load,
+            skip,
+            false,
+        )
+        .await
     }
 
     /// Binds while the scene load is still running, taking only an initializer
@@ -1675,9 +1775,19 @@ impl RunStart {
         module: &Module,
         event_bus_vtable: Address,
         new_game: Option<bool>,
+        watched_load: bool,
         skip: Option<Address>,
     ) -> Option<Self> {
-        Self::bind(process, module, event_bus_vtable, new_game, skip, true).await
+        Self::bind(
+            process,
+            module,
+            event_bus_vtable,
+            new_game,
+            watched_load,
+            skip,
+            true,
+        )
+        .await
     }
 
     async fn bind(
@@ -1685,6 +1795,7 @@ impl RunStart {
         module: &Module,
         event_bus_vtable: Address,
         new_game: Option<bool>,
+        watched_load: bool,
         skip: Option<Address>,
         require_pre_ui: bool,
     ) -> Option<Self> {
@@ -1706,8 +1817,7 @@ impl RunStart {
                         .read::<i32>(address.add(offset as u64))
                         .is_ok_and(|state| state < SHOW_UI)
             })
-            .await
-            .first?;
+            .await?;
 
         // Static, so no instance and no validator are needed. WorldDataService
         // is not a DI service and has no _eventBus, so Locatable cannot be
@@ -1733,8 +1843,22 @@ impl RunStart {
             fired: false,
             last: None,
             new_game,
+            watched_load,
             warned_late: false,
         })
+    }
+
+    /// Corrects what this watcher was told about the game it is bound to.
+    ///
+    /// Binding happens during the load, when the scene loader can still be
+    /// holding the previous load's parameters, so the answer given at bind time
+    /// may be a load out of date. It is final once the load has finished.
+    /// Ignored once the watcher has already decided, so a late correction
+    /// cannot fire a start twice or retract one.
+    fn expect_new_game(&mut self, new_game: bool) {
+        if !self.fired && !self.warned_late {
+            self.new_game = Some(new_game);
+        }
     }
 
     /// Whether the game has finished loading. Anything that samples saved state
@@ -1802,20 +1926,28 @@ impl RunStart {
                 // differ so that a screenshot in a bug report says which of
                 // the two happened, which the log would otherwise be the only
                 // way to tell.
-                if self.new_game == Some(true) {
-                    asr::print_message(
+                let (log, message) = if self.watched_load {
+                    (
                         "WARNING: a new game was loading, but this watcher was \
                          bound after the overlay had already appeared. Not \
                          starting the timer, since the start time would be wrong.",
-                    );
-                    status::warn("Run start missed");
+                        "Run start missed",
+                    )
                 } else {
-                    asr::print_message(
+                    (
                         "WARNING: the overlay was already shown when this \
-                         watcher bound, and no load was watched, so this is a \
-                         game already in progress. Not starting the timer.",
-                    );
-                    status::warn("Game already in progress");
+                         watcher bound, and the load into this game was not \
+                         watched, so it was already up. Not starting the timer.",
+                        "Game already in progress",
+                    )
+                };
+                asr::print_message(log);
+                // A timer that is already running makes this moot: the start
+                // was not missed, this watcher just arrived after it. Saying
+                // otherwise put "Run start missed" on screen during a run that
+                // had started perfectly well.
+                if timer::state() == TimerState::NotRunning {
+                    status::warn(message);
                 }
             }
             return false;

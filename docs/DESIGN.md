@@ -59,6 +59,12 @@ static table.
 Every Timberborn service is a singleton, so there is exactly one instance of
 each service class in the process.
 
+This is how a service is found when nothing else knows where it is. Most are
+not found this way any more -- see *Locating services through the DI container*
+below, which turns four of the five scans a loaded game used to cost into
+lookups. The scan is still what finds the container itself, and the scene
+loader, and the run start.
+
 On Mono, `object[0]` is a `MonoVTable*` and `vtable[0]` is a `MonoClass*`
 (confirmed by asr's own `UnityPointer` traversal). So:
 
@@ -131,7 +137,7 @@ All paths below were verified to exist in the shipped assemblies.
 | Split | Path | Type |
 |---|---|---|
 | Run start | `GameInitializer._initializationState` crossing into `ShowUI`, gated on the scene load saying a new game | enum, object graph |
-| Buildings finished | `EntityService._entityRegistry` → `EntityRegistry._entitiesInInstantiationOrder`, each entity's `_componentCache` → `ComponentCache._name`, and its `BlockObjectState._state` | `List<EntityComponent>`, `string`, `State` enum |
+| Buildings finished | `GameOverChecker._entityRegistry` → `EntityRegistry._entitiesInInstantiationOrder`, each entity's `_componentCache` → `ComponentCache._name`, and its `BlockObjectState._state` | `List<EntityComponent>`, `string`, `State` enum |
 | Wonder unlocked | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
 | Wonder activated *(logged, not split)* | `WonderCompletionCountdownStarter._unlockDay` | `int` |
 | Run end | `WonderCompletionCountdownStarter.CountdownFinished` | `bool` |
@@ -210,16 +216,22 @@ So the source is now the **global entity registry**, which has no district in
 it at all:
 
 ```
-EntityService (a DI service, so the ordinary _eventBus validator finds it)
+GameOverChecker (a singleton, so the DI container has it -- see Locating services)
   -> _entityRegistry
      -> _entitiesInInstantiationOrder : List<EntityComponent>   (16,177 on that save)
         -> entity._componentCache -> _name          e.g. "Numbercruncher.IronTeeth.EntityComponent"
         -> entity._componentCache -> _components -> the BlockObjectState -> _state
 ```
 
-`EntityRegistry` has no `_eventBus` of its own, so it is reached by dereference
-from `EntityService`, the same way `DistrictBuildingRegistry` was reached
-through its factory.
+`EntityRegistry` has no `_eventBus` of its own, so it has to be reached by
+dereference from something that holds it, the same way `DistrictBuildingRegistry`
+was reached through its factory. `EntityService` is the obvious holder and was
+the original route, but it turns out **not** to be a singleton and so is not in
+the DI container. `GameOverChecker` is, and holds the same registry.
+
+Nothing about the game-over feature is used or wanted here; it is simply a
+singleton with a reference to the registry, which is what saves a heap scan.
+If a game update removes it, it fails by name like everything else.
 
 Two properties make this cheap despite the list being tens of thousands long:
 
@@ -267,7 +279,7 @@ This has bitten twice: `WorldDataService` (not a DI service, statics only) and
 instead). Both failed silently — the second cost a full test run in which the
 building splits simply never appeared. `EntityRegistry`, which the buildings
 split uses now, has the same shape and is handled the same way: it is reached
-by dereference from `EntityService` rather than located on its own.
+by dereference from `GameOverChecker` rather than located on its own.
 
 Two defences:
 
@@ -569,6 +581,68 @@ The same reasoning, applied to "is this still the same game?", is what replaced
 object lifetime with the scene loader — see the next section. Inferring it from
 whether a held object still read was the single longest-lived bug in this
 project.
+
+## Locating services through the DI container
+
+A heap scan is 1-2s under Proton. A loaded game used to cost five of them --
+clock, run start, wonder unlock, run end, entities -- because each service was
+found on its own. It now costs two.
+
+Timberborn builds its services with a DI container that keeps every singleton
+it made in one array:
+
+```
+SingletonRepository._singletonListener
+  -> SingletonListener._allSingletons : ImmutableArray<object>
+```
+
+`ImmutableArray<T>` is a struct wrapping one `T[]`, so the field slot holds the
+array reference directly. Finding the container costs a scan; every service in
+it is then a lookup, matching each entry's vtable against the class we want.
+
+Measured against the live game, one save loaded, three containers alive at once:
+
+| container | singletons | holds |
+|---|---|---|
+| one | 20 | none of ours |
+| another | 103 | none of ours -- the main menu's |
+| another | 612 | every service the splitter watches |
+
+So the right one has to be picked out, which is what "the container that has a
+`DayNightCycle` in it" does.
+
+`EntityService` is **not** a singleton and is not in there. `GameOverChecker`
+is, and holds the same `EntityRegistry` the buildings split actually wants, so
+that split needs no scan of its own either.
+
+### What it is not
+
+It is **not** an "is a game loaded" signal. The game's container is still alive
+at the same address after exiting to the main menu, holding the same
+`DayNightCycle` -- measured, not assumed. It lingers exactly like the loose
+objects do. That question belongs to the scene loader; see the next section.
+
+For the same reason the container of the game just left is skipped when the
+next one is resolved, exactly as the loose clock instance used to be.
+
+### Two things that cost a test run
+
+**The scan limit truncated the search.** A limit of 16 looked generous against
+three containers. But every abandoned game leaves one behind until it is
+collected, they accumulate over a session, and the scan runs in address order
+with no guarantee a fresh allocation comes last. The new game's container fell
+off the end of the limit and the splitter bound the *previous* game's services
+-- presenting as a game that already had its wonder unlocked and its Forester
+built. The limit is now a safety valve, not a working number.
+
+**Reading the container has to yield.** Identifying a singleton means reading
+its vtable, one round trip through Wine apiece, and 612 of them in a single tick
+is enough to stop the game responding -- it went through the same `wineserver`
+the game itself depends on, and Steam put up "not responding" during a load. The
+contents are read once into a snapshot, a chunk per tick, and every lookup after
+that is free. The snapshot is retaken on the retry path, because
+`_allSingletons` is immutable: registering another singleton replaces the array,
+and services are retried precisely because they do not all exist at once.
 
 ## Lifecycle: telling one game from the next
 
@@ -988,7 +1062,7 @@ Recorded as evidence, not relied on: everything is resolved by name at runtime.
 | `DayNightCycle` | `DayNumber` / `_eventBus` | `+0x48` / `+0x10` | same |
 | `BuildingUnlockingService` | `_unlockedBuildings` / `_eventBus` | `+0x48` / `+0x30` | same |
 | `Wonder` | `IsActive` / `_eventBus` | `+0x48` / `+0x38` | same |
-| `EntityService` | `_entityRegistry` / `_eventBus` | `+0x20` / `+0x28` | not measured |
+| `GameOverChecker` | `_entityRegistry` | measured at runtime | not measured |
 | `EntityRegistry` | `_entitiesInInstantiationOrder` | `+0x18` | not measured |
 | `BlockObjectState` | `_state` | `+0x30` | not measured |
 | `BaseComponent` | `_componentCache` | `+0x10` | same |

@@ -53,10 +53,24 @@ const SUBJECTS: &[Subject] = &[
         used_for: "run end: the Congratulations screen",
     },
     Subject {
-        image: "Timberborn.EntitySystem",
-        class: "EntityService",
-        fields: &["_entityRegistry", "_eventBus"],
-        used_for: "split: buildings finished",
+        image: "Timberborn.SingletonSystem",
+        class: "SingletonRepository",
+        fields: &["_singletonListener"],
+        used_for: "the DI container every service is looked up in",
+    },
+    Subject {
+        image: "Timberborn.SingletonSystem",
+        class: "SingletonListener",
+        fields: &["_allSingletons"],
+        used_for: "the DI container every service is looked up in",
+    },
+    Subject {
+        image: "Timberborn.GameOver",
+        class: "GameOverChecker",
+        // Wanted only because it is a singleton holding the entity registry,
+        // which EntityService is not.
+        fields: &["_entityRegistry"],
+        used_for: "split: buildings finished (reaching the entity registry)",
     },
     Subject {
         image: "Timberborn.EntitySystem",

@@ -18,8 +18,8 @@ use asr::{
 };
 
 /// `MonoArray`: object header, then bounds, then length, then the elements.
-const ARRAY_LENGTH: u64 = 0x18;
-const ARRAY_DATA: u64 = 0x20;
+pub const ARRAY_LENGTH: u64 = 0x18;
+pub const ARRAY_DATA: u64 = 0x20;
 
 /// `MonoString`: object header, then the length, then UTF-16 characters.
 const STRING_LENGTH: u64 = 0x10;

@@ -74,14 +74,6 @@ pub fn string_len(process: &Process, reference: Address) -> Option<i32> {
     process.read::<i32>(pointer.add(0x10)).ok()
 }
 
-/// The outcome of a search.
-pub struct Found {
-    pub first: Option<Address>,
-    /// Whether an empty result actually means "not present". False when the
-    /// scan could not read everything it set out to.
-    pub conclusive: bool,
-}
-
 /// Offset of a named field on a class named at compile time.
 ///
 /// For classes we never need to locate an instance of -- the offset comes from
@@ -113,6 +105,7 @@ pub fn field_of(
 }
 
 /// A class whose instances we can find in memory.
+#[derive(Clone)]
 pub struct Locatable {
     class: Class,
     vtable: Address,
@@ -172,6 +165,12 @@ impl Locatable {
         self.name
     }
 
+    /// The class's vtable, which is what identifies one of its instances in a
+    /// heap scan or in the singleton container.
+    pub fn vtable(&self) -> Address {
+        self.vtable
+    }
+
     /// Offset of a field, by name. Resolved from metadata, so it works whether
     /// or not any instance exists.
     pub fn field(&self, process: &Process, module: &Module, name: &str) -> Option<u32> {
@@ -191,70 +190,58 @@ impl Locatable {
     /// An empty result carries `conclusive: false` when the scan could not read
     /// everything, which happens while a scene is being torn down. Absence is
     /// only meaningful when the search was complete.
-    pub async fn find_one(&self, process: &Process) -> Found {
-        let scan = scan::Scan::new(process, self.vtable)
+    pub async fn find_one(&self, process: &Process) -> Option<Address> {
+        scan::Scan::new(process, self.vtable)
             .validating(self.validator)
             .limit(1)
             .run(process, scan::DEFAULT_BUDGET)
-            .await;
-        Found {
-            first: scan.found.first().copied(),
-            conclusive: scan.is_conclusive(),
-        }
-    }
-
-    /// Finds one instance, ignoring `excluded`.
-    ///
-    /// After a scene load the previous world's objects can still be alive, and
-    /// an ordinary search would return whichever comes first in range order --
-    /// which may be the one just left. Skipping it makes the search pick the
-    /// object belonging to the world that just loaded.
-    ///
-    /// `on_tick` runs between scan slices, for watchers that cannot afford to
-    /// go unread for the seconds a scan takes -- the run start above all.
-    pub async fn find_excluding_polling(
-        &self,
-        process: &Process,
-        excluded: Option<Address>,
-        on_tick: impl FnMut(),
-    ) -> Found {
-        let scan = scan::Scan::new(process, self.vtable)
-            .validating(self.validator)
-            .limit(4)
-            .run_polling(process, scan::DEFAULT_BUDGET, on_tick)
-            .await;
-        Found {
-            first: scan
-                .found
-                .iter()
-                .copied()
-                .find(|&address| Some(address) != excluded),
-            conclusive: scan.is_conclusive(),
-        }
+            .await
+            .found
+            .first()
+            .copied()
     }
 
     /// Finds one instance the caller is willing to accept.
     ///
     /// Scanning during a scene load can turn up the outgoing world's object
     /// alongside the incoming one's, and neither address is known ahead of
-    /// time, so [`find_excluding`](Self::find_excluding) has nothing to
-    /// exclude. A predicate on the object's own state can still tell them
-    /// apart.
+    /// time, so excluding a known address has nothing to exclude. A predicate
+    /// on the object's own state can still tell them apart.
     pub async fn find_matching(
         &self,
         process: &Process,
         limit: usize,
         accept: impl Fn(Address) -> bool,
-    ) -> Found {
-        let scan = scan::Scan::new(process, self.vtable)
+    ) -> Option<Address> {
+        scan::Scan::new(process, self.vtable)
             .validating(self.validator)
             .limit(limit)
             .run(process, scan::DEFAULT_BUDGET)
+            .await
+            .found
+            .iter()
+            .copied()
+            .find(|&address| accept(address))
+    }
+
+    /// Every instance the scan finds, up to `limit`, polling between slices.
+    ///
+    /// For classes that are legitimately multi-instance and have to be told
+    /// apart by what they contain rather than by address -- the DI containers,
+    /// of which several are alive at once.
+    pub async fn find_all_polling(
+        &self,
+        process: &Process,
+        limit: usize,
+        on_tick: impl FnMut(),
+    ) -> (alloc::vec::Vec<Address>, bool) {
+        let scan = scan::Scan::new(process, self.vtable)
+            .validating(self.validator)
+            .limit(limit)
+            .run_polling(process, scan::DEFAULT_BUDGET, on_tick)
             .await;
-        Found {
-            first: scan.found.iter().copied().find(|&address| accept(address)),
-            conclusive: scan.is_conclusive(),
-        }
+        let conclusive = scan.is_conclusive();
+        (scan.found, conclusive)
     }
 
     /// Whether a previously located instance is still the object we think it
