@@ -83,9 +83,11 @@ added to the game.
 The example splits are for a **Folktails** run: the segment names and icons
 are that faction's, so an Iron Teeth run wants its own file, with the
 Numbercruncher and the Earth Repopulator in place of the Observatory and the
-Earth Recultivator. The layout is faction-neutral either way. Order the seven splits to match the route **you** run rather than the
-order they are listed in: each fires when you achieve it, so a `.lss` ordered
-the way you actually play keeps every split attributed to the right segment.
+Earth Recultivator. The layout is faction-neutral either way.
+
+Order the seven splits to match the route **you** run rather than the order
+they are listed in: each fires when you achieve it, so a `.lss` ordered the
+way you actually play keeps every split attributed to the right segment.
 
 ### Adding the auto splitter to your own layout
 
