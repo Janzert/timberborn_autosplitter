@@ -22,8 +22,24 @@ branches: a clean result means any `MISSING` the runtime probe reports is a real
 change rather than a typo in the probe.
 
 `./metadata.py dump <assembly.dll>` lists every class and field in an assembly,
-which is how the split sources in `docs/DESIGN.md` were found in the first
-place.
+with each field's declared type, which is how the split sources in
+`docs/DESIGN.md` were found in the first place:
+
+```
+Timberborn.SingletonSystem.SingletonListener  _allSingletons  ImmutableArray<object>  instance
+```
+
+The type is what says which reader a field needs, and guessing it is a good way
+to lose an evening. `_allSingletons` being an `ImmutableArray<object>` rather
+than a keyed collection is why services are found by walking it and comparing
+vtables; `_typeCache` sitting next to it is a `Dictionary<Type, bool>`, which
+looks like a lookup table until you read the type and see it answers "is this a
+singleton", not "which one".
+
+Signatures are decoded from the `#Blob` heap: primitives, classes, value types,
+arrays and generic instantiations. Every field in the current install decodes;
+anything it cannot render says so in place rather than silently rendering
+something plausible.
 
 ## Why there is nothing else here
 

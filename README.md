@@ -166,8 +166,8 @@ tables parsed directly.
 That checks every class and field name `src/probe.rs` depends on against an
 install, which is the offline half of the version check — the fast answer to
 "did an update rename something", with the game closed. `dump <assembly.dll>`
-lists every class and field in an assembly, which is how the split sources in
-[docs/DESIGN.md](docs/DESIGN.md) were found.
+lists every class and field in an assembly, with each field's declared type,
+which is how the split sources in [docs/DESIGN.md](docs/DESIGN.md) were found.
 
 Nothing here is distributed to runners or touches a running game. See
 [devtools/README.md](devtools/README.md).
