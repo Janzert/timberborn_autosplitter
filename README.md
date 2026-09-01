@@ -53,7 +53,7 @@ No build needed to try it — the release carries a prebuilt module, and
    download
    [`timberborn_autosplitter.wasm`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/timberborn_autosplitter.wasm),
    and the two example files:
-   [`Timberborn-Wonder.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder.lss)
+   [`Timberborn-Wonder-Folktails.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-Folktails.lss)
    and
    [`Timberborn.lsl`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn.lsl).
 2. In LiveSplit, right-click → **Open Splits** → **From File...** and pick the
@@ -80,8 +80,10 @@ The Auto Splitting Runtime component ships with LiveSplit itself — this was
 tested against 1.8.29 — so there is nothing else to install, and nothing is
 added to the game.
 
-The example splits are named for a Folktails route and carry the buildings'
-icons. Order the seven splits to match the route **you** run rather than the
+The example splits are for a **Folktails** run: the segment names and icons
+are that faction's, so an Iron Teeth run wants its own file, with the
+Numbercruncher and the Earth Repopulator in place of the Observatory and the
+Earth Recultivator. The layout is faction-neutral either way. Order the seven splits to match the route **you** run rather than the
 order they are listed in: each fires when you achieve it, so a `.lss` ordered
 the way you actually play keeps every split attributed to the right segment.
 

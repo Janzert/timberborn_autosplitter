@@ -58,5 +58,5 @@ jobs:
             || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
           gh release upload "$GITHUB_REF_NAME" \
             target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm \
-            examples/Timberborn-Wonder.lss \
+            examples/Timberborn-Wonder-Folktails.lss \
             examples/Timberborn.lsl --clobber
