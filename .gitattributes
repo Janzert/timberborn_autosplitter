@@ -1,0 +1,5 @@
+# LiveSplit writes these as UTF-8 with a BOM and CRLF endings, and rewrites
+# them that way on every save. Keep them that way so an edit here does not
+# show up as a whole-file diff.
+*.lss text eol=crlf
+*.lsl text eol=crlf
