@@ -54,11 +54,15 @@ No build needed to try it — the release carries a prebuilt module, and
 2. In LiveSplit, right-click → **Open Splits** → **From File...** and pick the
    `.lss`. Then right-click → **Open Layout** → **From File...** and pick the
    `.lsl`, which already has the **Auto Splitting Runtime** component in it.
+
+   ![The LiveSplit context menu with Open Splits expanded](docs/images/open-splits.png)
 3. Right-click → **Edit Layout...** → **Layout Settings** → the **Auto
    Splitting Runtime** tab. Use **Browse...** next to **Script Path** to pick
    the `.wasm` you downloaded.
 4. The individual splits appear as checkboxes below it and can be turned off
    there. **Save Layout** and **Save Splits** when done.
+
+   ![The Auto Splitting Runtime tab, showing Script Path and the per-split checkboxes](docs/images/script-path.png)
 
 The layout ships with **Script Path** deliberately empty, because the path is
 stored in the layout and only you know where you put the file. For the same
@@ -74,6 +78,8 @@ added to the game.
 
 If you would rather build the layout yourself: right-click → **Edit Layout...**
 → `+` → **Control** → **Auto Splitting Runtime**, then step 3 above.
+
+![The Layout Editor with the Auto Splitting Runtime component added](docs/images/layout-editor.png)
 
 The example splits are named for a Folktails route and carry the buildings'
 icons. Order the seven splits to match the route **you** run rather than the
