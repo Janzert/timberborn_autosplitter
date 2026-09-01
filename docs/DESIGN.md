@@ -741,9 +741,11 @@ though the command line is `...\Timberborn.exe`. Unity 6.3 did not do this,
 which is why this only appeared on the experimental branch — and it presents as
 the splitter sitting silent, indistinguishable from the game not running.
 
-Windows reports the executable name, so runners on the stable branch are
-unaffected. Linux and Steam Deck players are not, so it is handled rather than
-worked around:
+Windows reports the executable name, so runners there match on it directly and
+never reach the ambiguous path. That branch has only ever run against the game
+on Windows, where a full Folktails run confirmed it. Linux and Steam Deck
+players get the truncated name instead, so it is handled rather than worked
+around:
 
 - exact names (`Timberborn.exe`, `Timberborn.x86_64`) are trusted outright
 - ambiguous ones (`Unity Main Thre`) would match *any* Unity 6.5 game, so
