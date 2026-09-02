@@ -48,6 +48,8 @@ measured.
 
 No build needed to try it — the release carries a prebuilt module, and
 [`examples/`](examples/) has a splits file and a layout to start from.
+[`CHANGELOG.md`](CHANGELOG.md) says what changed if you are updating from an
+earlier one.
 
 1. From the [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest),
    download
