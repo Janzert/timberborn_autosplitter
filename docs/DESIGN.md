@@ -158,6 +158,26 @@ of 3043 readable-writable ranges totalling 6906 MiB, only 139 — 1497 MiB, 21%
 than the byte ratio suggests, because those ranges are also slower per byte:
 124ms per 32 MiB slice against 26ms.
 
+**That 21% is a Windows number.** Measured under Proton on the same game
+build, twice in one session: 64 ranges holding 1416 MiB of 3883 MiB, and 76
+holding 1608 MiB of 4320 MiB — around **36%**, of an address space little more
+than half the size. So the shortcut reads a larger share of a smaller space
+there, and saves proportionally less.
+
+It can even cost, and whether it does is not predictable. Binding the run start
+scans with a predicate that rejects the outgoing world's initializer, so a
+restricted sweep turning up only that one is not settled and falls through to
+the full sweep anyway. Measured on Linux over three new-game binds it fell
+through twice and settled once: the worst read 1427 MiB and then 3654 MiB where
+a single full pass would have read 3654, while the best settled in 1608 MiB
+against a 4320 MiB sweep. It turns on whether the incoming world's initializer
+happens to land in a range already mapped, which nothing controls.
+
+Every one of them still bound during the load — on Linux a full sweep is 1–2s,
+so the extra pass is affordable either way. The shortcut is kept because the
+platform it rescues is the one where a sweep costs 29s and the retry loop gets
+a single attempt.
+
 So `HotRanges` in `src/scan.rs` records which ranges hold managed objects, and
 scans read only those, with the full sweep behind them as a fallback.
 
