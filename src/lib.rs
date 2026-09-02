@@ -260,8 +260,13 @@ async fn run(process: &Process, settings: &mut Settings) {
         return;
     };
 
+    // Which memory ranges hold managed objects. Empty until the heap is mapped,
+    // and every scan is a full sweep until then.
+    let mut hot = scan::HotRanges::default();
+    let mut heap_mapped = false;
+
     let mut scene = loop {
-        if let Some(scene) = SceneLoad::resolve(process, &module).await {
+        if let Some(scene) = SceneLoad::resolve(process, &module, &mut hot).await {
             break scene;
         }
         for _ in 0..RESCAN_DELAY_TICKS {
@@ -307,6 +312,7 @@ async fn run(process: &Process, settings: &mut Settings) {
                         // Inside this loop, so by definition watched.
                         true,
                         previous_run_start,
+                        &hot,
                     )
                     .await;
                 }
@@ -353,6 +359,7 @@ async fn run(process: &Process, settings: &mut Settings) {
                     Some(new_game),
                     scene.observed,
                     previous_run_start,
+                    &hot,
                 )
                 .await
             }
@@ -367,6 +374,7 @@ async fn run(process: &Process, settings: &mut Settings) {
                     None,
                     scene.observed,
                     previous_run_start,
+                    &hot,
                 )
                 .await
             }
@@ -377,6 +385,37 @@ async fn run(process: &Process, settings: &mut Settings) {
         // only finds a dead one -- which is what "no longer skipping it" then
         // latched onto, binding the previous game's services on the menu.
         if matches!(scene.loaded, Scene::MainMenu | Scene::MapEditor) {
+            // The one safe moment to map the heap: no run is in progress, so a
+            // scan that takes a while costs nothing but time. It could not be
+            // done any earlier anyway -- Mono fills a class's vtable in lazily,
+            // so ComponentCache has none until a game has built one.
+            if !heap_mapped {
+                if let Some(vtable) = service::class_vtable(
+                    process,
+                    &module,
+                    "Timberborn.BaseComponentSystem",
+                    "ComponentCache",
+                ) {
+                    // A load starting underneath this has to win: the map is
+                    // seconds long, and blocking through a load would miss the
+                    // very run start it exists to protect.
+                    let (mut mapped, complete) =
+                        service::map_heap(process, vtable, "ComponentCache", || {
+                            !scene.is_loading(process).unwrap_or(false)
+                        })
+                        .await;
+                    if !mapped.is_empty() {
+                        // Keep anything already learned: the persistent objects
+                        // found before a game was ever loaded live in a range
+                        // the map may not cover.
+                        mapped.remember(hot.ranges());
+                        hot = mapped;
+                    }
+                    // Only a complete map retires the job. A partial one is
+                    // kept and improved on the next visit to the menu.
+                    heap_mapped = complete;
+                }
+            }
             for _ in 0..RESCAN_DELAY_TICKS {
                 next_tick().await;
             }
@@ -401,6 +440,7 @@ async fn run(process: &Process, settings: &mut Settings) {
             &module,
             previous_registry,
             clock.vtable(),
+            &mut hot,
             || {
                 if let Some(start) = run_start.as_mut() {
                     if start.poll(process) {
@@ -473,6 +513,8 @@ async fn run(process: &Process, settings: &mut Settings) {
             event_bus_vtable,
             &mut scene,
             run_start,
+            &mut hot,
+            &mut heap_mapped,
             settings,
         )
         .await;
@@ -480,7 +522,7 @@ async fn run(process: &Process, settings: &mut Settings) {
         if !scene.still_valid(process) {
             asr::print_message("The scene loader is gone. Re-resolving it.");
             scene = loop {
-                if let Some(scene) = SceneLoad::resolve(process, &module).await {
+                if let Some(scene) = SceneLoad::resolve(process, &module, &mut hot).await {
                     break scene;
                 }
                 for _ in 0..RESCAN_DELAY_TICKS {
@@ -527,7 +569,11 @@ enum Scene {
 }
 
 impl SceneLoad {
-    async fn resolve(process: &Process, module: &Module) -> Option<Self> {
+    async fn resolve(
+        process: &Process,
+        module: &Module,
+        hot: &mut scan::HotRanges,
+    ) -> Option<Self> {
         // Not a DI service, so no _eventBus: validated through the asset loader
         // it holds, the same way DistrictBuildingRegistry was.
         let asset_loader =
@@ -541,7 +587,9 @@ impl SceneLoad {
             asset_loader,
         )?;
         let offset = class.field(process, module, "_isLoading")?;
-        let instance = class.find_one(process).await?;
+        let found = class.find_one(process, hot).await;
+        hot.remember(&found.ranges);
+        let instance = found.one()?;
         let scene = Self {
             class,
             instance,
@@ -665,6 +713,8 @@ async fn watch(
     event_bus_vtable: Address,
     scene: &mut SceneLoad,
     mut run_start: Option<RunStart>,
+    hot: &mut scan::HotRanges,
+    heap_mapped: &mut bool,
     settings: &mut Settings,
 ) {
     let mut ticks = 0u32;
@@ -699,11 +749,53 @@ async fn watch(
     let want_run_start = !matches!(scene.loaded, Scene::MainMenu | Scene::MapEditor);
     let watched_load = scene.observed;
 
+    // Resolved once: the probe the heap map is built from. Only present after a
+    // game has been loaded, since Mono fills a class's vtable in lazily.
+    let cache_vtable = service::class_vtable(
+        process,
+        module,
+        "Timberborn.BaseComponentSystem",
+        "ComponentCache",
+    );
+    let mut map: Option<scan::Scan> = None;
+
     loop {
         // The authoritative end of this world. Everything held here belongs to
         // the scene being replaced, whether or not it still reads.
         if scene.started_loading(process) {
             return;
+        }
+
+        // Map the heap a slice at a time while there is time to spare. This
+        // loop is the only place that reliably has any: exiting to the main
+        // menu does not always register as a scene load, so the menu branch
+        // above it cannot be counted on to run at all.
+        //
+        // A slice per tick rather than awaiting the whole map, so every split
+        // check below keeps running -- awaiting it would stop them for the best
+        // part of a minute. Abandoning it costs nothing: the `return` above
+        // drops the partial scan when a load starts, which is exactly when the
+        // splitter has better things to do.
+        if !*heap_mapped {
+            if map.is_none() {
+                if let Some(vtable) = cache_vtable {
+                    map = Some(scan::Scan::new(process, vtable).mapping());
+                }
+            }
+            if map.as_mut().is_some_and(|scan| {
+                scan.step(process, scan::MAP_BUDGET)
+            }) {
+                if let Some(scan) = map.take() {
+                    hot.remember(&scan.found_ranges);
+                    *heap_mapped = true;
+                    asr::print_message(&format!(
+                        "[scan] heap mapped: {} ranges hold managed objects, {} MiB of {} MiB.                          Later scans read only those.",
+                        hot.len(),
+                        hot.bytes() >> 20,
+                        scan.stats.bytes_total >> 20,
+                    ));
+                }
+            }
         }
 
         // Before the state is read, not after: a freed GameInitializer keeps
@@ -727,6 +819,7 @@ async fn watch(
                 expect_new_game,
                 watched_load,
                 lost_run_start,
+                hot,
             )
             .await;
         }
@@ -1140,6 +1233,9 @@ impl Buildings {
         // on a long-running one -- so it yields between chunks rather than
         // stalling the runtime for a second or more.
         let total = buildings.count(process);
+        asr::print_message(&format!(
+            "[entities] opening walk starting over {total} entities."
+        ));
         let mut index = 0;
         while index < total {
             let end = (index + Self::BASELINE_CHUNK).min(total);
@@ -1738,6 +1834,7 @@ impl RunStart {
         new_game: Option<bool>,
         watched_load: bool,
         skip: Option<Address>,
+        hot: &scan::HotRanges,
     ) -> Option<Self> {
         Self::bind(
             process,
@@ -1746,6 +1843,7 @@ impl RunStart {
             new_game,
             watched_load,
             skip,
+            hot,
             false,
         )
         .await
@@ -1773,6 +1871,7 @@ impl RunStart {
         new_game: Option<bool>,
         watched_load: bool,
         skip: Option<Address>,
+        hot: &scan::HotRanges,
     ) -> Option<Self> {
         Self::bind(
             process,
@@ -1781,11 +1880,13 @@ impl RunStart {
             new_game,
             watched_load,
             skip,
+            hot,
             true,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)] // Everything a bind has to weigh up.
     async fn bind(
         process: &Process,
         module: &Module,
@@ -1793,6 +1894,7 @@ impl RunStart {
         new_game: Option<bool>,
         watched_load: bool,
         skip: Option<Address>,
+        hot: &scan::HotRanges,
         require_pre_ui: bool,
     ) -> Option<Self> {
         let class = service::Locatable::new(
@@ -1804,7 +1906,7 @@ impl RunStart {
         )?;
         let offset = class.field(process, module, "_initializationState")?;
         let instance = class
-            .find_matching(process, 4, |address| {
+            .find_matching(process, 4, hot, |address| {
                 if Some(address) == skip {
                     return false;
                 }
@@ -1813,7 +1915,8 @@ impl RunStart {
                         .read::<i32>(address.add(offset as u64))
                         .is_ok_and(|state| state < SHOW_UI)
             })
-            .await?;
+            .await
+            .one()?;
 
         // Static, so no instance and no validator are needed. WorldDataService
         // is not a DI service and has no _eventBus, so Locatable cannot be

@@ -50,7 +50,7 @@ use alloc::{format, vec, vec::Vec};
 
 use asr::{future::next_tick, game_engine::unity::mono::Module, Address, Process};
 
-use crate::{collections, service};
+use crate::{collections, scan::HotRanges, service};
 
 /// Refuse to walk an array longer than this. The game's container held 612;
 /// anything on a different scale means the field was misread rather than that
@@ -118,6 +118,7 @@ impl Registry {
         module: &Module,
         skip: Option<Address>,
         required: Address,
+        hot: &mut HotRanges,
         mut on_tick: impl FnMut(),
     ) -> Search {
         // Not a DI service itself, so no _eventBus: validated through the
@@ -153,11 +154,68 @@ impl Registry {
             return Search::inconclusive();
         };
 
-        let (candidates, conclusive) = class
-            .find_all_polling(process, MAX_CONTAINERS, &mut on_tick)
+        // The known ranges first. Whether a container is the right one takes an
+        // async walk of its contents, so the two passes are driven from here
+        // rather than inside the scan: a restricted sweep that turns up
+        // candidates none of which hold the clock is not an answer, and has to
+        // fall through to the full one.
+        if !hot.is_empty() {
+            let found = class
+                .find_all_polling(process, MAX_CONTAINERS, hot, &mut on_tick)
+                .await;
+            hot.remember(&found.ranges);
+            let picked = Self::pick(
+                process,
+                &class,
+                &found,
+                skip,
+                required,
+                listener_offset,
+                all_singletons_offset,
+            )
             .await;
+            if picked.is_some() {
+                return Search {
+                    registry: picked,
+                    conclusive: found.conclusive,
+                };
+            }
+        }
 
-        for repository in candidates {
+        let found = class
+            .find_all_polling(process, MAX_CONTAINERS, &HotRanges::default(), &mut on_tick)
+            .await;
+        hot.remember(&found.ranges);
+        let conclusive = found.conclusive;
+        let registry = Self::pick(
+            process,
+            &class,
+            &found,
+            skip,
+            required,
+            listener_offset,
+            all_singletons_offset,
+        )
+        .await;
+        Search {
+            registry,
+            conclusive,
+        }
+    }
+
+    /// The first candidate that is not the one just left and does hold the
+    /// required class. Costs a [`refresh`](Self::refresh) apiece, which is why
+    /// it is not folded into the scan itself.
+    async fn pick(
+        process: &Process,
+        class: &service::Locatable,
+        found: &service::Found,
+        skip: Option<Address>,
+        required: Address,
+        listener_offset: u32,
+        all_singletons_offset: u32,
+    ) -> Option<Self> {
+        for &repository in &found.instances {
             if Some(repository) == skip {
                 continue;
             }
@@ -173,16 +231,10 @@ impl Registry {
                 asr::print_message(&format!(
                     "The game's singleton container is at {repository}."
                 ));
-                return Search {
-                    registry: Some(registry),
-                    conclusive,
-                };
+                return Some(registry);
             }
         }
-        Search {
-            registry: None,
-            conclusive,
-        }
+        None
     }
 
     /// The instance of the class with this vtable, if the snapshot has one.

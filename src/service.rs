@@ -13,7 +13,29 @@ use asr::{
     Address, Process,
 };
 
-use crate::scan::{self, Validator};
+use alloc::vec::Vec;
+
+use crate::scan::{self, HotRanges, Validator};
+
+/// What a scan turned up.
+pub struct Found {
+    /// Instances that passed validation.
+    pub instances: Vec<Address>,
+    /// The range each instance came from, so the caller can feed [`HotRanges`]
+    /// and make later scans cheap. Same length as `instances`.
+    pub ranges: Vec<(Address, u64)>,
+    /// Whether an empty result actually means "not present". Never true for a
+    /// scan restricted to known ranges, which can only say "not where we
+    /// looked".
+    pub conclusive: bool,
+}
+
+impl Found {
+    /// The first instance, for the singleton case.
+    pub fn one(&self) -> Option<Address> {
+        self.instances.first().copied()
+    }
+}
 
 /// The field almost every Timberborn service has, and the class it points at.
 /// Not universal: `ComponentCache` and other non-services have no `_eventBus`.
@@ -190,15 +212,77 @@ impl Locatable {
     /// An empty result carries `conclusive: false` when the scan could not read
     /// everything, which happens while a scene is being torn down. Absence is
     /// only meaningful when the search was complete.
-    pub async fn find_one(&self, process: &Process) -> Option<Address> {
-        scan::Scan::new(process, self.vtable)
-            .validating(self.validator)
-            .limit(1)
-            .run(process, scan::DEFAULT_BUDGET)
+    pub async fn find_one(&self, process: &Process, hot: &HotRanges) -> Found {
+        self.hot_then_full(process, Some(1), hot, |found| !found.instances.is_empty())
             .await
-            .found
-            .first()
-            .copied()
+    }
+
+    /// One sweep: the known ranges if there are any, otherwise everything.
+    async fn sweep(
+        &self,
+        process: &Process,
+        limit: Option<usize>,
+        hot: &HotRanges,
+        on_tick: impl FnMut(),
+    ) -> Found {
+        let mut scan = scan::Scan::new(process, self.vtable)
+            .validating(self.validator)
+            .restricted_to(hot);
+        if let Some(n) = limit {
+            scan = scan.limit(n);
+        }
+        let restricted = !hot.is_empty();
+        asr::print_message(&alloc::format!(
+            "[scan] {} starting ({}).",
+            self.name,
+            if restricted { "known ranges" } else { "full" }
+        ));
+        let scan = scan
+            .run_polling(process, scan::DEFAULT_BUDGET, on_tick)
+            .await;
+        let s = &scan.stats;
+        asr::print_message(&alloc::format!(
+            "[scan] {} done: {} slices, {} of {} MiB over {} ranges ({} skipped), \
+             {} chunk read failures, {} KiB unreadable, {} found, {} rejected.",
+            self.name,
+            s.slices,
+            s.bytes_scanned >> 20,
+            s.bytes_total >> 20,
+            s.ranges_scanned,
+            s.ranges_skipped,
+            s.read_failures,
+            s.bytes_unreadable >> 10,
+            scan.found.len(),
+            scan.rejected.len(),
+        ));
+        let conclusive = scan.is_conclusive();
+        Found {
+            instances: scan.found,
+            ranges: scan.found_ranges,
+            conclusive,
+        }
+    }
+
+    /// Sweeps the known ranges first and falls back to the whole address space
+    /// if that did not settle it.
+    ///
+    /// The fallback is what keeps the shortcut honest: the known set is only
+    /// ever a hint, so a miss costs an extra pass over 21% of memory rather
+    /// than a wrong answer.
+    async fn hot_then_full(
+        &self,
+        process: &Process,
+        limit: Option<usize>,
+        hot: &HotRanges,
+        settled: impl Fn(&Found) -> bool,
+    ) -> Found {
+        if !hot.is_empty() {
+            let found = self.sweep(process, limit, hot, || {}).await;
+            if settled(&found) {
+                return found;
+            }
+        }
+        self.sweep(process, limit, &HotRanges::default(), || {}).await
     }
 
     /// Finds one instance the caller is willing to accept.
@@ -211,17 +295,30 @@ impl Locatable {
         &self,
         process: &Process,
         limit: usize,
+        hot: &HotRanges,
         accept: impl Fn(Address) -> bool,
-    ) -> Option<Address> {
-        scan::Scan::new(process, self.vtable)
-            .validating(self.validator)
-            .limit(limit)
-            .run(process, scan::DEFAULT_BUDGET)
-            .await
-            .found
-            .iter()
-            .copied()
-            .find(|&address| accept(address))
+    ) -> Found {
+        let picked = |found: &Found| {
+            found
+                .instances
+                .iter()
+                .position(|&address| accept(address))
+        };
+        let found = self
+            .hot_then_full(process, Some(limit), hot, |f| picked(f).is_some())
+            .await;
+        match picked(&found) {
+            Some(i) => Found {
+                instances: alloc::vec![found.instances[i]],
+                ranges: found.ranges.get(i).copied().into_iter().collect(),
+                conclusive: found.conclusive,
+            },
+            None => Found {
+                instances: Vec::new(),
+                ranges: Vec::new(),
+                conclusive: found.conclusive,
+            },
+        }
     }
 
     /// Every instance the scan finds, up to `limit`, polling between slices.
@@ -233,15 +330,10 @@ impl Locatable {
         &self,
         process: &Process,
         limit: usize,
+        hot: &HotRanges,
         on_tick: impl FnMut(),
-    ) -> (alloc::vec::Vec<Address>, bool) {
-        let scan = scan::Scan::new(process, self.vtable)
-            .validating(self.validator)
-            .limit(limit)
-            .run_polling(process, scan::DEFAULT_BUDGET, on_tick)
-            .await;
-        let conclusive = scan.is_conclusive();
-        (scan.found, conclusive)
+    ) -> Found {
+        self.sweep(process, Some(limit), hot, on_tick).await
     }
 
     /// Whether a previously located instance is still the object we think it
@@ -249,4 +341,48 @@ impl Locatable {
     pub fn still_valid(&self, process: &Process, instance: Address) -> bool {
         self.validator.accepts(process, instance)
     }
+}
+
+/// Maps the ranges the managed heap occupies, using `vtable` as a probe.
+///
+/// Wants a class with many instances: measured, `ComponentCache` had 5916
+/// spread over 139 ranges, which is the heap's whole footprint -- 1497 MiB of a
+/// 6906 MiB address space. Every later scan can then skip the other 79%, which
+/// is Unity's native memory and cannot hold a managed object.
+///
+/// Free-standing rather than a [`Locatable`] method because mapping needs only
+/// a vtable, and `ComponentCache` is not a DI service: it has no `_eventBus`,
+/// so no `Locatable` can be built for it. No validator either, deliberately --
+/// an over-match only adds a range to look at later, costing a little time,
+/// and the scans that use the map validate their own hits anyway.
+/// Returns the map and whether it is complete. An aborted map is still sound
+/// -- every range in it really does hold objects -- just not exhaustive, so the
+/// caller should keep it and try again rather than trust it as the last word.
+pub async fn map_heap(
+    process: &Process,
+    vtable: Address,
+    name: &str,
+    keep_going: impl FnMut() -> bool,
+) -> (HotRanges, bool) {
+    let scan = scan::Scan::new(process, vtable)
+        .mapping()
+        .run_polling_while(process, scan::MAP_BUDGET, keep_going)
+        .await;
+    let total = scan.stats.bytes_total;
+    let mut hot = HotRanges::default();
+    hot.remember(&scan.found_ranges);
+    asr::print_message(&alloc::format!(
+        "[scan] heap mapped via {}: {} of {} ranges hold managed objects, {} MiB of {} MiB ({}%). Later scans read only those.",
+        name,
+        hot.len(),
+        scan.stats.ranges_scanned,
+        hot.bytes() >> 20,
+        total >> 20,
+        hot.bytes().saturating_mul(100).checked_div(total).unwrap_or(0),
+    ));
+    if scan.aborted() {
+        asr::print_message("[scan] heap map cut short by a scene load; will finish it later.");
+    }
+    let complete = !scan.aborted();
+    (hot, complete)
 }

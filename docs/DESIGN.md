@@ -130,6 +130,67 @@ way to go the other way either — from an object found at runtime back to a
 Neither leaks offset internals, which makes both better upstreaming
 propositions than a raw address getter. See `docs/ASR_FORK.md`.
 
+### Scanning only the ranges that can hold an object
+
+A scan reads every readable-writable range in the process. Under Proton that is
+cheap enough not to matter. On Windows it is not, and the gap is not one of
+degree — measured against the same game version:
+
+| | Proton | Windows |
+|---|---|---|
+| Address space scanned | 3.3 GiB | 6.9 GiB |
+| A full sweep | 1–2s | 29s |
+| Effective throughput | ~2 GiB/s | ~240 MiB/s |
+
+That is fatal rather than merely slow, because `resolve_during_load` is a
+*retry* loop: the initializer does not exist on the first passes, so the bind
+is retried until it takes. At 1–2s a try it gets twenty or forty attempts
+inside a load. At 29s it gets one, and a missed run start is the result. The
+stutter a runner sees and the timer that fails to start are the same bug.
+
+Slicing cannot fix it. Total sweep time is bandwidth-bound, so a smaller budget
+makes the stalls shorter and more numerous and leaves the total where it was.
+The only lever is reading fewer bytes.
+
+Most of what is read cannot hold a managed object at all. Measured on Windows,
+of 3043 readable-writable ranges totalling 6906 MiB, only 139 — 1497 MiB, 21%
+— contained one. The rest is Unity's native memory. Skipping it is worth more
+than the byte ratio suggests, because those ranges are also slower per byte:
+124ms per 32 MiB slice against 26ms.
+
+So `HotRanges` in `src/scan.rs` records which ranges hold managed objects, and
+scans read only those, with the full sweep behind them as a fallback.
+
+**The set is learned, not guessed.** Nearly every range holding objects is
+exactly 16 MiB, which is Boehm's heap section size, and a rule on size would
+have been easy to write and wrong: one of the three containers measured sat in
+a 2 MiB range. A learned set cannot fail that way — at worst it is incomplete,
+and the sweep behind it still runs.
+
+**A restricted scan never proves absence.** `is_conclusive` returns false for
+one however cleanly it read what it was given, because "not in the ranges we
+knew about" is not "not there". That matters concretely: the give-up-skipping
+rule counts *conclusive* empty scans, and would otherwise be talked into
+binding the previous game's container.
+
+**The map is built by scanning for a class with many instances.**
+`ComponentCache` has one per entity — 5916 of them, spread across the heap's
+whole footprint. No validator: an over-match only adds a range to look at
+later, and the scans that use the map validate their own hits anyway.
+
+**It is built from the watch loop, a slice at a time.** That loop is the only
+place reliably in a game with time to spare. The main menu is not: exiting to
+it does *not* always register as a scene load, so `Scene::MainMenu` is not
+somewhere work can be scheduled — a mistake that cost a full round of testing.
+A slice per tick keeps every split check below it running, where awaiting the
+whole map would stop them for the best part of a minute, and the loop's own
+exit abandons it when a load starts.
+
+The first game of a session pays for two full sweeps — the container scan, and
+then the map — and every game after it is fast. Worth improving: the container
+scan already reads every byte, so counting a second needle in the same pass
+would build the map for nothing.
+
 ## Split sources
 
 All paths below were verified to exist in the shipped assemblies.
@@ -1024,6 +1085,31 @@ noise. Harmless; worth watching only if it climbs.
 These numbers are from Proton, so the range layout (1492 scanned, 1809 skipped)
 and read costs are Wine's, not Windows'. Worth re-measuring natively before
 tuning anything against them.
+
+### Windows, natively
+
+Measured against the same game version (Unity 6000.3.6f1) with real LiveSplit
+attached. The Proton numbers above do not carry over.
+
+**A sweep is an order of magnitude dearer**: 6906 MiB across 3043 ranges in
+29s, ~240 MiB/s. Read failures are not the reason — 83 chunks failed out of
+~110,000 on one run, so the page-by-page fallback is not what costs. Volume is.
+
+**Restricting to the mapped ranges**, cold two-cycle run in one session:
+
+| | first game | second game |
+|---|---|---|
+| `GameInitializer`, during the load | 4.0s (full, 831 MiB) | **2.0s** (mapped, 1429 MiB) |
+| `SingletonRepository`, after it | 40.3s (full, 6151 MiB) | **1.0s** (mapped) |
+
+The first game's during-load scan is cheap only because the process has not
+grown yet — 831 MiB mid-load against 6.3 GiB once the game is up.
+
+**Process size is the variable that matters.** A fresh process is 0.65 GB at
+the main menu and 6.3 GB with a game loaded, and it keeps growing across games.
+So how bad this gets depends on how long the process has lived, which is why a
+first game can look fine and a second cannot, and why none of it reproduces on
+a small process.
 
 ### Scanning and attaching, learned the hard way
 
