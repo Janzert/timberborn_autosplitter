@@ -38,7 +38,16 @@ the submodule:
 | `upstream` | <https://github.com/LiveSplit/asr> — pull from it to stay current |
 
 The two accessors live on the `class-vtable` branch, which is what the parent
-repo's gitlink points at.
+repo's gitlink points at. `mono-class-vtable` carries the same work shaped for
+upstream review -- retitled to the house style, with the dedup and the doc
+comments a reviewer asked for in advance.
+
+**The gitlink tracks `class-vtable`, never `mono-class-vtable`.** A PR branch is
+rewritten as review proceeds, and a gitlink pointing at a commit that a later
+force-push orphans cannot be fetched at all: every fresh clone breaks. That is
+the one rule here worth more than the convenience of a single branch. Keep the
+two at the same commit while they agree, and let them diverge if review asks
+for something the splitter does not need.
 
 Note that `git submodule sync` rewrites `origin`'s fetch URL from `.gitmodules`
 but leaves the push URL alone, which is why the two differ. If the push URL is
@@ -66,11 +75,24 @@ git add vendor/asr && git commit -m "chore: bump vendored asr"
 
 ## Upstreaming
 
-Ship on the fork first; open the PR once there is a working splitter to point
-at as the motivating use case. Frame it generally rather than as a Timberborn
-special case: Unity games using constructor-injection DI (Bindito, Zenject,
-VContainer) frequently have no static roots at all, which makes `UnityPointer`
-unusable and scanning for a singleton's instance the only option.
+`mono-class-vtable` is pushed to the fork and ready to open against
+`LiveSplit/asr`; the body is `asr-pr-body.md` in the workspace root. It has not
+been opened yet.
+
+It is framed generally rather than as a Timberborn special case: Unity games
+using constructor-injection DI (Bindito, Zenject, VContainer) frequently have
+no static roots at all, which makes `UnityPointer` unusable and scanning for a
+singleton's instance the only option.
+
+Two things were done to it that the fork branch did not need. `get_vtable` is
+the first half of upstream's own `get_static_table_pointer`, so that function
+now calls it -- the diff reads as an extraction rather than an addition. And
+`of_object` documents the lazily-filled field table, which is a real trap in
+the API being proposed and cost a session to find.
+
+Upstream uses neither conventional commits nor an `Area:` prefix -- 93% of the
+last 150 subjects are a bare imperative sentence -- so the commits are titled
+to match rather than to match this repo.
 
 Upstream may prefer a higher-level API (e.g. `Image::find_instances(&class)`)
 over exposing the raw address. That is a nicer contribution but more surface to
