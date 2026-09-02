@@ -95,6 +95,9 @@ pub fn count_offset(process: &Process, module: &Module, address: Address) -> Opt
             return Some(offset);
         }
     }
+    asr::print_message(
+        "[collections] HashSet field names did not resolve; using the known layout.",
+    );
     HashSet::looks_like_a_set(process, address).then_some(HashSet::COUNT)
 }
 
@@ -226,6 +229,9 @@ impl List {
                 return Some((size, items));
             }
         }
+        asr::print_message(
+            "[collections] List field names did not resolve; using the known layout.",
+        );
         Self::looks_like_a_list(process, address)
             .then_some((Self::SIZE, Self::ITEMS))
     }
