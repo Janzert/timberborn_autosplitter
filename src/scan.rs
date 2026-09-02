@@ -235,6 +235,10 @@ impl Scan {
         }
         self.ranges.retain(|&(base, _)| hot.contains(base));
         self.restricted = true;
+        // `ranges_skipped` keeps its meaning -- rejected by the filter -- but
+        // the scanned count has to follow the trimmed list, or the log claims
+        // a restricted scan covered every range the filter passed.
+        self.stats.ranges_scanned = self.ranges.len() as u32;
         self.stats.bytes_total = self.ranges.iter().map(|&(_, size)| size).sum();
         self
     }
