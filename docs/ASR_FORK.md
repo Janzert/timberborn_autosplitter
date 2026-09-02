@@ -75,9 +75,8 @@ git add vendor/asr && git commit -m "chore: bump vendored asr"
 
 ## Upstreaming
 
-`mono-class-vtable` is pushed to the fork and ready to open against
-`LiveSplit/asr`; the body is `asr-pr-body.md` in the workspace root. It has not
-been opened yet.
+Open as <https://github.com/LiveSplit/asr/pull/157>, from the
+`mono-class-vtable` branch on the fork.
 
 It is framed generally rather than as a Timberborn special case: Unity games
 using constructor-injection DI (Bindito, Zenject, VContainer) frequently have
