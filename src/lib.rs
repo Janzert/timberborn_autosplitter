@@ -1114,13 +1114,9 @@ impl Buildings {
             read_pointer(process, entity_registry, order_field),
             "the entity list is null"
         );
-        let size_offset = need!(
-            collections::List::size_offset(process, module, entities),
+        let (size_offset, items_offset) = need!(
+            collections::List::offsets(process, module, entities),
             "the entity list is not a List"
-        );
-        let items_offset = need!(
-            service::field_of(process, module, entities, "_items"),
-            "the entity list has no _items"
         );
 
         let mut buildings = Self {

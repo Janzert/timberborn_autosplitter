@@ -90,17 +90,68 @@ pub struct HashSet {
 /// Offset of `_count` on a `HashSet<T>`, resolved once so the cheap "has
 /// anything changed" check does not need the rest of the layout.
 pub fn count_offset(process: &Process, module: &Module, address: Address) -> Option<u32> {
-    Class::of_object(process, module, address)?.get_field_offset(process, module, "_count")
+    if let Some(class) = Class::of_object(process, module, address) {
+        if let Some(offset) = class.get_field_offset(process, module, "_count") {
+            return Some(offset);
+        }
+    }
+    HashSet::looks_like_a_set(process, address).then_some(HashSet::COUNT)
 }
 
 impl HashSet {
+    /// Mono's `HashSet<T>` after the object header: the references first
+    /// (`_buckets`, `_slots`, `_comparer`, `_siInfo`), then the ints
+    /// (`_count`, `_lastIndex`, `_freeList`, `_version`).
+    ///
+    /// Read out of a live game rather than assumed -- an unlock set with four
+    /// entries showed `_buckets` and `_slots` as 7-element arrays at +0x10 and
+    /// +0x18, then `_count` 4 and `_lastIndex` 4 packed at +0x30, and
+    /// `_freeList` -1 with `_version` 4 at +0x38. Used only when the class
+    /// metadata cannot answer; see [`List::offsets`] for why that happens.
+    const SLOTS: u32 = 0x18;
+    pub(super) const COUNT: u32 = 0x30;
+    const LAST_INDEX: u32 = 0x34;
+
+    /// Offsets of `_slots` and `_lastIndex`, by name where possible.
+    fn offsets(process: &Process, module: &Module, address: Address) -> Option<(u32, u32)> {
+        if let Some(class) = Class::of_object(process, module, address) {
+            let slots = class.get_field_offset(process, module, "_slots");
+            let last_index = class.get_field_offset(process, module, "_lastIndex");
+            if let (Some(slots), Some(last_index)) = (slots, last_index) {
+                return Some((slots, last_index));
+            }
+        }
+        Self::looks_like_a_set(process, address).then_some((Self::SLOTS, Self::LAST_INDEX))
+    }
+
+    /// Whether the object holds a plausible slot array, with a used region
+    /// inside it and a count inside that.
+    pub(super) fn looks_like_a_set(process: &Process, address: Address) -> bool {
+        let Ok(slots) = process.read::<u64>(address.add(Self::SLOTS as u64)) else {
+            return false;
+        };
+        let slots = Address::new(slots);
+        if slots.is_null() {
+            return false;
+        }
+        let Ok(capacity) = process.read::<i64>(slots.add(ARRAY_LENGTH)) else {
+            return false;
+        };
+        let Ok(count) = process.read::<i32>(address.add(Self::COUNT as u64)) else {
+            return false;
+        };
+        let Ok(last_index) = process.read::<i32>(address.add(Self::LAST_INDEX as u64)) else {
+            return false;
+        };
+        capacity > 0
+            && (0..=capacity).contains(&i64::from(last_index))
+            && (0..=i64::from(last_index)).contains(&i64::from(count))
+    }
+
     /// Reads the shape of the set at `address`. Returns `None` if it is not a
     /// hash set, or is not laid out the way we expect.
     pub fn read(process: &Process, module: &Module, address: Address) -> Option<Self> {
-        let class = Class::of_object(process, module, address)?;
-
-        let slots_field = class.get_field_offset(process, module, "_slots")?;
-        let last_index_field = class.get_field_offset(process, module, "_lastIndex")?;
+        let (slots_field, last_index_field) = Self::offsets(process, module, address)?;
 
         let slots = process
             .read_pointer(address.add(slots_field as u64), module.get_pointer_size())
@@ -148,10 +199,53 @@ impl HashSet {
 pub struct List;
 
 impl List {
-    /// Offset of `_size`. `_items` sits on the same class and is resolved
-    /// alongside it by the caller.
-    pub fn size_offset(process: &Process, module: &Module, address: Address) -> Option<u32> {
-        Class::of_object(process, module, address)?.get_field_offset(process, module, "_size")
+    /// `List<T>` after the object header: `T[] _items`, then `int _size`, then
+    /// `int _version`. Used only when the class metadata cannot answer, and
+    /// only when the object agrees with it.
+    const ITEMS: u32 = 0x10;
+    const SIZE: u32 = 0x18;
+
+    /// Offsets of `_size` and `_items`, by name where possible.
+    ///
+    /// Mono fills a class's field table in lazily, and for an inflated generic
+    /// nothing necessarily has. Measured against a live game: `Class::of_object`
+    /// resolved the class of `_entitiesInInstantiationOrder` and then reported
+    /// *none* of `_size`, `_items` or `_version`, while the object itself was
+    /// plainly a list -- 5032 entries in an 8192-slot array. The same lookup
+    /// succeeded against a different process running the same build, so this is
+    /// not something a version check could ever have caught.
+    ///
+    /// So the layout is the fallback, and it is only taken when the object
+    /// reads like a list at those offsets: a real BCL change fails here rather
+    /// than quietly yielding a wrong count.
+    pub fn offsets(process: &Process, module: &Module, address: Address) -> Option<(u32, u32)> {
+        if let Some(class) = Class::of_object(process, module, address) {
+            let size = class.get_field_offset(process, module, "_size");
+            let items = class.get_field_offset(process, module, "_items");
+            if let (Some(size), Some(items)) = (size, items) {
+                return Some((size, items));
+            }
+        }
+        Self::looks_like_a_list(process, address)
+            .then_some((Self::SIZE, Self::ITEMS))
+    }
+
+    /// Whether the object holds a plausible backing array and a count that fits
+    /// inside it.
+    fn looks_like_a_list(process: &Process, address: Address) -> bool {
+        let Ok(items) = process.read::<u64>(address.add(Self::ITEMS as u64)) else {
+            return false;
+        };
+        let items = Address::new(items);
+        if items.is_null() {
+            return false;
+        }
+        let Ok(capacity) = process.read::<i64>(items.add(ARRAY_LENGTH)) else {
+            return false;
+        };
+        let Ok(size) = process.read::<i32>(address.add(Self::SIZE as u64)) else {
+            return false;
+        };
+        capacity > 0 && size >= 0 && i64::from(size) <= capacity
     }
 }
-

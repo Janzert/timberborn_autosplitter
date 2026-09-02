@@ -414,6 +414,32 @@ via `Class::of_object` — a generic instantiation such as `HashSet<string>`
 cannot be looked up in an image by name, but any instance points at its own
 class, and from there field offsets resolve normally.
 
+That is the primary path and it usually works. It is not reliable, and the way
+it fails is worth knowing: **Mono fills a class's field table in lazily, and
+for an inflated generic nothing necessarily has.** Measured against a live
+game, `Class::of_object` resolved the class of `_entitiesInInstantiationOrder`
+and then reported *none* of `_size`, `_items` or `_version` — while the object
+itself was plainly a list, 5032 entries in an 8192-slot array. The identical
+lookup succeeded against a different process running the same build, so this is
+runtime state and nothing a version check could catch.
+
+Both collections the splitter reads hit this in one session: the entity
+registry's `List<EntityComponent>`, which silently stopped every building
+split, and `_unlockedBuildings`' `HashSet<string>`, which silently stopped the
+wonder-unlock split. Neither is visible to either half of the version check —
+`metadata.py check` reports ALL RESOLVED and `probe.rs` reports the fields
+`ok`, because both verify the names on the *owning* class, not the fields of
+the generic collection it points at. It presents as "the building splits
+sometimes just do not work", which is exactly the sort of thing that gets
+written off as flaky.
+
+So each has a fallback to the layout, taken only when the object agrees with
+it: for a list, `_items` must point at an array whose length covers `_size`;
+for a set, `_slots` must be a real array with `_lastIndex` inside it and
+`_count` inside that. A genuine BCL change fails there rather than quietly
+producing a wrong count. Those layouts were read out of a live game rather than
+assumed — `src/collections.rs` records the measurement.
+
 What genuinely has to be hardcoded is the shape of the Mono runtime's own
 object headers — `MonoArray`'s length and data offsets, `MonoString`'s length
 and characters, and `Slot<T>`'s layout inside a `HashSet`. These are not
