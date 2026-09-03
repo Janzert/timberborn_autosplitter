@@ -111,9 +111,27 @@ fn parse_mapping(line: &str) -> Option<Mapping> {
 ///
 /// Mirrors livesplit-core's rule rather than inventing one: a module is a run
 /// of *consecutive entries in the maps list* sharing a filename, its address is
-/// the first entry's and its size the sum of the run's. Adjacency of addresses
-/// does not come into it, which matters because Wine's PE images have gaps
-/// between their sections.
+/// the first entry's and its size the sum of the run's.
+///
+/// # Why every Proton module comes out one page long
+///
+/// Measured, not assumed. Wine maps only a PE's **header page** from the file;
+/// the sections that follow are anonymous mappings with no path at all:
+///
+/// ```text
+/// 6ffff9330000-6ffff9331000 r--p ... /Timberborn/.../mono-2.0-bdwgc.dll
+/// 6ffff9331000-6ffff98a5000 r-xp 00000000 00:00 0
+/// 6ffff98a5000-6ffff9a6a000 r--p 00000000 00:00 0
+/// ```
+///
+/// So a filename-keyed rule can only ever see 0x1000, and livesplit-core
+/// reports exactly that on Linux too. This is fidelity rather than a bug: the
+/// harness has to show the splitter what the runtime shows it, not something
+/// more accurate. Reads are by address and reach the sections regardless.
+///
+/// Note that desktop LiveSplit *inside the prefix* sees Wine's own module
+/// table instead, with real image sizes -- one of the ways the two hosts
+/// differ.
 pub fn modules(mappings: &[Mapping]) -> Vec<ModuleInfo> {
     let mut modules: Vec<ModuleInfo> = Vec::new();
     for mapping in mappings {

@@ -37,6 +37,39 @@ pub fn default_store() -> PathBuf {
     }
 }
 
+/// Finds a capture in the store by the label it was taken with.
+///
+/// # Errors
+///
+/// Says how to make one rather than just reporting a missing path: a snapshot
+/// test that cannot find its snapshot is a setup problem, not a failure of the
+/// code under test.
+pub fn locate(label: &str) -> io::Result<PathBuf> {
+    let store = default_store();
+    let suffix = format!("-{label}");
+    let found = std::fs::read_dir(&store)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", store.display())))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .find(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(&suffix))
+        });
+    found.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no snapshot labelled {label:?} in {}. Capture one with:\n    \
+                 tb-dump --label {label} --notes '...'\n\
+                 See snapshots/README.md.",
+                store.display()
+            ),
+        )
+    })
+}
+
 /// What was captured, alongside enough provenance to know what it is a snapshot
 /// *of*. A snapshot with no build id is worthless a month later.
 #[derive(Default)]

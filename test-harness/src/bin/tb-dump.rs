@@ -14,8 +14,7 @@
 //! machine:
 //!
 //! ```text
-//! cargo install --path test-harness --bin tb-dump --root ~/.local \\
-//!     --target x86_64-unknown-linux-gnu
+//! cargo install --path test-harness --bin tb-dump --root ~/.local
 //! sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
 //! ```
 //!
@@ -31,13 +30,11 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!(
     "tb-dump captures memory through /proc and is Linux-only. \
-     Build it with --target x86_64-unknown-linux-gnu; this repo defaults to \
-     wasm32-unknown-unknown, which is why a plain `cargo install` picks the \
-     wrong target."
+     A Windows capture would need VirtualQueryEx and ReadProcessMemory."
 );
 
 use std::{
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     process::ExitCode,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -132,8 +129,7 @@ fn run() -> Result<(), String> {
             "cannot read /proc/{pid}/mem: {e}.\n       \
              Reading another process needs ptrace rights. Grant them to an \
              installed copy:\n       \
-             cargo install --path test-harness --bin tb-dump --root ~/.local \
-             --target x86_64-unknown-linux-gnu\n       \
+             cargo install --path test-harness --bin tb-dump --root ~/.local\n       \
              sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump\n       \
              Rebuilding drops the capability, so a reinstall needs the setcap again."
         )
@@ -206,7 +202,9 @@ fn run() -> Result<(), String> {
         done += mapping.size;
         progress(done, total, started);
     }
-    println!();
+    if io::stdout().is_terminal() {
+        println!();
+    }
 
     let skipped = writer.skipped;
     let written = writer.bytes_written();
@@ -312,6 +310,10 @@ fn timestamp() -> String {
 }
 
 fn progress(done: u64, total: u64, started: Instant) {
+    // Carriage returns are fine on a terminal and 30 KB of noise in a log.
+    if !io::stdout().is_terminal() {
+        return;
+    }
     let percent = if total == 0 {
         100.0
     } else {

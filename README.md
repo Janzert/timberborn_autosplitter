@@ -133,8 +133,15 @@ Only needed to work on it — see [Setup](#setup) to just use it.
 
 ```bash
 git clone --recurse-submodules https://github.com/Janzert/timberborn_autosplitter.git
-cargo build --release
+cargo wasm
 ```
+
+`cargo wasm` is an alias for `cargo build --release --target
+wasm32-unknown-unknown`, defined in `.cargo/config.toml`. The wasm target is
+deliberately not the default: a default target applies to every cargo command,
+not just `build`, which stopped `cargo test` from running at all and made
+`cargo install` quietly produce a wasm binary. Ordinary commands therefore
+build for the host, and the artifact that ships is the one spelled out.
 
 If you cloned without `--recurse-submodules`, you will need to get the
 submodule with:
@@ -147,6 +154,18 @@ The output is `target/wasm32-unknown-unknown/release/timberborn_autosplitter.was
 Point LiveSplit's Auto Splitting Runtime component at it, or use
 [asr-debugger](https://github.com/LiveSplit/asr-debugger) while developing.
 
+### Tests
+
+```bash
+cargo test
+```
+
+Runs against the host, with no game and no wasm involved: `test-harness/`
+provides a fake auto splitting runtime, so the splitter can be driven and
+inspected directly. Tests that need a captured snapshot of a real game are
+behind a feature and are not part of that run — see
+[snapshots/README.md](snapshots/README.md).
+
 ## Layout
 
 | Path | |
@@ -154,6 +173,9 @@ Point LiveSplit's Auto Splitting Runtime component at it, or use
 | `src/` | the auto splitter |
 | `vendor/asr` | submodule; see [docs/ASR_FORK.md](docs/ASR_FORK.md) |
 | `devtools/` | offline development tooling — never shipped, never runs against the game |
+| `test-harness/` | a fake auto splitting runtime, so the splitter can be tested without the game |
+| `tests/` | those tests |
+| `snapshots/` | captured game memory, never committed; see [snapshots/README.md](snapshots/README.md) |
 
 ## devtools
 

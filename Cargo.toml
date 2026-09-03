@@ -36,6 +36,18 @@ asr = { path = "vendor/asr" }
 [dev-dependencies]
 test-harness = { path = "test-harness" }
 
+[features]
+# Tests that need a memory snapshot of a real game. Gated rather than skipped:
+# a test that silently does nothing reports green for work it did not do. See
+# snapshots/README.md.
+snapshot-tests = []
+
+# Kept out of the default test run by the feature above, so `cargo test`
+# neither compiles nor counts it.
+[[test]]
+name = "snapshot_attach"
+required-features = ["snapshot-tests"]
+
 [lib]
 # `rlib` as well as `cdylib` so the crate can be linked into native test
 # binaries. It costs about 9% on the shipped wasm -- 153 KB to 167 KB, measured

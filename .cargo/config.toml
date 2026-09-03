@@ -1,9 +1,14 @@
-[build]
-target = "wasm32-unknown-unknown"
-
-# Scoped to the wasm target rather than set under `[build]`, because
-# `build.rustflags` applies to *every* target, and these features do not exist
-# elsewhere -- which made a native build, and so `cargo test`, impossible.
+# The wasm target is *not* the default here.
+#
+# It used to be, via `[build] target`, and that setting applies to every cargo
+# command rather than just `build`: `cargo test` could not run, `cargo install`
+# silently produced a wasm binary, and every native command needed an explicit
+# `--target` that was easy to forget and confusing to diagnose. It also cannot
+# be right on more than one host, since the test alias would have to name a
+# triple.
+#
+# So the ordinary commands now target the host, and building the artifact that
+# ships is the one thing spelled out -- `cargo wasm`. See README.md.
 [target.wasm32-unknown-unknown]
 rustflags = [
     # The auto splitting runtime supports all the following WASM features.
@@ -11,7 +16,9 @@ rustflags = [
 ]
 
 [alias]
-# Tests run natively; only the shipped artifact is wasm.
-t = "test --workspace --target x86_64-unknown-linux-gnu"
+# The shipped artifact.
+wasm = "build --release --target wasm32-unknown-unknown"
 # Captures a memory snapshot of the running game. See snapshots/README.md.
-dump = "run -p test-harness --bin tb-dump --target x86_64-unknown-linux-gnu --release"
+dump = "run -p test-harness --bin tb-dump --release"
+# Tests that need a snapshot, kept out of the default run. See snapshots/README.md.
+snapshot-tests = "test --features snapshot-tests"

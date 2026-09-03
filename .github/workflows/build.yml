@@ -24,16 +24,32 @@ jobs:
         with:
           submodules: recursive
 
-      # rust-toolchain pins stable; the target comes from .cargo/config.toml
-      # and has to be installed for it.
+      # rust-toolchain pins stable. The wasm target is not the default -- see
+      # .cargo/config.toml -- but it is what ships, so it has to be installed.
       - name: Install the wasm target
         run: rustup target add wasm32-unknown-unknown
 
+      # `cargo wasm` is the alias for the shipped artifact. A plain
+      # `cargo build` now targets the host, which is right for the tests and
+      # wrong for the thing being released.
       - name: Build
-        run: cargo build --release
+        run: cargo wasm
 
       - name: Clippy
-        run: cargo clippy --release -- -D warnings
+        run: cargo clippy --release --target wasm32-unknown-unknown -- -D warnings
+
+      # Runs on the host with no game and no wasm: test-harness/ stands in for
+      # the auto splitting runtime. Tests that need a captured snapshot are
+      # behind the snapshot-tests feature and deliberately not run here --
+      # there is no game on a CI runner to capture one from.
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy (tests)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
 
       # Printed so a downloaded artifact can be checked against the build it
       # claims to come from.
