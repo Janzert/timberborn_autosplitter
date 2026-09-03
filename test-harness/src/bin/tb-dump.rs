@@ -133,8 +133,8 @@ fn run() -> Result<(), String> {
         Some(pid) => {
             if !is_the_game(pid) {
                 return Err(format!(
-                    "pid {pid} has nothing mapped from {}, so it is not Timberborn.\n                            This build refuses to read anything else.",
-                    install_dir().display()
+                    "pid {pid} has no Timberborn data mapped, so it is not the game.\n       \
+                     This build refuses to read anything else."
                 ));
             }
             pid
@@ -286,11 +286,9 @@ fn find_game() -> Result<u32, String> {
         }
     }
     match found.len() {
-        0 => Err(format!(
-            "no process found with anything mapped from {}.\n       \
-             Start the game first, or pass --pid.",
-            install_dir().display()
-        )),
+        0 => Err("no process found with Timberborn_Data mapped. \
+                  Start the game first, or pass --pid."
+            .into()),
         1 => Ok(found[0]),
         _ => Err(format!(
             "several candidate processes ({found:?}); pass --pid to choose"
@@ -301,29 +299,25 @@ fn find_game() -> Result<u32, String> {
 /// Whether a process is Timberborn, and the guard on what this may read.
 ///
 /// `/proc/<pid>/exe` is no use: under Proton it points at Wine's preloader
-/// rather than at the game. What is reliable is that the game has the install
-/// directory mapped -- its assemblies, `mono-2.0-bdwgc.dll`, `Timberborn.exe`.
+/// rather than at the game. What is reliable is what the process has *mapped*.
+///
+/// Identified by shape rather than by location, deliberately. Matching against
+/// Steam's install directory refuses a perfectly real game running from
+/// anywhere else -- and running an old build straight out of a version store,
+/// where Steam cannot update it, is precisely how this project keeps more than
+/// one version usable. `Timberborn_Data` is specific enough to the game that a
+/// browser cannot match it, which is all the guard is for.
 fn is_the_game(pid: u32) -> bool {
-    let install = install_dir();
     let Ok(mappings) = live::mappings(pid) else {
         return false;
     };
     mappings
         .iter()
         .filter_map(|m| m.path.as_deref())
-        .any(|path| path.starts_with(&install))
-}
-
-/// Where Steam put the game, from its own app manifest.
-///
-/// Canonicalized, because `~/.steam/steam` is a symlink to the real Steam
-/// directory and `/proc/<pid>/maps` reports the resolved path. Comparing the
-/// two unresolved matches nothing, and presents as "no Timberborn process
-/// found" while the game is plainly running.
-fn install_dir() -> std::path::PathBuf {
-    let install = manifest_value("installdir").unwrap_or_else(|| "Timberborn".into());
-    let path = steamapps().join("common").join(install);
-    std::fs::canonicalize(&path).unwrap_or(path)
+        .any(|path| {
+            let path = path.to_string_lossy();
+            path.contains("/Timberborn_Data/") || path.ends_with("/Timberborn/Timberborn.exe")
+        })
 }
 
 fn comm(pid: u32) -> String {
