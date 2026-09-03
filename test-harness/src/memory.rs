@@ -81,6 +81,7 @@ impl Memory for SparseMemory {
 }
 
 /// A loaded module, as `process_get_module_*` reports it.
+#[derive(Clone)]
 pub struct ModuleInfo {
     pub name: String,
     pub address: u64,
@@ -88,12 +89,28 @@ pub struct ModuleInfo {
     pub path: Option<String>,
 }
 
-/// A mapped range, as the `process_get_memory_range_*` family reports it.
+/// Flag bits as `asr::MemoryRangeFlags` defines them.
 ///
-/// `flags` matches `asr::MemoryRangeFlags`: 1 read, 2 write, 4 execute.
+/// Note the shift: `READ` is bit 1, not bit 0. Getting this wrong would make
+/// the splitter's `READ | WRITE, not EXECUTE` filter select the wrong ranges,
+/// silently and only in the harness.
+pub mod flags {
+    pub const READ: u64 = 1 << 1;
+    pub const WRITE: u64 = 1 << 2;
+    pub const EXECUTE: u64 = 1 << 3;
+    /// The range is backed by a file.
+    pub const PATH: u64 = 1 << 4;
+
+    /// What the splitter's heap scan looks for.
+    pub const HEAP: u64 = READ | WRITE;
+}
+
+/// A mapped range, as the `process_get_memory_range_*` family reports it.
+#[derive(Clone)]
 pub struct MemoryRange {
     pub address: u64,
     pub size: u64,
+    /// A mask of [`flags`].
     pub flags: u64,
 }
 

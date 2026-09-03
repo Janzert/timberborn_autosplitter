@@ -1,0 +1,18 @@
+Captures a snapshot of Timberborn's memory for offline testing.
+
+    cargo dump -- [options]
+
+Options:
+  --label <name>   Names the snapshot directory, after the build id. Say what
+                   state the game is in: "folktails-loaded", "wonder-unlocked".
+  --notes <text>   Free text recorded in the manifest: faction, day, what is on
+                   screen. A snapshot nobody can identify later is wasted.
+  --pid <pid>      Capture this process instead of searching for the game.
+  --dry-run        Report what would be captured and write nothing.
+  --help           This.
+
+The game must already be running. Reading its memory needs ptrace rights: run
+under `sudo -E`, or `sudo sysctl -w kernel.yama.ptrace_scope=0` for the session.
+
+Snapshots land in <repo>/snapshots, overridable with TIMBERBORN_SNAPSHOTS.
+They are large and are never committed.

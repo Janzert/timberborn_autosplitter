@@ -1,3 +1,9 @@
+# The harness is a workspace member as well as a dev-dependency, so its dumper
+# binary can be built by name. `cargo build` in this directory still builds only
+# this package, and so still only the wasm artifact.
+[workspace]
+members = ["test-harness"]
+
 [package]
 name = "timberborn_autosplitter"
 version = "0.2.0"

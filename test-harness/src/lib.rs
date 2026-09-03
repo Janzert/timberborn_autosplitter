@@ -5,8 +5,10 @@
 //! of a [`World`] held in thread-local storage, so the splitter links and runs
 //! natively and a test can inspect what it did.
 //!
-//! ```no_run
-//! # use test_harness::{World, memory::FakeProcess};
+//! ```ignore
+//! // `ignore` rather than `no_run`: this crate deliberately does not depend on
+//! // the splitter, so a doctest here cannot name it. Real examples are in
+//! // `tests/`, which does.
 //! let world = World::new().with_process(FakeProcess::new(1234, "Timberborn.exe"));
 //! let world = test_harness::drive(world, timberborn_autosplitter::main(), 200);
 //! assert_eq!(world.timer.splits(), 0);
@@ -26,7 +28,11 @@ use std::{
 };
 
 pub mod imports;
+#[cfg(target_os = "linux")]
+pub mod live;
 pub mod memory;
+#[cfg(target_os = "linux")]
+pub mod snapshot;
 pub mod timer;
 
 use memory::FakeProcess;

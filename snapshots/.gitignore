@@ -1,0 +1,6 @@
+# Snapshots are large -- gigabytes each -- and are a copy of the game's own
+# memory, so they are never committed. This file and the README are, so that a
+# fresh clone has the directory and the default path resolves.
+*
+!.gitignore
+!README.md
