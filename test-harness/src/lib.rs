@@ -27,6 +27,8 @@ use std::{
     task::{Context, RawWaker, RawWakerVTable, Waker},
 };
 
+#[cfg(target_os = "linux")]
+pub mod freeze;
 pub mod imports;
 #[cfg(target_os = "linux")]
 pub mod live;

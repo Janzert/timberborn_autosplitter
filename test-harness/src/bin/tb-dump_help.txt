@@ -9,14 +9,20 @@ Options:
   --notes <text>   Free text recorded in the manifest: faction, day, what is on
                    screen. A snapshot nobody can identify later is wasted.
   --pid <pid>      Capture this process instead of searching for the game.
+  --freeze         SIGSTOP the game for the duration of the read, so every
+                   range comes from the same instant. Without it the last range
+                   is seconds younger than the first, and the capture can hold a
+                   combination of values the game never had. The game is stopped
+                   for as long as the capture takes, around 6s for 5 GiB, so do
+                   not do this during a run that matters.
   --dry-run        Report what would be captured and write nothing.
   --help           This.
 
 The game must already be running. Reading its memory needs ptrace rights,
 granted to an installed copy rather than to the whole machine:
 
-    cargo install --path test-harness --bin tb-dump --root ~/.local
-    sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
+    cargo install --path test-harness --bin tb-dump --root ~/.local \
+      && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
 
 The capability is an attribute of the file: it survives reboots, but is lost
 whenever the binary is rebuilt, so a reinstall needs the setcap again.

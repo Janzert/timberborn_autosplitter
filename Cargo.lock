@@ -146,6 +146,9 @@ dependencies = [
 [[package]]
 name = "test-harness"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "timberborn_autosplitter"

@@ -27,14 +27,14 @@ same user. The grant goes to an installed copy of the tool rather than to the
 whole machine:
 
 ```bash
-cargo install --path test-harness --bin tb-dump --root ~/.local
-sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
+cargo install --path test-harness --bin tb-dump --root ~/.local \
+  && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
 ```
 
 Then run `tb-dump` rather than `cargo dump`. The capability is an attribute of
 the file, so it survives reboots and applies to nothing else on the system --
 but it is lost whenever the binary is rebuilt, so **a reinstall needs the
-setcap again**.
+setcap again** -- which is why the two are written above as one command.
 
 `cap_sys_ptrace` would let that binary read any process you own, so it refuses
 any process with nothing mapped from the Timberborn install directory. That is
@@ -43,17 +43,47 @@ a guard against a mistyped `--pid`, not a security boundary.
 Snapshots land here by default. `TIMBERBORN_SNAPSHOTS` moves them, which is
 worth doing if this disk is small.
 
+## Consistency
+
+By default a capture walks the ranges of a process that keeps running, so the
+last range is seconds younger than the first and the result can hold a
+combination of values the game never had at one moment.
+
+`--freeze` closes that: the game is stopped with `SIGSTOP` for the whole read
+and resumed afterwards, making the capture a real instant. The cost is that the
+game is frozen for as long as the capture takes -- about 6s for 5 GiB -- so it
+is not something to do during a run that matters. Either way the manifest
+records which it was, since a snapshot that cannot say is one nobody can trust
+later.
+
+Measured once, on a finished run sitting idle: a frozen and an unfrozen
+capture of the same state drove the splitter to **identical conclusions**, all
+50 log lines matching once addresses and counts are blanked
+(`tests/snapshot_compare.rs`). So tearing is not currently affecting anything
+the splitter reads. That state was idle, though, with nothing being built and
+no simulation pressure -- it says nothing about a capture taken during active
+play, which has far more opportunity to tear.
+
+`SIGSTOP` rather than `ptrace` because the game has over a hundred threads and
+ptrace stops them one at a time; rather than the cgroup v2 freezer because
+Steam leaves the game in the login session's own scope, shared with the desktop
+and with the terminal running the capture.
+
+If the capture is interrupted it resumes the game on the way out, including on
+Ctrl-C. The one hole is `SIGKILL`, which runs nothing -- so the resume command
+is printed *before* stopping rather than after:
+
+```bash
+kill -CONT <pid>
+```
+
 ## What a snapshot is not
 
-It is not an instant. Capture walks the ranges of a process that keeps running,
-so the last range is seconds younger than the first, and nothing pauses the
-game. A snapshot can therefore hold a combination of values the game never had
-at one moment. It has not caused a problem yet, but it is the first thing to
-suspect if two readings disagree in a way that should be impossible.
+It is one frame, not a run.
 
-It is also one frame, not a run. Asserting that a split *fires* needs
-before-and-after states, which a single capture cannot provide -- that is what
-the recorded read traces of phase 3 are for.
+Asserting that a split *fires* needs before-and-after states, which a single
+capture cannot provide -- that is what the recorded read traces of phase 3 are
+for.
 
 ## Keep the assemblies too
 

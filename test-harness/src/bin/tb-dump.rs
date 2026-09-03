@@ -59,6 +59,7 @@ struct Args {
     notes: String,
     pid: Option<u32>,
     dry_run: bool,
+    freeze: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -67,6 +68,7 @@ fn parse_args() -> Result<Args, String> {
         notes: String::new(),
         pid: None,
         dry_run: false,
+        freeze: false,
     };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -82,6 +84,7 @@ fn parse_args() -> Result<Args, String> {
                 )
             }
             "--dry-run" => args.dry_run = true,
+            "--freeze" => args.freeze = true,
             "--help" | "-h" => return Err("help".into()),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -173,11 +176,30 @@ fn run() -> Result<(), String> {
             .ok()
             .and_then(|p| p.to_str().map(str::to_owned)),
         pid,
-        notes: args.notes.clone(),
+        // Recorded, because a snapshot that cannot say whether it is
+        // consistent is one nobody can trust a year later.
+        notes: match args.freeze {
+            true => format!("{}\nfrozen: yes (SIGSTOP held for the read)", args.notes),
+            false => format!("{}\nfrozen: no -- ranges read seconds apart", args.notes),
+        },
     };
 
     let mut writer = Writer::create(dir, metadata).map_err(|e| format!("cannot create: {e}"))?;
     writer.add_modules(modules);
+
+    // Held for the whole read, so every range comes from one instant. Dropped
+    // at the end of `run`, which covers the error paths as well as this one.
+    let _frozen = if args.freeze {
+        println!("stopping pid {pid} for the read; if this is interrupted, resume it with:");
+        println!("  kill -CONT {pid}");
+        Some(test_harness::freeze::Frozen::stop(pid)?)
+    } else {
+        println!(
+            "not stopping the game, so ranges will be read seconds apart. \
+             Pass --freeze for a consistent capture."
+        );
+        None
+    };
 
     let started = Instant::now();
     let mut buffer = vec![0u8; CHUNK];
@@ -210,6 +232,12 @@ fn run() -> Result<(), String> {
     let written = writer.bytes_written();
     let dir = writer.finish().map_err(|e| format!("finishing: {e}"))?;
 
+    if args.freeze {
+        println!(
+            "resuming pid {pid}, stopped for {:.1}s",
+            started.elapsed().as_secs_f64()
+        );
+    }
     println!(
         "captured {:.1} GiB into {}",
         written as f64 / (1 << 30) as f64,

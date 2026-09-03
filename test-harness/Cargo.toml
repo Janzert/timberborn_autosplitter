@@ -9,3 +9,8 @@ description = "Test harness for the Timberborn auto splitter: fake memory and a 
 # dev-depends on this crate, so the arrow only points one way; a test owns both
 # and hands the splitter's future to `drive`.
 [dependencies]
+
+# Only for SIGSTOP/SIGCONT and the signal handlers that undo them; everything
+# else here is std. Dev-only, and never built for wasm.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
