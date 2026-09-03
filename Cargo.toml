@@ -52,10 +52,6 @@ required-features = ["snapshot-tests"]
 name = "snapshot_run"
 required-features = ["snapshot-tests"]
 
-[[test]]
-name = "snapshot_compare"
-required-features = ["snapshot-tests"]
-
 [lib]
 # `rlib` as well as `cdylib` so the crate can be linked into native test
 # binaries. It costs about 9% on the shipped wasm -- 153 KB to 167 KB, measured

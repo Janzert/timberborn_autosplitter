@@ -85,13 +85,27 @@ is not something to do during a run that matters. Either way the manifest
 records which it was, since a snapshot that cannot say is one nobody can trust
 later.
 
-Measured once, on a finished run sitting idle: a frozen and an unfrozen
-capture of the same state drove the splitter to **identical conclusions**, all
-50 log lines matching once addresses and counts are blanked
-(`tests/snapshot_compare.rs`). So tearing is not currently affecting anything
-the splitter reads. That state was idle, though, with nothing being built and
-no simulation pressure -- it says nothing about a capture taken during active
-play, which has far more opportunity to tear.
+Measured once, on a finished run sitting idle: a frozen and an unfrozen capture
+of the same state drove the splitter to **identical conclusions**, all 50 log
+lines matching once addresses and counts were blanked. So tearing was not
+affecting anything the splitter read. That state was idle, though, with nothing
+being built and no simulation pressure, and it says nothing about a capture
+taken during active play -- where `--freeze` stops being optional.
+
+The comparison was a one-off and its pair of captures has been deleted; this
+paragraph is the result. What that pair also measured, and what matters for
+scenarios, is how much of memory actually changes between two moments seconds
+apart on an idle save:
+
+| granularity | differs | records |
+|---|---|---|
+| 4 KiB pages | 278 MiB of 5132 (5.4%) | 71,255 |
+| 64 KiB chunks | 757 MiB (14.7%) | 12,140 |
+| 1 MiB chunks | 1310 MiB (25.5%) | 1,408 |
+
+Only 244 of 2163 ranges were touched at all. A sequence of captures can
+therefore be stored as one full capture plus deltas of a few hundred MiB, rather
+than gigabytes apiece.
 
 `SIGSTOP` rather than `ptrace` because the game has over a hundred threads and
 ptrace stops them one at a time; rather than the cgroup v2 freezer because

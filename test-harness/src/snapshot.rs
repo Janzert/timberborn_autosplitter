@@ -52,20 +52,6 @@ fn peek(dir: &Path) -> Option<Metadata> {
     Snapshot::open(dir).ok().map(|s| s.metadata)
 }
 
-/// Finds a capture of the state a test needs.
-///
-/// Searches on what a capture *is*, from its manifest, rather than on where it
-/// sits: a test that names a directory is a test only one machine can run, and
-/// only until the next game update. `frozen` narrows to captures taken with the
-/// game stopped, or without; `None` accepts either.
-///
-/// # Errors
-///
-/// With the instructions for producing the missing capture, not just a path.
-pub fn find(requirement_id: &str, frozen: Option<bool>) -> Result<PathBuf, String> {
-    Ok(find_all(requirement_id, frozen)?.swap_remove(0))
-}
-
 /// One capture of the state per distinct game version, preferring a frozen one.
 ///
 /// What a cross-version test wants: the same assertions against every build
@@ -73,7 +59,7 @@ pub fn find(requirement_id: &str, frozen: Option<bool>) -> Result<PathBuf, Strin
 /// build -- a suite that takes half a minute a capture stops being run.
 pub fn find_per_version(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
     let mut chosen: Vec<(String, PathBuf, bool)> = Vec::new();
-    for dir in find_all(requirement_id, None)? {
+    for dir in find_all(requirement_id)? {
         let Some(metadata) = peek(&dir) else { continue };
         match chosen
             .iter_mut()
@@ -96,7 +82,7 @@ pub fn find_per_version(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
 /// Running a test against all of them is what makes two captured builds worth
 /// having: the same assertions across versions is a cross-version regression
 /// check, and it stops a test quietly pinning itself to one build's behaviour.
-pub fn find_all(requirement_id: &str, frozen: Option<bool>) -> Result<Vec<PathBuf>, String> {
+pub fn find_all(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
     let requirement = crate::requirement::get(requirement_id).ok_or_else(|| {
         format!(
             "no such requirement {requirement_id:?}. Known states:\n{}",
@@ -120,25 +106,15 @@ pub fn find_all(requirement_id: &str, frozen: Option<bool>) -> Result<Vec<PathBu
     let candidate_count = candidates.len();
     let found: Vec<PathBuf> = candidates
         .into_iter()
-        .filter(|dir| {
-            peek(dir).is_some_and(|m| {
-                m.satisfies.iter().any(|id| id == requirement_id)
-                    && frozen.is_none_or(|wanted| m.frozen == wanted)
-            })
-        })
+        .filter(|dir| peek(dir).is_some_and(|m| m.satisfies.iter().any(|id| id == requirement_id)))
         .collect();
 
     if !found.is_empty() {
         return Ok(found);
     }
     Err({
-        let qualifier = match frozen {
-            Some(true) => " Note that this one must be captured with --freeze.",
-            Some(false) => " Note that this one must be captured *without* --freeze.",
-            None => "",
-        };
         format!(
-            "{}{qualifier}\n\nLooked in {}, which holds {} capture(s).",
+            "{}\n\nLooked in {}, which holds {} capture(s).",
             requirement.instructions(),
             store.display(),
             candidate_count

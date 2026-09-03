@@ -31,7 +31,7 @@ const MAIN_MENU: &str = "main-menu";
 /// ambiguous-name route, and 1.0.13.1 reports its name plainly and takes the
 /// other one.
 fn for_each_capture(state: &str, ticks: usize, check: impl Fn(&World, &PathBuf)) {
-    let dirs = test_harness::snapshot::find_all(state, None).unwrap_or_else(|e| panic!("{e}"));
+    let dirs = test_harness::snapshot::find_all(state).unwrap_or_else(|e| panic!("{e}"));
     for dir in dirs {
         let snapshot = Snapshot::open(&dir).expect("opening the snapshot");
         let world = World::new().with_process(snapshot.process());
@@ -102,7 +102,7 @@ fn a_still_frame_starts_no_run() {
 /// exist would look identical from the outside, and quietly halve the coverage.
 #[test]
 fn reports_which_captures_are_being_used() {
-    let dirs = test_harness::snapshot::find_all(MAIN_MENU, None).unwrap_or_else(|e| panic!("{e}"));
+    let dirs = test_harness::snapshot::find_all(MAIN_MENU).unwrap_or_else(|e| panic!("{e}"));
     let versions: Vec<String> = dirs
         .iter()
         .map(|d| {
