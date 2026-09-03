@@ -26,35 +26,61 @@ const TICKS: usize = 2000;
 /// Driven once and shared: a pass costs ~25s, nearly all of it sweeping the
 /// heap, and paying that per test would make the suite unusable.
 struct Outcome {
+    version: String,
     log: Vec<String>,
     timer: Vec<TimerEvent>,
 }
 
-fn finished_run() -> &'static Outcome {
-    static OUTCOME: OnceLock<Outcome> = OnceLock::new();
-    OUTCOME.get_or_init(|| {
-        let dir =
-            test_harness::snapshot::find(RUN_FINISHED, None).unwrap_or_else(|e| panic!("{e}"));
-        let snapshot = Snapshot::open(&dir).expect("opening the snapshot");
-        let world = World::new().with_process(snapshot.process());
-        let world = test_harness::drive(world, timberborn_autosplitter::main(), TICKS);
-        Outcome {
-            log: world.log,
-            timer: world.timer.events,
-        }
+/// One pass per captured game version, driven once and shared.
+///
+/// A pass costs ~25s, nearly all of it sweeping the heap, so paying it per test
+/// would make the suite unusable. Running every version is the point of having
+/// captured more than one: the splitter's whole claim is that it resolves names
+/// at runtime and so survives a game update, and this is where that stops being
+/// an assertion. The two builds here are further apart than a patch -- Unity
+/// 6000.3 against 6000.5, with a different Mono.
+fn finished_runs() -> &'static [Outcome] {
+    static OUTCOMES: OnceLock<Vec<Outcome>> = OnceLock::new();
+    OUTCOMES.get_or_init(|| {
+        let dirs = test_harness::snapshot::find_per_version(RUN_FINISHED)
+            .unwrap_or_else(|e| panic!("{e}"));
+        dirs.iter()
+            .map(|dir| {
+                let snapshot = Snapshot::open(dir).expect("opening the snapshot");
+                let version = snapshot.metadata.game_version.clone();
+                let world = World::new().with_process(snapshot.process());
+                let world = test_harness::drive(world, timberborn_autosplitter::main(), TICKS);
+                Outcome {
+                    version,
+                    log: world.log,
+                    timer: world.timer.events,
+                }
+            })
+            .collect()
     })
 }
 
-fn logged(needle: &str) -> bool {
-    finished_run().log.iter().any(|line| line.contains(needle))
+/// Asserts against every captured version, naming the one that failed.
+fn require(needle: &str) {
+    for run in finished_runs() {
+        assert!(
+            run.log.iter().any(|line| line.contains(needle)),
+            "{}: expected a log line containing {needle:?}; log was {:#?}",
+            run.version,
+            run.log
+        );
+    }
 }
 
-fn require(needle: &str) {
-    assert!(
-        logged(needle),
-        "expected a log line containing {needle:?}; log was {:#?}",
-        finished_run().log
-    );
+fn refuse(needle: &str, why: &str) {
+    for run in finished_runs() {
+        assert!(
+            !run.log.iter().any(|line| line.contains(needle)),
+            "{}: {why}; log was {:#?}",
+            run.version,
+            run.log
+        );
+    }
 }
 
 /// The runtime half of the version check, which until now had only ever been
@@ -64,7 +90,7 @@ fn require(needle: &str) {
 #[test]
 fn every_name_the_design_depends_on_resolves() {
     require("probe: ALL RESOLVED");
-    assert!(!logged("MISSING"), "log was {:#?}", finished_run().log);
+    refuse("MISSING", "a name the design depends on did not resolve");
 }
 
 /// The whole path: scan, container, services. Reaching the probe at all means
@@ -85,26 +111,31 @@ fn refuses_to_start_a_timer_for_a_run_already_over() {
     require("Not starting the timer");
     require("Game already in progress");
 
-    let controlling: Vec<_> = finished_run()
-        .timer
-        .iter()
-        .filter(|e| !matches!(e, TimerEvent::SetVariable { .. }))
-        .collect();
-    assert!(
-        controlling.is_empty(),
-        "nothing should reach the timer; got {controlling:#?}"
-    );
+    for run in finished_runs() {
+        let controlling: Vec<_> = run
+            .timer
+            .iter()
+            .filter(|e| !matches!(e, TimerEvent::SetVariable { .. }))
+            .collect();
+        assert!(
+            controlling.is_empty(),
+            "{}: nothing should reach the timer; got {controlling:#?}",
+            run.version
+        );
+    }
 }
 
 /// Refusing is only half of it: the runner has to be *told*, in the status
 /// variable rather than only in a log nobody reads.
 #[test]
 fn tells_the_runner_why_through_the_status_variable() {
-    let said = finished_run().timer.iter().any(|e| {
-        matches!(e, TimerEvent::SetVariable { key, value }
-            if key == "Timberborn Autosplitter" && value.contains("already in progress"))
-    });
-    assert!(said, "timer events were {:#?}", finished_run().timer);
+    for run in finished_runs() {
+        let said = run.timer.iter().any(|e| {
+            matches!(e, TimerEvent::SetVariable { key, value }
+                if key == "Timberborn Autosplitter" && value.contains("already in progress"))
+        });
+        assert!(said, "{}: timer events were {:#?}", run.version, run.timer);
+    }
 }
 
 /// State from before the splitter attached has to be reconstructed, or the
@@ -118,23 +149,26 @@ fn reconstructs_what_it_missed() {
     // Against the one line that lists them, not against the log as a whole:
     // "Forester" appears in several lines, so a bare substring search over
     // everything would pass without the reconstruction having happened.
-    let listed = finished_run()
-        .log
-        .iter()
-        .find(|line| line.contains("Already finished in this save: Forester"))
-        .unwrap_or_else(|| panic!("log was {:#?}", finished_run().log));
-    for building in [
-        "Forester",
-        "Gear Workshop",
-        "Tapper's Shack",
-        "Observatory / Numbercruncher",
-        "Smelter",
-        "Wood Workshop",
-    ] {
-        assert!(
-            listed.contains(building),
-            "{building:?} missing from {listed:?}"
-        );
+    for run in finished_runs() {
+        let listed = run
+            .log
+            .iter()
+            .find(|line| line.contains("Already finished in this save: Forester"))
+            .unwrap_or_else(|| panic!("{}: log was {:#?}", run.version, run.log));
+        for building in [
+            "Forester",
+            "Gear Workshop",
+            "Tapper's Shack",
+            "Observatory / Numbercruncher",
+            "Smelter",
+            "Wood Workshop",
+        ] {
+            assert!(
+                listed.contains(building),
+                "{}: {building:?} missing from {listed:?}",
+                run.version
+            );
+        }
     }
 }
 
@@ -163,21 +197,25 @@ fn maps_the_heap_to_narrow_later_scans() {
 fn the_capture_has_no_holes() {
     // Every scan reports its own read failures, so an incomplete capture shows
     // up here rather than as a mysterious failure to find an object.
-    let sweeps: Vec<&String> = finished_run()
-        .log
-        .iter()
-        .filter(|line| line.contains("chunk read failures"))
-        .collect();
-    assert!(
-        !sweeps.is_empty(),
-        "no sweep reported; log was {:#?}",
-        finished_run().log
-    );
-    for sweep in sweeps {
+    for run in finished_runs() {
+        let sweeps: Vec<&String> = run
+            .log
+            .iter()
+            .filter(|line| line.contains("chunk read failures"))
+            .collect();
         assert!(
-            sweep.contains("0 chunk read failures, 0 KiB unreadable"),
-            "the capture has holes in it: {sweep:?}"
+            !sweeps.is_empty(),
+            "{}: no sweep reported; log was {:#?}",
+            run.version,
+            run.log
         );
+        for sweep in sweeps {
+            assert!(
+                sweep.contains("0 chunk read failures, 0 KiB unreadable"),
+                "{}: the capture has holes in it: {sweep:?}",
+                run.version
+            );
+        }
     }
 }
 
@@ -187,9 +225,17 @@ fn the_capture_has_no_holes() {
 /// after a session could not tell whether it was load-bearing.
 #[test]
 fn reads_collections_by_name_rather_than_by_the_known_layout() {
-    assert!(
-        !logged("[collections]"),
-        "the fallback was taken, so a field name did not resolve; log was {:#?}",
-        finished_run().log
+    refuse(
+        "[collections]",
+        "the fallback was taken, so a field name did not resolve",
     );
+}
+
+/// Guards the guard: covering one version when two are captured would look
+/// identical from outside and quietly halve the evidence.
+#[test]
+fn reports_which_versions_are_being_used() {
+    let versions: Vec<&str> = finished_runs().iter().map(|r| r.version.as_str()).collect();
+    println!("run-finished versions in use: {versions:?}");
+    assert!(!versions.is_empty());
 }

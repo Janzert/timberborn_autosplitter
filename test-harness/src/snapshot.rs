@@ -66,6 +66,31 @@ pub fn find(requirement_id: &str, frozen: Option<bool>) -> Result<PathBuf, Strin
     Ok(find_all(requirement_id, frozen)?.swap_remove(0))
 }
 
+/// One capture of the state per distinct game version, preferring a frozen one.
+///
+/// What a cross-version test wants: the same assertions against every build
+/// that has been captured, without paying twice for two captures of the same
+/// build -- a suite that takes half a minute a capture stops being run.
+pub fn find_per_version(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
+    let mut chosen: Vec<(String, PathBuf, bool)> = Vec::new();
+    for dir in find_all(requirement_id, None)? {
+        let Some(metadata) = peek(&dir) else { continue };
+        match chosen
+            .iter_mut()
+            .find(|(version, _, _)| *version == metadata.game_version)
+        {
+            // A frozen capture is the better evidence, so it wins the slot.
+            Some(slot) if metadata.frozen && !slot.2 => {
+                slot.1 = dir;
+                slot.2 = true;
+            }
+            Some(_) => {}
+            None => chosen.push((metadata.game_version, dir, metadata.frozen)),
+        }
+    }
+    Ok(chosen.into_iter().map(|(_, dir, _)| dir).collect())
+}
+
 /// Every capture of the state, newest game version last.
 ///
 /// Running a test against all of them is what makes two captured builds worth
