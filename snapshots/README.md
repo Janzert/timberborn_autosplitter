@@ -60,6 +60,14 @@ cargo install --path test-harness --bin tb-dump --root ~/.local \
   && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
 ```
 
+`tb-record` needs the same, separately. It does its own reading rather than
+calling `tb-dump`, so the capability has to be on its own binary:
+
+```bash
+cargo install --path tb-record --root ~/.local \
+  && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-record
+```
+
 Then run `tb-dump` rather than `cargo dump`. The capability is an attribute of
 the file, so it survives reboots and applies to nothing else on the system --
 but it is lost whenever the binary is rebuilt, so **a reinstall needs the
