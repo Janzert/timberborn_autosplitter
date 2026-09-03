@@ -139,11 +139,14 @@ fn run() -> Result<(), String> {
              rights as tb-dump; see snapshots/README.md."
         )
     })?;
-    let mappings = live::mappings(pid).map_err(|e| format!("cannot read maps: {e}"))?;
-    let mut process =
-        test_harness::memory::FakeProcess::new(pid as u64, comm(pid)).with_memory(memory);
-    process.modules = live::modules(&mappings);
-    process.ranges = live::ranges(&mappings);
+    // `following`, not a table read once here: the game's mappings change as it
+    // runs, and loading a save takes it from 1.5 GiB over 624 ranges to 5 GiB
+    // over 2098. A splitter shown the table from the main menu scans a third of
+    // the heap, finds nothing, and reads addresses that have been unmapped
+    // since -- which is what the first recorded run produced.
+    let process = test_harness::memory::FakeProcess::new(pid as u64, comm(pid))
+        .with_memory(memory)
+        .following(pid);
 
     let mut recorder = Recorder {
         pid,

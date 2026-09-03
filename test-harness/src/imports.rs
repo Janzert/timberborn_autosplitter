@@ -63,6 +63,14 @@ fn with_process<T>(
     }
 }
 
+/// Brings a live process's mapping tables up to date. A no-op for a capture,
+/// whose mappings are whatever they were when it was taken.
+fn refresh(world: &mut World, handle: u64) {
+    if let Some(index) = world.process_index(handle) {
+        world.processes[index].refresh();
+    }
+}
+
 // -- timer ------------------------------------------------------------------
 
 #[no_mangle]
@@ -239,6 +247,9 @@ pub unsafe extern "C" fn process_get_module_address(
 ) -> u64 {
     let name = text(name_ptr, name_len);
     with_world(|w| {
+        // A module can be loaded after attach; a live process's table has to
+        // be current before it is searched.
+        refresh(w, process);
         with_process(w, process, 0, |p| {
             p.modules
                 .iter()
@@ -259,6 +270,9 @@ pub unsafe extern "C" fn process_get_module_size(
 ) -> u64 {
     let name = text(name_ptr, name_len);
     with_world(|w| {
+        // A module can be loaded after attach; a live process's table has to
+        // be current before it is searched.
+        refresh(w, process);
         with_process(w, process, 0, |p| {
             p.modules
                 .iter()
@@ -314,7 +328,13 @@ pub unsafe extern "C" fn process_get_path(
 
 #[no_mangle]
 pub extern "C" fn process_get_memory_range_count(process: u64) -> u64 {
-    with_world(|w| with_process(w, process, 0, |p| p.ranges.len() as u64))
+    with_world(|w| {
+        // The one place an enumeration begins, so the one place a live
+        // process's table can be brought up to date without the indices
+        // shifting under whoever is walking it.
+        refresh(w, process);
+        with_process(w, process, 0, |p| p.ranges.len() as u64)
+    })
 }
 
 #[no_mangle]

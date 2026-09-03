@@ -127,6 +127,15 @@ pub struct FakeProcess {
     pub memory: Box<dyn Memory>,
     /// Set false to model a process that has exited but is still attached to.
     pub open: bool,
+    /// When set, `modules` and `ranges` are re-read from `/proc` before each
+    /// enumeration rather than being whatever they were when this was built.
+    ///
+    /// A capture's mappings are fixed, but a live process's are not: loading a
+    /// save took Timberborn from 1.5 GiB over 624 ranges to 5 GiB over 2098,
+    /// and a splitter shown the old table scans a third of the heap and reads
+    /// addresses that have since been unmapped. Which is exactly what happened
+    /// the first time a run was recorded.
+    pub live_pid: Option<u32>,
 }
 
 impl FakeProcess {
@@ -139,8 +148,35 @@ impl FakeProcess {
             ranges: Vec::new(),
             memory: Box::new(EmptyMemory),
             open: true,
+            live_pid: None,
         }
     }
+
+    /// Follows a live process's mappings as they change.
+    #[cfg(target_os = "linux")]
+    pub fn following(mut self, pid: u32) -> Self {
+        self.live_pid = Some(pid);
+        self.refresh();
+        self
+    }
+
+    /// Re-reads the mapping tables, if this process is following a live one.
+    ///
+    /// Called at the start of an enumeration rather than per query: asr asks
+    /// for the range count once and then indexes into it, so refreshing
+    /// mid-iteration would shift the indices under it.
+    #[cfg(target_os = "linux")]
+    pub fn refresh(&mut self) {
+        let Some(pid) = self.live_pid else { return };
+        let Ok(mappings) = crate::live::mappings(pid) else {
+            return;
+        };
+        self.modules = crate::live::modules(&mappings);
+        self.ranges = crate::live::ranges(&mappings);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn refresh(&mut self) {}
 
     pub fn with_memory(mut self, memory: impl Memory + 'static) -> Self {
         self.memory = Box::new(memory);

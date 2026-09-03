@@ -100,8 +100,11 @@ impl World {
     }
 
     pub(crate) fn process(&self, handle: u64) -> Option<&FakeProcess> {
-        let index = (*self.attached.get(handle.checked_sub(1)? as usize)?)?;
-        self.processes.get(index)
+        self.processes.get(self.process_index(handle)?)
+    }
+
+    pub(crate) fn process_index(&self, handle: u64) -> Option<usize> {
+        *self.attached.get(handle.checked_sub(1)? as usize)?
     }
 }
 
