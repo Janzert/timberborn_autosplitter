@@ -14,20 +14,31 @@ is wrong; a snapshot can, by being what the game actually had in memory. See
 The game must already be running.
 
 ```bash
-cargo dump -- --dry-run
-cargo dump -- --label folktails-loaded --notes "day 3, nothing built yet"
+tb-dump --dry-run
+tb-dump --label folktails-loaded --notes "day 3, nothing built yet"
 ```
 
-Reading another process's memory needs ptrace rights. With
-`kernel.yama.ptrace_scope` at its usual `1` this fails with permission denied
-even as the same user:
+`cargo dump -- ...` runs it straight from the repo, which is convenient while
+changing the tool but has no capability, so it can only report.
+
+Reading another process's memory needs ptrace rights, which
+`kernel.yama.ptrace_scope` withholds at its usual setting of `1` even from the
+same user. The grant goes to an installed copy of the tool rather than to the
+whole machine:
 
 ```bash
-sudo sysctl -w kernel.yama.ptrace_scope=0
+cargo install --path test-harness --bin tb-dump --root ~/.local
+sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
 ```
 
-That lasts until reboot. `sudo -E cargo dump -- ...` works too, but builds as
-root, which is worse.
+Then run `tb-dump` rather than `cargo dump`. The capability is an attribute of
+the file, so it survives reboots and applies to nothing else on the system --
+but it is lost whenever the binary is rebuilt, so **a reinstall needs the
+setcap again**.
+
+`cap_sys_ptrace` would let that binary read any process you own, so it refuses
+any process with nothing mapped from the Timberborn install directory. That is
+a guard against a mistyped `--pid`, not a security boundary.
 
 Snapshots land here by default. `TIMBERBORN_SNAPSHOTS` moves them, which is
 worth doing if this disk is small.

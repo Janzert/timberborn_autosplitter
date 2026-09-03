@@ -8,14 +8,20 @@
 //! development tool: nothing here ships to runners, and it is never run during
 //! a submitted run.
 //!
-//! **Permissions.** Reading another process's memory needs ptrace rights. With
-//! `kernel.yama.ptrace_scope` at its usual `1` this fails with "permission
-//! denied" even as the same user. Either run it under `sudo -E`, or lower the
-//! restriction for the session:
+//! **Permissions.** Reading another process's memory needs ptrace rights. The
+//! grant is a file capability on an installed copy, which persists across
+//! reboots and leaves `kernel.yama.ptrace_scope` alone for the rest of the
+//! machine:
 //!
 //! ```text
-//! sudo sysctl -w kernel.yama.ptrace_scope=0
+//! cargo install --path test-harness --bin tb-dump --root ~/.local
+//! sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
 //! ```
+//!
+//! `cap_sys_ptrace` would let this binary read any process the user owns, so
+//! [`is_the_game`] refuses every process with nothing mapped from the
+//! Timberborn install. That is a guard against a mistyped `--pid` rather than a
+//! security boundary, but it means a slip cannot read a browser.
 
 use std::{
     io::{self, Write},
@@ -33,9 +39,6 @@ use test_harness::{
 /// characters and Unity 6.5 names its main thread, so the game usually appears
 /// as `Unity Main Thre` -- the same trap the splitter has to work around.
 const CANDIDATE_NAMES: &[&str] = &["Timberborn.x86_64", "Timberborn.exe", "Unity Main Thre"];
-
-/// What confirms an ambiguous candidate really is Timberborn.
-const GAME_MODULE: &str = "Timberborn.exe";
 
 /// Read in chunks rather than whole ranges: a range can be hundreds of MiB and
 /// a single failing page should not discard all of it.
@@ -90,23 +93,35 @@ fn run() -> Result<(), String> {
     let args = match parse_args() {
         Ok(args) => args,
         Err(message) if message == "help" => {
-            println!("{}", include_str!("dump_help.txt"));
+            println!("{}", include_str!("tb-dump_help.txt"));
             return Ok(());
         }
         Err(message) => return Err(message),
     };
 
     let pid = match args.pid {
-        Some(pid) => pid,
+        // Checked even when named explicitly: the capability this runs with is
+        // wider than the job, so the narrowing has to cover every path in.
+        Some(pid) => {
+            if !is_the_game(pid) {
+                return Err(format!(
+                    "pid {pid} has nothing mapped from {}, so it is not Timberborn.\n                            This build refuses to read anything else.",
+                    install_dir().display()
+                ));
+            }
+            pid
+        }
         None => find_game()?,
     };
 
     let memory = LiveMemory::open(pid).map_err(|e| {
         format!(
             "cannot read /proc/{pid}/mem: {e}.\n       \
-             Reading another process needs ptrace rights. Either run this under \
-             `sudo -E`, or\n       lower the restriction for this session:\n       \
-             sudo sysctl -w kernel.yama.ptrace_scope=0"
+             Reading another process needs ptrace rights. Grant them to an \
+             installed copy:\n       \
+             cargo install --path test-harness --bin tb-dump --root ~/.local\n       \
+             sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump\n       \
+             Rebuilding drops the capability, so a reinstall needs the setcap again."
         )
     })?;
 
@@ -208,7 +223,11 @@ fn find_game() -> Result<u32, String> {
         }
     }
     match found.len() {
-        0 => Err("no Timberborn process found. Start the game first, or pass --pid.".into()),
+        0 => Err(format!(
+            "no process found with anything mapped from {}.\n       \
+             Start the game first, or pass --pid.",
+            install_dir().display()
+        )),
         1 => Ok(found[0]),
         _ => Err(format!(
             "several candidate processes ({found:?}); pass --pid to choose"
@@ -216,15 +235,32 @@ fn find_game() -> Result<u32, String> {
     }
 }
 
-/// The same confirmation the splitter makes: a Unity process is only Timberborn
-/// once its own module is visible.
+/// Whether a process is Timberborn, and the guard on what this may read.
+///
+/// `/proc/<pid>/exe` is no use: under Proton it points at Wine's preloader
+/// rather than at the game. What is reliable is that the game has the install
+/// directory mapped -- its assemblies, `mono-2.0-bdwgc.dll`, `Timberborn.exe`.
 fn is_the_game(pid: u32) -> bool {
+    let install = install_dir();
     let Ok(mappings) = live::mappings(pid) else {
         return false;
     };
     mappings
         .iter()
-        .any(|m| m.file_name() == Some(GAME_MODULE) || m.file_name() == Some("Timberborn.x86_64"))
+        .filter_map(|m| m.path.as_deref())
+        .any(|path| path.starts_with(&install))
+}
+
+/// Where Steam put the game, from its own app manifest.
+///
+/// Canonicalized, because `~/.steam/steam` is a symlink to the real Steam
+/// directory and `/proc/<pid>/maps` reports the resolved path. Comparing the
+/// two unresolved matches nothing, and presents as "no Timberborn process
+/// found" while the game is plainly running.
+fn install_dir() -> std::path::PathBuf {
+    let install = manifest_value("installdir").unwrap_or_else(|| "Timberborn".into());
+    let path = steamapps().join("common").join(install);
+    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 fn comm(pid: u32) -> String {
@@ -236,19 +272,19 @@ fn comm(pid: u32) -> String {
 /// The installed build, straight from Steam's app manifest, so a snapshot is
 /// never left guessing which version it is of.
 fn build_id() -> String {
-    let manifest = dirs_steamapps().join("appmanifest_1062090.acf");
-    let Ok(text) = std::fs::read_to_string(&manifest) else {
-        return "unknown".into();
-    };
-    text.lines()
-        .find_map(|line| {
-            let mut parts = line.split('"').filter(|p| !p.trim().is_empty());
-            (parts.next()? == "buildid").then(|| parts.next().map(str::to_owned))?
-        })
-        .unwrap_or_else(|| "unknown".into())
+    manifest_value("buildid").unwrap_or_else(|| "unknown".into())
 }
 
-fn dirs_steamapps() -> std::path::PathBuf {
+/// A top-level key from the app manifest, which is VDF: `"key"<tab>"value"`.
+fn manifest_value(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(steamapps().join("appmanifest_1062090.acf")).ok()?;
+    text.lines().find_map(|line| {
+        let mut quoted = line.split('"').skip(1).step_by(2);
+        (quoted.next()? == key).then(|| quoted.next().map(str::to_owned))?
+    })
+}
+
+fn steamapps() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
         .join(".steam/steam/steamapps")
 }

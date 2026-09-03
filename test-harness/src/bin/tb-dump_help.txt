@@ -1,6 +1,7 @@
 Captures a snapshot of Timberborn's memory for offline testing.
 
-    cargo dump -- [options]
+    tb-dump [options]              (the installed copy, with the capability)
+    cargo dump -- [options]        (from this repo, without it)
 
 Options:
   --label <name>   Names the snapshot directory, after the build id. Say what
@@ -11,8 +12,17 @@ Options:
   --dry-run        Report what would be captured and write nothing.
   --help           This.
 
-The game must already be running. Reading its memory needs ptrace rights: run
-under `sudo -E`, or `sudo sysctl -w kernel.yama.ptrace_scope=0` for the session.
+The game must already be running. Reading its memory needs ptrace rights,
+granted to an installed copy rather than to the whole machine:
+
+    cargo install --path test-harness --bin tb-dump --root ~/.local
+    sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
+
+The capability is an attribute of the file: it survives reboots, but is lost
+whenever the binary is rebuilt, so a reinstall needs the setcap again.
+
+Any process with nothing mapped from the Timberborn install is refused, so a
+mistyped --pid cannot read something else.
 
 Snapshots land in <repo>/snapshots, overridable with TIMBERBORN_SNAPSHOTS.
 They are large and are never committed.

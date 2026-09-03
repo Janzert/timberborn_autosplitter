@@ -14,4 +14,4 @@ rustflags = [
 # Tests run natively; only the shipped artifact is wasm.
 t = "test --workspace --target x86_64-unknown-linux-gnu"
 # Captures a memory snapshot of the running game. See snapshots/README.md.
-dump = "run -p test-harness --bin dump --target x86_64-unknown-linux-gnu --release"
+dump = "run -p test-harness --bin tb-dump --target x86_64-unknown-linux-gnu --release"
