@@ -8,6 +8,16 @@
 //! Snapshots are never committed -- they are large, and they are a copy of the
 //! game's own data. `snapshots/` in this repo ignores everything but its own
 //! `.gitignore` and `README.md`.
+//!
+//! # A snapshot is not an instant
+//!
+//! Capture reads range by range from a process that is still running, so the
+//! last range is seconds younger than the first -- 5.6s across 5 GiB, measured.
+//! Nothing pauses the game. Almost everything survives that, because the
+//! objects the splitter reads are not being rewritten, but a snapshot *can*
+//! hold a combination of values the game never actually had at any one moment.
+//! Where a test turns on two values agreeing with each other, that is worth
+//! remembering before concluding the splitter read one of them wrongly.
 
 use std::{
     fmt::Write as _,

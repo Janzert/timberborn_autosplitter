@@ -43,6 +43,18 @@ a guard against a mistyped `--pid`, not a security boundary.
 Snapshots land here by default. `TIMBERBORN_SNAPSHOTS` moves them, which is
 worth doing if this disk is small.
 
+## What a snapshot is not
+
+It is not an instant. Capture walks the ranges of a process that keeps running,
+so the last range is seconds younger than the first, and nothing pauses the
+game. A snapshot can therefore hold a combination of values the game never had
+at one moment. It has not caused a problem yet, but it is the first thing to
+suspect if two readings disagree in a way that should be impossible.
+
+It is also one frame, not a run. Asserting that a split *fires* needs
+before-and-after states, which a single capture cannot provide -- that is what
+the recorded read traces of phase 3 are for.
+
 ## Keep the assemblies too
 
 A snapshot is only half of what a build needs. The other half is
