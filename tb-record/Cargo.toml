@@ -1,0 +1,14 @@
+[package]
+name = "tb-record"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Records a scenario: the splitter driven against the live game, captured every time it splits"
+
+# Its own crate because it needs both halves, and they cannot be one. The
+# splitter dev-depends on test-harness, so test-harness must not depend on the
+# splitter -- the arrow only points one way. A recorder needs to drive the real
+# splitter through the real harness, so it sits above both.
+[dependencies]
+test-harness = { path = "../test-harness" }
+timberborn_autosplitter = { path = ".." }

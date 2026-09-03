@@ -61,6 +61,21 @@ pub const CATALOGUE: &[Requirement] = &[
              reads the same state either way, and the day counter will simply be low.",
         ],
     },
+    Requirement {
+        id: "wonder-run",
+        summary: "a whole wonder run recorded as it was played, split by split",
+        reproduce: &[
+            "Start the game and stop at the main menu -- do not load a save yet.",
+            "Start `tb-record --state wonder-run` and leave it running.",
+            "Start a new game and play it through: every split-triggering \
+             building, then the wonder unlocked and activated, then the \
+             Congratulations screen.",
+            "The recorder captures whenever the splitter starts, splits or \
+             resets, so nothing needs doing at each split. Stop it with Ctrl-C \
+             once the run is over.",
+            "Developer mode is a legitimate way to get through the run quickly.",
+        ],
+    },
 ];
 
 /// Looks a requirement up by id.

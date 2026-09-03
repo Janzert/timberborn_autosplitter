@@ -28,12 +28,16 @@ use std::{
 };
 
 #[cfg(target_os = "linux")]
+pub mod capture;
+#[cfg(target_os = "linux")]
 pub mod freeze;
 pub mod imports;
 #[cfg(target_os = "linux")]
 pub mod live;
 pub mod memory;
 pub mod requirement;
+#[cfg(target_os = "linux")]
+pub mod scenario;
 #[cfg(target_os = "linux")]
 pub mod snapshot;
 pub mod timer;
@@ -143,6 +147,23 @@ impl Drop for Installed {
 /// Returns early if the future completes, which for the splitter's `main` means
 /// it fell out of its loop -- an outcome worth asserting on rather than hiding.
 pub fn drive<F: Future<Output = ()>>(world: World, future: F, ticks: usize) -> World {
+    drive_with(world, future, ticks, |_, _| true)
+}
+
+/// Drives the splitter, calling `after_tick` between polls with the world as it
+/// stands. Returning false stops.
+///
+/// This is what a recorder watches through: the splitter's log and timer calls
+/// are the only outward sign of what it has decided, and a moment worth
+/// capturing is a moment it just did something. The hook runs while the world
+/// is still installed, so it can take as long as it likes -- a capture takes
+/// seconds -- without the splitter observing the pause.
+pub fn drive_with<F: Future<Output = ()>>(
+    world: World,
+    future: F,
+    ticks: usize,
+    mut after_tick: impl FnMut(usize, &World) -> bool,
+) -> World {
     WORLD.with(|cell| *cell.borrow_mut() = Some(world));
     let _installed = Installed;
 
@@ -154,8 +175,15 @@ pub fn drive<F: Future<Output = ()>>(world: World, future: F, ticks: usize) -> W
         let mut future = pin!(future);
         let waker = noop_waker();
         let mut context = Context::from_waker(&waker);
-        for _ in 0..ticks {
+        for tick in 0..ticks {
             if future.as_mut().poll(&mut context).is_ready() {
+                break;
+            }
+            if !WORLD.with(|cell| {
+                let mut borrow = cell.borrow_mut();
+                let world = borrow.as_mut().expect("the world is installed");
+                after_tick(tick, world)
+            }) {
                 break;
             }
         }

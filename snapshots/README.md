@@ -120,6 +120,38 @@ is printed *before* stopping rather than after:
 kill -CONT <pid>
 ```
 
+## Recording a scenario
+
+A single capture is one instant. It can say *the wonder was already unlocked*,
+never *the split fired when it became unlocked* -- a split is a change, and one
+frame has none. `tb-record` records the changes:
+
+```bash
+tb-record --state wonder-run --notes "folktails, developer mode"
+```
+
+It drives the real splitter against the live game through the same `Memory`
+seam the tests use, and every time the splitter touches the timer -- starts,
+splits, resets -- it stops the game and captures. There is no separate list of
+things to watch for: the splitter's own decisions are the definition, so a
+recording cannot drift out of step with what it actually does.
+
+Each step is a delta against the one before, so a run costs one full capture and
+a few hundred MiB a split rather than 5 GiB apiece. Each is written and closed
+as it is taken, so stopping early -- Ctrl-C, or closing the game -- leaves a
+shorter scenario rather than a broken one.
+
+Replay serves the steps in order, advancing between ticks, so the splitter sees
+the world change. That substitution is closer to honest than it sounds: every
+step is a capture of the same process, and Unity's Mono uses the Boehm
+collector, which does not move objects. An object has the same address in every
+step it is alive for, so swapping step *n* for *n+1* shows the splitter the same
+addresses holding their new values -- what actually happened, minus the time in
+between.
+
+A recording with a gap in its steps is refused rather than replayed: a missing
+step would show the splitter a jump that never happened.
+
 ## What a snapshot is not
 
 It is one frame, not a run.

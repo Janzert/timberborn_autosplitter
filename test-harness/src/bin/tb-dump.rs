@@ -210,8 +210,7 @@ fn run() -> Result<(), String> {
         notes: args.notes.clone(),
         frozen: args.freeze,
         satisfies: args.states.clone(),
-        base: None,
-        step: None,
+        ..Default::default()
     };
 
     if args.states.is_empty() {

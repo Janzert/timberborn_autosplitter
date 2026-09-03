@@ -20,5 +20,7 @@ rustflags = [
 wasm = "build --release --target wasm32-unknown-unknown"
 # Captures a memory snapshot of the running game. See snapshots/README.md.
 dump = "run -p test-harness --bin tb-dump --release"
+# Records a scenario against the running game. See snapshots/README.md.
+record = "run -p tb-record --release"
 # Tests that need a snapshot, kept out of the default run. See snapshots/README.md.
 snapshot-tests = "test --features snapshot-tests"

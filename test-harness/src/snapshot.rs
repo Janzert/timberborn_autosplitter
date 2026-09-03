@@ -65,6 +65,65 @@ fn peek(dir: &Path) -> Option<Metadata> {
     Snapshot::open(dir).ok().map(|s| s.metadata)
 }
 
+/// Every step of a recorded scenario, in order.
+///
+/// A scenario is found the same way a single capture is -- by the state it is
+/// of, never by a path -- and its steps are gathered by the scenario name they
+/// share rather than by their directory names.
+///
+/// # Errors
+///
+/// With the instructions for recording it, and if the steps are there but do
+/// not run 0, 1, 2..., saying so: a gap means a step was deleted or a recording
+/// was interrupted mid-capture, and replaying across the hole would show the
+/// splitter a jump that never happened.
+pub fn find_scenario(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
+    let mut steps: Vec<(u32, PathBuf)> = Vec::new();
+    let mut scenario: Option<String> = None;
+    for dir in find_all(requirement_id)? {
+        let Some(metadata) = peek(&dir) else { continue };
+        let (Some(name), Some(step)) = (metadata.scenario.clone(), metadata.step.clone()) else {
+            continue;
+        };
+        // First scenario found wins; mixing two recordings would be nonsense.
+        let chosen = scenario.get_or_insert(name.clone());
+        if *chosen == name {
+            steps.push((step.index, dir));
+        }
+    }
+
+    if steps.is_empty() {
+        let requirement = crate::requirement::get(requirement_id)
+            .ok_or_else(|| format!("no such requirement {requirement_id:?}"))?;
+        return Err(format!(
+            "No recorded scenario satisfies {requirement_id:?} ({}).\n\nTo record one:\n{}\n  \
+             - then, with the game running and the run about to be played:\n      \
+             tb-record --state {requirement_id} --notes '<what you did>'\n\n\
+             See snapshots/README.md.",
+            requirement.summary,
+            requirement
+                .reproduce
+                .iter()
+                .map(|step| format!("  - {step}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    steps.sort_unstable_by_key(|(index, _)| *index);
+    for (position, (index, dir)) in steps.iter().enumerate() {
+        if *index != position as u32 {
+            return Err(format!(
+                "the recording is missing step {position}: it jumps to {index} at {}. \
+                 Replaying across the gap would show the splitter a change that never \
+                 happened, so this is refused rather than patched over.",
+                dir.display()
+            ));
+        }
+    }
+    Ok(steps.into_iter().map(|(_, dir)| dir).collect())
+}
+
 /// One capture of the state per distinct game version, preferring a frozen one.
 ///
 /// What a cross-version test wants: the same assertions against every build
@@ -162,6 +221,9 @@ pub struct Metadata {
     /// The capture this one stores differences against, by directory name.
     /// `None` for a full capture.
     pub base: Option<String>,
+    /// The recording this capture is a step of. Steps of one scenario share it,
+    /// which is what gathers them back into an ordered sequence.
+    pub scenario: Option<String>,
     /// Position in a recorded sequence, and what happened at it. Empty for a
     /// capture that is not part of one.
     pub step: Option<Step>,
@@ -329,6 +391,9 @@ impl Writer {
         if let Some(base) = &m.base {
             writeln!(manifest, "base {base}").unwrap();
         }
+        if let Some(scenario) = &m.scenario {
+            writeln!(manifest, "scenario {scenario}").unwrap();
+        }
         if let Some(step) = &m.step {
             writeln!(manifest, "step {} {}", step.index, step.event).unwrap();
         }
@@ -434,6 +499,7 @@ impl Snapshot {
                 "frozen" => metadata.frozen = rest.trim() == "yes",
                 "satisfies" => metadata.satisfies.push(rest.trim().into()),
                 "base" => metadata.base = Some(rest.trim().into()),
+                "scenario" => metadata.scenario = Some(rest.trim().into()),
                 "step" => {
                     let (index, event) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
                     metadata.step = Some(Step {
@@ -652,8 +718,7 @@ mod tests {
             notes: "folktails\nday 3".into(),
             frozen: true,
             satisfies: vec!["run-finished".into(), "main-menu".into()],
-            base: None,
-            step: None,
+            ..Default::default()
         };
         let mut writer = Writer::create(dir.to_path_buf(), metadata).unwrap();
         writer.add_modules(vec![ModuleInfo {

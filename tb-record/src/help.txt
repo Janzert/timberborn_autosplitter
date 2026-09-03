@@ -1,0 +1,24 @@
+Records a scenario: the splitter driven against the live game, with a capture
+taken every time it does something worth reproducing.
+
+    tb-record --state <id> [options]
+
+A single capture is one instant, so it can say "the wonder was already unlocked"
+but never "the split fired when it became unlocked". This records the changes.
+
+Options:
+  --state <id>     What scenario this is, and how a test finds it. Required.
+  --label <name>   Names the steps, after the game version. Defaults to --state.
+  --notes <text>   Free text recorded in every step's manifest.
+  --pid <pid>      Record this process instead of searching for the game.
+  --help           This.
+
+The game must already be running, and the run played while this watches. Every
+time the splitter starts, splits or resets, the game is stopped and captured.
+Each step is a delta against the one before, so a run costs one full capture and
+a few hundred MiB a split.
+
+Each step is written and closed as it is taken, so stopping early -- Ctrl-C, or
+closing the game -- leaves a shorter scenario rather than a broken one.
+
+Needs the same ptrace rights as tb-dump; see snapshots/README.md.

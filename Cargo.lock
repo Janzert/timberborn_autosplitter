@@ -144,6 +144,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tb-record"
+version = "0.1.0"
+dependencies = [
+ "test-harness",
+ "timberborn_autosplitter",
+]
+
+[[package]]
 name = "test-harness"
 version = "0.1.0"
 dependencies = [
