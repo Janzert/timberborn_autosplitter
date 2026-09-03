@@ -3,6 +3,16 @@
 What changed between releases, from a runner's point of view. Dates are the
 release date.
 
+## Unreleased
+
+### Changed
+
+- **The splitter now idles at one tick a second while no game is running**,
+  instead of polling 120 times a second for as long as LiveSplit is open. It
+  goes back to full rate the moment it attaches, so nothing about split timing
+  changes; the only cost is up to a second more before it notices the game has
+  started.
+
 ## 0.2 — 2026-09-02
 
 The first build verified on both platforms. **If you have v0, replace it**: the

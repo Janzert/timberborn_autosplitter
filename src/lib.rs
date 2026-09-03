@@ -90,27 +90,52 @@ const AMBIGUOUS_NAMES: &[&str] = &["Unity Main Thre"];
 /// The module that confirms an ambiguous match really is Timberborn.
 const GAME_MODULE: &str = "Timberborn.exe";
 
-// The "~Ns" figures on the constants below are at 120 ticks/s, which is what
-// asr asks the host for and what asr-debugger delivers. LiveSplit measures at
-// ~107/s (9.4ms) with no game attached, and ~89/s (11.3ms) while watching a
-// loaded save: its update timer is stopped for the duration of each step and
-// restarted afterwards, so the period is the interval plus our own per-tick
-// work, and that work scales with the settlement. Every duration below is
-// therefore a lower bound, ~12% to ~35% longer in LiveSplit than the figure in
-// its comment. None of them are timing-critical -- they are retry and log
-// intervals, and the splits themselves are polled every tick.
+/// Ticks per second asked for while a game is attached.
+///
+/// asr's own default, and what everything timing-critical is calibrated
+/// against: the splits are polled every tick, so this is the resolution of a
+/// split. See `docs/DESIGN.md`, *Split latency*.
+const ATTACHED_TICK_RATE: f64 = 120.0;
 
-/// When to first say we are still looking, in ticks: ~15s at 120/s, ~17s in
-/// LiveSplit. Silence and failure looked identical before this, which cost an
-/// evening of forensics.
-const FIRST_SEARCH_NOTICE_TICKS: u32 = 1800;
+/// Ticks per second asked for while there is no game to watch.
+///
+/// The search loop does nothing but list processes, and a game appears on a
+/// human timescale, so polling it 120 times a second buys nothing and costs a
+/// wakeup every 8ms for as long as LiveSplit is open -- which, for a runner who
+/// leaves it open, is most of the day. One a second is CryZe's idiom and is
+/// still far quicker than a game can start.
+const DETACHED_TICKS_PER_SEC: u32 = 1;
+
+/// Seconds converted to ticks at the detached rate, for the constants used by
+/// the search loop only.
+const fn detached_ticks(secs: u32) -> u32 {
+    secs * DETACHED_TICKS_PER_SEC
+}
+
+// The "~Ns" figures on the attached constants below are at 120 ticks/s, which
+// is what asr asks the host for and what asr-debugger delivers. LiveSplit
+// measures at ~107/s (9.4ms) with no game attached, and ~89/s (11.3ms) while
+// watching a loaded save: its update timer is stopped for the duration of each
+// step and restarted afterwards, so the period is the interval plus our own
+// per-tick work, and that work scales with the settlement. Every duration below
+// is therefore a lower bound, ~12% to ~35% longer in LiveSplit than the figure
+// in its comment. None of them are timing-critical -- they are retry and log
+// intervals, and the splits themselves are polled every tick.
+//
+// The constants written as `detached_ticks(N)` are the exception: they are used
+// only while detached, where the rate is ours rather than the host's, so they
+// are exact seconds.
+
+/// When to first say we are still looking: 15s. Silence and failure looked
+/// identical before this, which cost an evening of forensics.
+const FIRST_SEARCH_NOTICE_TICKS: u32 = detached_ticks(15);
 
 /// How often to repeat it: every 5 minutes. Frequent enough to be visible in a
 /// log, rare enough not to bury anything during a session with no game open.
-const REPEAT_SEARCH_NOTICE_TICKS: u32 = 36_000;
+const REPEAT_SEARCH_NOTICE_TICKS: u32 = detached_ticks(300);
 
-/// How long to wait after the game closes before looking again, in ticks (~5s).
-const PROCESS_GONE_DELAY_TICKS: u32 = 600;
+/// How long to wait after the game closes before looking again: 5s.
+const PROCESS_GONE_DELAY_TICKS: u32 = detached_ticks(5);
 
 /// How often to retry resolving the wonder completion service, in ticks (~1s).
 const WONDER_RESOLVE_TICKS: u32 = 120;
@@ -124,14 +149,15 @@ const WONDER_RESOLVE_TICKS: u32 = 120;
 /// the overlay is about one scan wide. See `RunStart::resolve_during_load`.
 const RUN_START_RESOLVE_TICKS: u32 = 240;
 
-/// How often to forget which candidates were ruled out, in ticks. Pids are
-/// reused, and a process rejected once may since have mapped the game.
-const FORGET_RULED_OUT_TICKS: u32 = 1200;
+/// How often to forget which candidates were ruled out: 10s. Pids are reused,
+/// and a process rejected once may since have mapped the game.
+const FORGET_RULED_OUT_TICKS: u32 = detached_ticks(10);
 
-/// How often to re-examine ambiguous candidates, in ticks. Checking one means
-/// attaching to it, which the runtime logs, so doing it every tick turns a
-/// dying game into a stream of attach/detach churn.
-const AMBIGUOUS_RETRY_TICKS: u32 = 60;
+/// How often to re-examine ambiguous candidates: 1s. Checking one means
+/// attaching to it, which the runtime logs, so doing it too often turns a dying
+/// game into a stream of attach/detach churn. At the detached rate that is
+/// every tick, and the rate itself is the throttle.
+const AMBIGUOUS_RETRY_TICKS: u32 = detached_ticks(1);
 
 /// Ticks to wait before rescanning after a scan comes up empty. Without this
 /// the retry is a hot loop; the object we are waiting for appears on a human
@@ -158,9 +184,14 @@ async fn main() {
     let mut settings = Settings::register();
 
     loop {
+        // `attach` drops the tick rate while it looks; back up to full for the
+        // splits, which are polled every tick.
         let process = attach().await;
+        asr::set_tick_rate(ATTACHED_TICK_RATE);
         settings.update();
         process.until_closes(run(&process, &mut settings)).await;
+        // Back down before the wait below, which is counted in detached ticks.
+        asr::set_tick_rate(DETACHED_TICKS_PER_SEC as f64);
         // A process on its way out stays attachable for several seconds, and
         // each re-attach is logged, so wait longer here than between rescans.
         for _ in 0..PROCESS_GONE_DELAY_TICKS {
@@ -170,6 +201,12 @@ async fn main() {
 }
 
 async fn attach() -> Process {
+    // Nothing here is timing-critical, and this is where the module spends
+    // every hour LiveSplit is open without the game. The host re-reads the rate
+    // each step, so this takes effect from the next tick and is undone by the
+    // caller on a successful attach.
+    asr::set_tick_rate(DETACHED_TICKS_PER_SEC as f64);
+
     let mut waited = 0u32;
     let mut next_notice = FIRST_SEARCH_NOTICE_TICKS;
     // Candidates already ruled out. A game on its way out lingers for seconds,

@@ -476,10 +476,33 @@ Two further consequences:
   save. They are all retry and log intervals, so this does not matter, but it
   is why they are phrased as approximations.
 
-`asr::runtime::set_tick_rate` can ask for a different rate and LiveSplit will
-honour it, since it re-reads it every step. There is no reason to: asking for
-more would only shrink the interval that the step time is added to, and the
-step time is what is actually limiting us.
+`asr::set_tick_rate` can ask for a different rate and LiveSplit will honour it,
+since it re-reads it every step. There is no reason to ask for **more**: that
+would only shrink the interval the step time is added to, and the step time is
+what is actually limiting us.
+
+Asking for **less** is worth it in one place. While no game is attached the
+module does nothing but list processes, and a game appears on a human
+timescale, so the search loop drops to **1/s** and `main` puts it back to 120/s
+the moment it attaches (`ATTACHED_TICK_RATE`, `DETACHED_TICKS_PER_SEC`). A
+runner leaves LiveSplit open for hours with no game running; that is 120
+wakeups a second buying nothing. It costs up to a second of extra attach
+latency, against a game that takes tens of seconds to reach a menu.
+
+The catch is that a tick is no longer a fixed slice of time, so the constants
+the search loop counts in are written as `detached_ticks(secs)` and are exact
+seconds — including `PROCESS_GONE_DELAY_TICKS`, which is why `main` lowers the
+rate before that wait rather than inside `attach`. Everything counted while
+attached is unchanged.
+
+Verified 2026-09-03 across two start/quit cycles, in LiveSplit One Druid (which
+logs the runtime's `New Tick Rate` line at `DEBUG`) and in a headless host that
+counts ticks against a wall clock. Detached, measured 1.0 ticks/s; attached,
+120.0. The two `New Tick Rate: 1` lines a quit produces are `main`'s and
+`attach`'s, five seconds apart — the process-gone wait, in real seconds, which
+is the part that would have silently become 40 ms had the constants stayed in
+120 Hz ticks. "Still looking" arrived 14 s after each drop, as its 15 detached
+ticks intend.
 
 Both run start and run end get this treatment: `GameInitializer` is bound while
 the scene is still loading and `WonderCompletionCountdownStarter` long before
