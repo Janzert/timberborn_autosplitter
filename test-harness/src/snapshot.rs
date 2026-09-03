@@ -63,6 +63,15 @@ fn peek(dir: &Path) -> Option<Metadata> {
 ///
 /// With the instructions for producing the missing capture, not just a path.
 pub fn find(requirement_id: &str, frozen: Option<bool>) -> Result<PathBuf, String> {
+    Ok(find_all(requirement_id, frozen)?.swap_remove(0))
+}
+
+/// Every capture of the state, newest game version last.
+///
+/// Running a test against all of them is what makes two captured builds worth
+/// having: the same assertions across versions is a cross-version regression
+/// check, and it stops a test quietly pinning itself to one build's behaviour.
+pub fn find_all(requirement_id: &str, frozen: Option<bool>) -> Result<Vec<PathBuf>, String> {
     let requirement = crate::requirement::get(requirement_id).ok_or_else(|| {
         format!(
             "no such requirement {requirement_id:?}. Known states:\n{}",
@@ -84,14 +93,20 @@ pub fn find(requirement_id: &str, frozen: Option<bool>) -> Result<PathBuf, Strin
     candidates.sort();
 
     let candidate_count = candidates.len();
-    let found = candidates.into_iter().find(|dir| {
-        peek(dir).is_some_and(|m| {
-            m.satisfies.iter().any(|id| id == requirement_id)
-                && frozen.is_none_or(|wanted| m.frozen == wanted)
+    let found: Vec<PathBuf> = candidates
+        .into_iter()
+        .filter(|dir| {
+            peek(dir).is_some_and(|m| {
+                m.satisfies.iter().any(|id| id == requirement_id)
+                    && frozen.is_none_or(|wanted| m.frozen == wanted)
+            })
         })
-    });
+        .collect();
 
-    found.ok_or_else(|| {
+    if !found.is_empty() {
+        return Ok(found);
+    }
+    Err({
         let qualifier = match frozen {
             Some(true) => " Note that this one must be captured with --freeze.",
             Some(false) => " Note that this one must be captured *without* --freeze.",
@@ -110,6 +125,12 @@ pub fn find(requirement_id: &str, frozen: Option<bool>) -> Result<PathBuf, Strin
 /// *of*. A snapshot with no build id is worthless a month later.
 #[derive(Default)]
 pub struct Metadata {
+    /// The game's own version, e.g. `1.1.2.4-52e959e-sw`. What identifies a
+    /// capture, and what `steam_versions` names its saves after, so the two
+    /// stores can be paired.
+    pub game_version: String,
+    /// Steam's build id, where it could be established. Provenance only:
+    /// a version run outside Steam has none that Steam knows about.
     pub build_id: String,
     pub label: String,
     pub captured_at: String,
@@ -192,6 +213,7 @@ impl Writer {
         let mut manifest = String::new();
         let m = &self.metadata;
         writeln!(manifest, "version {FORMAT_VERSION}").unwrap();
+        writeln!(manifest, "game_version {}", m.game_version).unwrap();
         writeln!(manifest, "build_id {}", m.build_id).unwrap();
         writeln!(manifest, "label {}", m.label).unwrap();
         writeln!(manifest, "captured_at {}", m.captured_at).unwrap();
@@ -275,6 +297,7 @@ impl Snapshot {
                         ));
                     }
                 }
+                "game_version" => metadata.game_version = rest.into(),
                 "build_id" => metadata.build_id = rest.into(),
                 "label" => metadata.label = rest.into(),
                 "captured_at" => metadata.captured_at = rest.into(),
@@ -386,6 +409,7 @@ mod tests {
 
     fn write_sample(dir: &Path) {
         let metadata = Metadata {
+            game_version: "1.1.2.4-52e959e-sw".into(),
             build_id: "25096761".into(),
             label: "sample".into(),
             captured_at: "0".into(),
@@ -454,6 +478,7 @@ mod tests {
         write_sample(&dir);
         let snapshot = Snapshot::open(&dir).unwrap();
 
+        assert_eq!(snapshot.metadata.game_version, "1.1.2.4-52e959e-sw");
         assert_eq!(snapshot.metadata.build_id, "25096761");
         assert_eq!(snapshot.metadata.pid, 4242);
         assert_eq!(snapshot.metadata.process_name, "Unity Main Thre");

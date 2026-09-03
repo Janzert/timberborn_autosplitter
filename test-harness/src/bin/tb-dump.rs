@@ -142,6 +142,16 @@ fn run() -> Result<(), String> {
         None => find_game()?,
     };
 
+    let dir_of_game = game_dir(pid)
+        .ok_or_else(|| format!("cannot tell where pid {pid} is running the game from"))?;
+    let version = game_version(&dir_of_game).ok_or_else(|| {
+        format!(
+            "cannot read the game's version from {}. Without it a capture cannot \n       \
+             say which version it is of, which makes it worthless later.",
+            dir_of_game.display()
+        )
+    })?;
+
     let memory = LiveMemory::open(pid).map_err(|e| {
         format!(
             "cannot read /proc/{pid}/mem: {e}.\n       \
@@ -163,6 +173,7 @@ fn run() -> Result<(), String> {
     let total: u64 = capturable.iter().map(|m| m.size).sum();
 
     println!("pid {pid}");
+    println!("  {version} ({})", dir_of_game.display());
     println!("  {} mappings, {} modules", mappings.len(), modules.len());
     println!(
         "  {} readable ranges, {:.1} GiB to capture",
@@ -178,7 +189,7 @@ fn run() -> Result<(), String> {
         ("unlabelled", Some(state)) => state.clone(),
         _ => args.label.clone(),
     };
-    let dir = snapshot::default_store().join(format!("{}-{}", build_id(), label));
+    let dir = snapshot::default_store().join(format!("{version}-{label}"));
     if dir.exists() {
         return Err(format!(
             "{} already exists; remove it or pass a different --label",
@@ -187,8 +198,9 @@ fn run() -> Result<(), String> {
     }
 
     let metadata = Metadata {
-        build_id: build_id(),
-        label: args.label.clone(),
+        game_version: version.clone(),
+        build_id: build_id(&dir_of_game),
+        label: label.clone(),
         captured_at: timestamp(),
         process_name: comm(pid),
         process_path: std::fs::read_link(format!("/proc/{pid}/exe"))
@@ -326,10 +338,74 @@ fn comm(pid: u32) -> String {
         .unwrap_or_default()
 }
 
-/// The installed build, straight from Steam's app manifest, so a snapshot is
-/// never left guessing which version it is of.
-fn build_id() -> String {
-    manifest_value("buildid").unwrap_or_else(|| "unknown".into())
+/// The game directory a process is actually running from, taken from what it
+/// has mapped rather than from where Steam thinks the game is.
+fn game_dir(pid: u32) -> Option<std::path::PathBuf> {
+    live::mappings(pid)
+        .ok()?
+        .iter()
+        .filter_map(|m| m.path.as_deref())
+        .find_map(|path| {
+            let text = path.to_string_lossy();
+            let (before, _) = text.split_once("/Timberborn_Data/")?;
+            Some(std::path::PathBuf::from(before))
+        })
+}
+
+/// The game's own version, e.g. `1.1.2.4-52e959e-sw`, from PlayerSettings'
+/// bundleVersion in `globalgamemanagers`. The same string `steam_versions`
+/// names its saves after, so a snapshot and a saved install can be paired.
+///
+/// This is what identifies a capture. Steam's app manifest cannot: it reports
+/// whichever build is *installed*, and an old version run out of the version
+/// store is not that one -- so a capture of 1.0.13.1 would have been filed
+/// under the installed 25096761 and been quietly wrong about what it held.
+fn game_version(dir: &std::path::Path) -> Option<String> {
+    let blob = std::fs::read(dir.join("Timberborn_Data").join("globalgamemanagers")).ok()?;
+    let head = &blob[..blob.len().min(200_000)];
+
+    let strings: Vec<&[u8]> = head
+        .split(|b| !(0x20..0x7f).contains(b))
+        .filter(|s| s.len() >= 4)
+        .collect();
+    let name = strings.iter().position(|s| *s == b"Timberborn")?;
+    strings.iter().skip(name + 1).take(4).find_map(|s| {
+        let text = std::str::from_utf8(s).ok()?;
+        let versionish = text.split('-').next()?;
+        let parts: Vec<&str> = versionish.split('.').collect();
+        (parts.len() >= 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())))
+        .then(|| text.to_owned())
+    })
+}
+
+/// The Steam build id for a directory, if it can be established.
+///
+/// Steam's manifest describes the *installed* copy, so it only applies when the
+/// process is running that copy. A saved version carries its own `version.json`
+/// beside the game directory, written by `steam_versions/tbver.py`.
+fn build_id(dir: &std::path::Path) -> String {
+    if std::fs::canonicalize(dir).ok() == std::fs::canonicalize(install_dir()).ok() {
+        return manifest_value("buildid").unwrap_or_else(|| "unknown".into());
+    }
+    let saved = dir.parent().map(|p| p.join("version.json"));
+    if let Some(text) = saved.and_then(|p| std::fs::read_to_string(p).ok()) {
+        if let Some(rest) = text.split("\"build_id\"").nth(1) {
+            if let Some(value) = rest.split('"').nth(1) {
+                return value.to_owned();
+            }
+        }
+    }
+    "unknown".into()
+}
+
+/// Where Steam put the game, for telling "the installed copy" from any other.
+fn install_dir() -> std::path::PathBuf {
+    let install = manifest_value("installdir").unwrap_or_else(|| "Timberborn".into());
+    let path = steamapps().join("common").join(install);
+    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 /// A top-level key from the app manifest, which is VDF: `"key"<tab>"value"`.

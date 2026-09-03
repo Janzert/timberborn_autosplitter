@@ -13,30 +13,56 @@
 //! cargo snapshot-tests
 //! ```
 
+use std::path::PathBuf;
+
 use test_harness::{snapshot::Snapshot, World};
 
 /// The state these need. Asked for by what it is, not by which file holds it --
 /// a missing one fails with the steps for producing it.
 const MAIN_MENU: &str = "main-menu";
 
-fn world(state: &str) -> World {
-    let dir = test_harness::snapshot::find(state, None).unwrap_or_else(|e| panic!("{e}"));
-    let snapshot = Snapshot::open(&dir).expect("opening the snapshot");
-    World::new().with_process(snapshot.process())
+/// Runs `check` against **every** capture of the state, and says which one
+/// failed.
+///
+/// Not just the first. Two captured game versions are only worth their disk if
+/// the same assertions run against both; it is also what stops a test pinning
+/// itself to one build's behaviour, which is exactly what happened here --
+/// `attaches_to_a_captured_process` asserted the log line from the
+/// ambiguous-name route, and 1.0.13.1 reports its name plainly and takes the
+/// other one.
+fn for_each_capture(state: &str, ticks: usize, check: impl Fn(&World, &PathBuf)) {
+    let dirs = test_harness::snapshot::find_all(state, None).unwrap_or_else(|e| panic!("{e}"));
+    for dir in dirs {
+        let snapshot = Snapshot::open(&dir).expect("opening the snapshot");
+        let world = World::new().with_process(snapshot.process());
+        let world = test_harness::drive(world, timberborn_autosplitter::main(), ticks);
+        check(&world, &dir);
+    }
 }
 
 /// The whole chain, end to end: a real capture, through the fake runtime, into
 /// the splitter's own attach path.
 #[test]
 fn attaches_to_a_captured_process() {
-    let world = test_harness::drive(world(MAIN_MENU), timberborn_autosplitter::main(), 50);
-
-    assert!(
-        world.logged("Attached to pid"),
-        "the splitter should recognise the capture as Timberborn; log was {:#?}",
-        world.log
-    );
-    assert!(!world.logged("Still looking for Timberborn..."));
+    for_each_capture(MAIN_MENU, 50, |world, dir| {
+        // Deliberately not asserting *which* route attached. A build whose comm
+        // is "Timberborn.exe" matches outright; one reporting "Unity Main Thre"
+        // -- Unity 6.5 names its main thread, and /proc caps comm at 15
+        // characters -- has to be confirmed by its module first. Both are
+        // correct, and which one fires is a property of the game version.
+        assert!(
+            world.logged("Attached to"),
+            "{}: the splitter should recognise the capture as Timberborn; log was {:#?}",
+            dir.display(),
+            world.log
+        );
+        assert!(
+            !world.logged("Still looking for Timberborn..."),
+            "{}: log was {:#?}",
+            dir.display(),
+            world.log
+        );
+    });
 }
 
 /// The step that would break first if the capture were incomplete: `Module`
@@ -46,13 +72,14 @@ fn attaches_to_a_captured_process() {
 /// works if the capture took the unnamed ranges as well as the named ones.
 #[test]
 fn resolves_the_mono_runtime() {
-    let world = test_harness::drive(world(MAIN_MENU), timberborn_autosplitter::main(), 400);
-
-    assert!(
-        world.logged("Attached to the Mono runtime."),
-        "log was {:#?}",
-        world.log
-    );
+    for_each_capture(MAIN_MENU, 400, |world, dir| {
+        assert!(
+            world.logged("Attached to the Mono runtime."),
+            "{}: log was {:#?}",
+            dir.display(),
+            world.log
+        );
+    });
 }
 
 /// A capture is one instant, so the splitter can only ever be part-way through
@@ -60,12 +87,31 @@ fn resolves_the_mono_runtime() {
 /// nothing should crash trying.
 #[test]
 fn a_still_frame_starts_no_run() {
-    let world = test_harness::drive(world(MAIN_MENU), timberborn_autosplitter::main(), 400);
+    for_each_capture(MAIN_MENU, 400, |world, dir| {
+        assert_eq!(
+            world.timer.run_control().count(),
+            0,
+            "{}: events were {:#?}",
+            dir.display(),
+            world.timer.events
+        );
+    });
+}
 
-    assert_eq!(
-        world.timer.run_control().count(),
-        0,
-        "events were {:#?}",
-        world.timer.events
-    );
+/// Guards the guard: `for_each_capture` running against one capture when two
+/// exist would look identical from the outside, and quietly halve the coverage.
+#[test]
+fn reports_which_captures_are_being_used() {
+    let dirs = test_harness::snapshot::find_all(MAIN_MENU, None).unwrap_or_else(|e| panic!("{e}"));
+    let versions: Vec<String> = dirs
+        .iter()
+        .map(|d| {
+            Snapshot::open(d)
+                .expect("opening the snapshot")
+                .metadata
+                .game_version
+        })
+        .collect();
+    println!("main-menu captures in use: {versions:?}");
+    assert!(!versions.is_empty());
 }
