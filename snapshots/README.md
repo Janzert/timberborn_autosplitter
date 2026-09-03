@@ -27,9 +27,14 @@ same user. The grant goes to an installed copy of the tool rather than to the
 whole machine:
 
 ```bash
-cargo install --path test-harness --bin tb-dump --root ~/.local
+cargo install --path test-harness --bin tb-dump --root ~/.local \
+    --target x86_64-unknown-linux-gnu
 sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
 ```
+
+The `--target` is not optional: this repo's `.cargo/config.toml` defaults every
+build to `wasm32-unknown-unknown`, so without it `cargo install` builds the
+dumper for wasm, where the `/proc` modules are configured out.
 
 Then run `tb-dump` rather than `cargo dump`. The capability is an attribute of
 the file, so it survives reboots and applies to nothing else on the system --

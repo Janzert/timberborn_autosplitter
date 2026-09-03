@@ -15,7 +15,8 @@ Options:
 The game must already be running. Reading its memory needs ptrace rights,
 granted to an installed copy rather than to the whole machine:
 
-    cargo install --path test-harness --bin tb-dump --root ~/.local
+    cargo install --path test-harness --bin tb-dump --root ~/.local \
+        --target x86_64-unknown-linux-gnu
     sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
 
 The capability is an attribute of the file: it survives reboots, but is lost

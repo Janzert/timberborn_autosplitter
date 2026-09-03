@@ -14,7 +14,8 @@
 //! machine:
 //!
 //! ```text
-//! cargo install --path test-harness --bin tb-dump --root ~/.local
+//! cargo install --path test-harness --bin tb-dump --root ~/.local \\
+//!     --target x86_64-unknown-linux-gnu
 //! sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
 //! ```
 //!
@@ -22,6 +23,18 @@
 //! [`is_the_game`] refuses every process with nothing mapped from the
 //! Timberborn install. That is a guard against a mistyped `--pid` rather than a
 //! security boundary, but it means a slip cannot read a browser.
+
+// Captures through `/proc`, so there is nothing to build elsewhere yet. Without
+// this the failure is a pair of unresolved imports pointing at a `cfg`, which
+// says nothing about why. A Windows capture would use VirtualQueryEx and
+// ReadProcessMemory; see TEST_HARNESS_PLAN.md.
+#[cfg(not(target_os = "linux"))]
+compile_error!(
+    "tb-dump captures memory through /proc and is Linux-only. \
+     Build it with --target x86_64-unknown-linux-gnu; this repo defaults to \
+     wasm32-unknown-unknown, which is why a plain `cargo install` picks the \
+     wrong target."
+);
 
 use std::{
     io::{self, Write},
@@ -119,7 +132,8 @@ fn run() -> Result<(), String> {
             "cannot read /proc/{pid}/mem: {e}.\n       \
              Reading another process needs ptrace rights. Grant them to an \
              installed copy:\n       \
-             cargo install --path test-harness --bin tb-dump --root ~/.local\n       \
+             cargo install --path test-harness --bin tb-dump --root ~/.local \
+             --target x86_64-unknown-linux-gnu\n       \
              sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump\n       \
              Rebuilding drops the capability, so a reinstall needs the setcap again."
         )
