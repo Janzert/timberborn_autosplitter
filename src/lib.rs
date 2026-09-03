@@ -1,7 +1,16 @@
-#![no_std]
+// `no_std` only where it is required. The shipped wasm artifact has no `std`
+// to link, but a native build -- which is how the tests run -- would then have
+// no allocator, no panic handler, and no unwinding, none of which a `cdylib`
+// can do without. The crate uses only `core` and `alloc` either way, and the
+// default `cargo build` is the wasm one, so a slip shows up immediately.
+#![cfg_attr(target_family = "wasm", no_std)]
 
 extern crate alloc;
 
+// Only the wasm artifact brings its own allocator. A native test binary has
+// one already, and `asr`'s `async_main!` and `panic_handler!` gate themselves
+// the same way.
+#[cfg(target_family = "wasm")]
 #[global_allocator]
 static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
@@ -175,7 +184,10 @@ const RESCAN_DELAY_TICKS: u32 = 120;
 const GIVE_UP_SKIPPING_AFTER: u32 = 3;
 
 
-async fn main() {
+/// The splitter itself. `async_main!` drives this on wasm; it is `pub` so that
+/// a native test harness can drive it too, which also keeps the whole crate
+/// reachable and its dead-code analysis honest off-target.
+pub async fn main() {
     asr::print_message("Timberborn auto splitter.");
     // A message from a previous session survives a module reload, so start
     // from a blank one rather than showing a stale warning about a game that

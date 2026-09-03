@@ -26,7 +26,14 @@ dlmalloc = { version = "0.2.4", features = ["global"] }
 asr = { path = "vendor/asr" }
 
 [lib]
-crate-type = ["cdylib"]
+# `rlib` as well as `cdylib` so the crate can be linked into native test
+# binaries. It costs about 9% on the shipped wasm -- 153 KB to 167 KB, measured
+# -- because an rlib output has to keep the crate's symbols linkable, which
+# defeats some of the fat-LTO dead-code elimination in the cdylib. Accepted
+# deliberately: the alternative is splitting the logic into an inner crate with
+# a thin cdylib wrapper, and 14 KB on a once-downloaded file does not pay for
+# that. See TEST_HARNESS_PLAN.md in the parent repo.
+crate-type = ["cdylib", "rlib"]
 
 [profile.release]
 lto = true

@@ -1,6 +1,15 @@
 [build]
 target = "wasm32-unknown-unknown"
+
+# Scoped to the wasm target rather than set under `[build]`, because
+# `build.rustflags` applies to *every* target, and these features do not exist
+# elsewhere -- which made a native build, and so `cargo test`, impossible.
+[target.wasm32-unknown-unknown]
 rustflags = [
     # The auto splitting runtime supports all the following WASM features.
     "-C", "target-feature=+bulk-memory,+mutable-globals,+nontrapping-fptoint,+sign-ext,+simd128,+relaxed-simd,+tail-call",
 ]
+
+[alias]
+# Tests run natively; only the shipped artifact is wasm.
+t = "test --target x86_64-unknown-linux-gnu"
