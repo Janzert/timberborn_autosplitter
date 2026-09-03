@@ -28,7 +28,7 @@ asr = { path = "vendor/asr" }
 # The test harness: a fake auto splitting runtime. A dev-dependency, so it is
 # never built for wasm and the shipped artifact cannot depend on it.
 [dev-dependencies]
-harness = { path = "harness" }
+test-harness = { path = "test-harness" }
 
 [lib]
 # `rlib` as well as `cdylib` so the crate can be linked into native test

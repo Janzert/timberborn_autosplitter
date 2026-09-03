@@ -4,7 +4,7 @@
 //! splitter natively. Nothing here reads memory yet -- these cases are about
 //! whether it looks, what it says while looking, and what it declines to do.
 
-use harness::{
+use test_harness::{
     memory::{FakeProcess, SparseMemory},
     timer::TimerEvent,
     World,
@@ -17,7 +17,7 @@ const PAST_FIRST_NOTICE: usize = 20;
 
 #[test]
 fn announces_itself_and_starts_looking() {
-    let world = harness::drive(World::new(), timberborn_autosplitter::main(), 1);
+    let world = test_harness::drive(World::new(), timberborn_autosplitter::main(), 1);
 
     assert!(world.logged("Timberborn auto splitter."));
     assert_eq!(
@@ -29,7 +29,7 @@ fn announces_itself_and_starts_looking() {
 
 #[test]
 fn says_so_when_there_is_no_game() {
-    let world = harness::drive(
+    let world = test_harness::drive(
         World::new(),
         timberborn_autosplitter::main(),
         PAST_FIRST_NOTICE,
@@ -53,7 +53,7 @@ fn says_so_when_there_is_no_game() {
 /// about a game that is no longer running.
 #[test]
 fn clears_a_stale_status_on_startup() {
-    let world = harness::drive(World::new(), timberborn_autosplitter::main(), 1);
+    let world = test_harness::drive(World::new(), timberborn_autosplitter::main(), 1);
 
     assert_eq!(
         world.timer.events,
@@ -69,7 +69,7 @@ fn ignores_processes_that_are_not_the_game() {
     let world = World::new()
         .with_process(FakeProcess::new(100, "firefox"))
         .with_process(FakeProcess::new(101, "steam"));
-    let world = harness::drive(world, timberborn_autosplitter::main(), PAST_FIRST_NOTICE);
+    let world = test_harness::drive(world, timberborn_autosplitter::main(), PAST_FIRST_NOTICE);
 
     assert!(world.logged("Still looking for Timberborn..."));
 }
@@ -85,7 +85,7 @@ fn refuses_an_ambiguous_name_without_the_game_module() {
         0x1000,
         0x1000,
     ));
-    let world = harness::drive(world, timberborn_autosplitter::main(), PAST_FIRST_NOTICE);
+    let world = test_harness::drive(world, timberborn_autosplitter::main(), PAST_FIRST_NOTICE);
 
     assert!(
         world.logged("Still looking for Timberborn..."),
@@ -101,7 +101,7 @@ fn accepts_an_ambiguous_name_that_has_the_game_module() {
             .with_module("Timberborn.exe", 0x140000000, 0x10000)
             .with_memory(SparseMemory::new()),
     );
-    let world = harness::drive(world, timberborn_autosplitter::main(), PAST_FIRST_NOTICE);
+    let world = test_harness::drive(world, timberborn_autosplitter::main(), PAST_FIRST_NOTICE);
 
     assert!(world.logged("Attached to pid"), "log was {:#?}", world.log);
     assert!(!world.logged("Still looking for Timberborn..."));
@@ -110,7 +110,7 @@ fn accepts_an_ambiguous_name_that_has_the_game_module() {
 #[test]
 fn attaches_to_the_executable_name_directly() {
     let world = World::new().with_process(FakeProcess::new(300, "Timberborn.x86_64"));
-    let world = harness::drive(world, timberborn_autosplitter::main(), PAST_FIRST_NOTICE);
+    let world = test_harness::drive(world, timberborn_autosplitter::main(), PAST_FIRST_NOTICE);
 
     assert!(!world.logged("Still looking for Timberborn..."));
 }
@@ -118,7 +118,7 @@ fn attaches_to_the_executable_name_directly() {
 /// The splitter registers eight splits, all defaulting on.
 #[test]
 fn registers_its_settings() {
-    let world = harness::drive(World::new(), timberborn_autosplitter::main(), 1);
+    let world = test_harness::drive(World::new(), timberborn_autosplitter::main(), 1);
 
     let keys: Vec<&str> = world
         .registered_settings

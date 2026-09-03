@@ -80,10 +80,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "harness"
-version = "0.1.0"
-
-[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -148,13 +144,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-harness"
+version = "0.1.0"
+
+[[package]]
 name = "timberborn_autosplitter"
 version = "0.2.0"
 dependencies = [
  "asr",
  "bytemuck",
  "dlmalloc",
- "harness",
+ "test-harness",
 ]
 
 [[package]]

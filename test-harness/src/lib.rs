@@ -6,9 +6,9 @@
 //! natively and a test can inspect what it did.
 //!
 //! ```no_run
-//! # use harness::{World, memory::FakeProcess};
+//! # use test_harness::{World, memory::FakeProcess};
 //! let world = World::new().with_process(FakeProcess::new(1234, "Timberborn.exe"));
-//! let world = harness::drive(world, timberborn_autosplitter::main(), 200);
+//! let world = test_harness::drive(world, timberborn_autosplitter::main(), 200);
 //! assert_eq!(world.timer.splits(), 0);
 //! ```
 //!
@@ -108,7 +108,7 @@ pub(crate) fn with_world<T>(f: impl FnOnce(&mut World) -> T) -> T {
         let mut borrow = cell.borrow_mut();
         let world = borrow.as_mut().expect(
             "the auto splitting runtime was called with no world installed; \
-             the splitter must be driven through harness::drive",
+             the splitter must be driven through test_harness::drive",
         );
         f(world)
     })
