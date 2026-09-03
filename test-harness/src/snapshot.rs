@@ -1,6 +1,10 @@
 //! Capturing a real process's memory, and serving it back offline.
 //!
 //! A snapshot is a directory holding a text manifest and one blob of raw bytes.
+//! It may also be a *delta*: a capture that names another as its `base` and
+//! stores only the [`CHUNK`]-sized pieces that differ from it, which is what
+//! makes a recorded sequence of captures cost hundreds of MiB a step instead of
+//! gigabytes apiece. Reads fall through to the base for anything not stored.
 //! It is the *oracle* rather than the deliverable: it shows what the game's
 //! memory actually looks like, which is what keeps a synthesized fixture from
 //! enshrining a misunderstanding. See TEST_HARNESS_PLAN.md in the parent repo.
@@ -31,7 +35,16 @@ use crate::memory::{FakeProcess, Memory, MemoryRange, ModuleInfo};
 
 const MANIFEST: &str = "manifest.txt";
 const BLOB: &str = "memory.bin";
-const FORMAT_VERSION: u32 = 1;
+const CHUNKS: &str = "chunks.idx";
+const FORMAT_VERSION: u32 = 2;
+
+/// Granularity of a delta capture, chosen by measurement rather than taste.
+///
+/// Between two captures of one idle state seconds apart, the fraction of memory
+/// that differs is 5.4% at 4 KiB, 14.7% at 64 KiB and 25.5% at 1 MiB -- against
+/// index sizes of 71255, 12140 and 1408 records. 64 KiB is the knee: a few
+/// hundred MiB a step, and an index small enough to read in one go.
+pub const CHUNK: u64 = 64 << 10;
 
 /// Where snapshots live by default: `<repo>/snapshots`, so a fresh clone works
 /// with no configuration. `TIMBERBORN_SNAPSHOTS` overrides it, which matters
@@ -124,7 +137,7 @@ pub fn find_all(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
 
 /// What was captured, alongside enough provenance to know what it is a snapshot
 /// *of*. A snapshot with no build id is worthless a month later.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Metadata {
     /// The game's own version, e.g. `1.1.2.4-52e959e-sw`. What identifies a
     /// capture, and what `steam_versions` names its saves after, so the two
@@ -146,6 +159,22 @@ pub struct Metadata {
     /// Which [`Requirement`](crate::requirement::Requirement) ids this capture
     /// is of. What tests search on, rather than the directory name.
     pub satisfies: Vec<String>,
+    /// The capture this one stores differences against, by directory name.
+    /// `None` for a full capture.
+    pub base: Option<String>,
+    /// Position in a recorded sequence, and what happened at it. Empty for a
+    /// capture that is not part of one.
+    pub step: Option<Step>,
+}
+
+/// One moment in a recorded sequence, and why it was captured.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub index: u32,
+    /// What the splitter did that made this a moment worth keeping --
+    /// `start`, `split:Forester`, `reset` -- or `begin` for the state before
+    /// anything happened.
+    pub event: String,
 }
 
 /// A captured range and where its bytes sit in the blob.
@@ -156,6 +185,14 @@ struct Stored {
     offset: Option<u64>,
 }
 
+/// A [`CHUNK`]-aligned run of bytes held in this capture's own blob.
+#[derive(Clone, Copy)]
+struct Chunk {
+    address: u64,
+    len: u64,
+    offset: u64,
+}
+
 /// Writes a snapshot directory.
 pub struct Writer {
     dir: PathBuf,
@@ -164,7 +201,12 @@ pub struct Writer {
     modules: Vec<ModuleInfo>,
     stored: Vec<Stored>,
     metadata: Metadata,
+    chunks: Vec<Chunk>,
+    /// When set, only chunks differing from this are written; everything else
+    /// is read through to it at replay.
+    base: Option<Snapshot>,
     pub skipped: u64,
+    pub inherited: u64,
 }
 
 impl Writer {
@@ -177,30 +219,93 @@ impl Writer {
             modules: Vec::new(),
             stored: Vec::new(),
             metadata,
+            chunks: Vec::new(),
+            base: None,
             skipped: 0,
+            inherited: 0,
         })
+    }
+
+    /// Stores only what differs from `base`. The base's own bytes are never
+    /// copied, so a sequence costs one full capture and a delta a step.
+    pub fn with_base(mut self, base: Snapshot) -> Self {
+        self.metadata.base = Some(base.directory_name.clone());
+        self.base = Some(base);
+        self
+    }
+
+    pub fn set_step(&mut self, index: u32, event: impl Into<String>) {
+        self.metadata.step = Some(Step {
+            index,
+            event: event.into(),
+        });
     }
 
     pub fn add_modules(&mut self, modules: Vec<ModuleInfo>) {
         self.modules = modules;
     }
 
-    /// Stores one range's bytes. A range that cannot be read is still recorded,
-    /// without bytes, so replay reports "unreadable" rather than "unknown".
+    /// Stores one range's bytes, or the parts of them that are new.
+    ///
+    /// A range that cannot be read is still recorded, without bytes, so replay
+    /// reports "unreadable" rather than "absent".
     pub fn add_range(&mut self, range: MemoryRange, bytes: Option<&[u8]>) -> io::Result<()> {
-        let offset = match bytes {
-            Some(bytes) => {
-                let at = self.written;
-                self.blob.write_all(bytes)?;
-                self.written += bytes.len() as u64;
-                Some(at)
+        let Some(bytes) = bytes else {
+            self.skipped += 1;
+            self.stored.push(Stored {
+                range,
+                offset: None,
+            });
+            return Ok(());
+        };
+
+        match &self.base {
+            // Chunk by chunk against the base, keeping only what changed.
+            Some(base) => {
+                let mut comparison = vec![0u8; CHUNK as usize];
+                let mut at = 0u64;
+                while at < bytes.len() as u64 {
+                    let len = CHUNK.min(bytes.len() as u64 - at);
+                    let fresh = &bytes[at as usize..(at + len) as usize];
+                    let address = range.address + at;
+                    let same = base.read(address, &mut comparison[..len as usize])
+                        && comparison[..len as usize] == *fresh;
+                    if same {
+                        self.inherited += 1;
+                    } else {
+                        let offset = self.written;
+                        self.blob.write_all(fresh)?;
+                        self.written += len;
+                        self.chunks.push(Chunk {
+                            address,
+                            len,
+                            offset,
+                        });
+                    }
+                    at += len;
+                }
+                // The range table is still this capture's own: a mapping can
+                // appear or vanish between steps.
+                self.stored.push(Stored {
+                    range,
+                    offset: Some(0),
+                });
             }
             None => {
-                self.skipped += 1;
-                None
+                let offset = self.written;
+                self.blob.write_all(bytes)?;
+                self.written += bytes.len() as u64;
+                self.chunks.push(Chunk {
+                    address: range.address,
+                    len: bytes.len() as u64,
+                    offset,
+                });
+                self.stored.push(Stored {
+                    range,
+                    offset: Some(offset),
+                });
             }
-        };
-        self.stored.push(Stored { range, offset });
+        }
         Ok(())
     }
 
@@ -221,6 +326,12 @@ impl Writer {
         writeln!(manifest, "pid {}", m.pid).unwrap();
         writeln!(manifest, "process_name {}", m.process_name).unwrap();
         writeln!(manifest, "frozen {}", if m.frozen { "yes" } else { "no" }).unwrap();
+        if let Some(base) = &m.base {
+            writeln!(manifest, "base {base}").unwrap();
+        }
+        if let Some(step) = &m.step {
+            writeln!(manifest, "step {} {}", step.index, step.event).unwrap();
+        }
         for id in &m.satisfies {
             writeln!(manifest, "satisfies {id}").unwrap();
         }
@@ -239,21 +350,28 @@ impl Writer {
             .unwrap();
         }
         for stored in &self.stored {
-            match stored.offset {
-                Some(offset) => writeln!(
-                    manifest,
-                    "range {:x} {:x} {} {:x}",
-                    stored.range.address, stored.range.size, stored.range.flags, offset
-                ),
-                None => writeln!(
-                    manifest,
-                    "range {:x} {:x} {} -",
-                    stored.range.address, stored.range.size, stored.range.flags
-                ),
-            }
+            // The mark is presence, not a location: where the bytes are is the
+            // chunk index's business, and in a delta most of them are not here
+            // at all.
+            let mark = if stored.offset.is_some() { "y" } else { "-" };
+            writeln!(
+                manifest,
+                "range {:x} {:x} {} {mark}",
+                stored.range.address, stored.range.size, stored.range.flags
+            )
             .unwrap();
         }
         std::fs::write(self.dir.join(MANIFEST), manifest)?;
+
+        // A fixed-width binary index: 12140 records for a delta step, which is
+        // too many for a text manifest anyone is meant to read.
+        let mut index = Vec::with_capacity(self.chunks.len() * 24);
+        for chunk in &self.chunks {
+            index.extend_from_slice(&chunk.address.to_le_bytes());
+            index.extend_from_slice(&chunk.len.to_le_bytes());
+            index.extend_from_slice(&chunk.offset.to_le_bytes());
+        }
+        std::fs::write(self.dir.join(CHUNKS), index)?;
         Ok(self.dir)
     }
 }
@@ -261,8 +379,17 @@ impl Writer {
 /// A snapshot on disk, served as an address space.
 pub struct Snapshot {
     blob: File,
-    /// Sorted by address, so a read is a binary search.
-    stored: Vec<(u64, u64, Option<u64>)>,
+    /// This capture's own chunks, sorted by address, so a read is a binary
+    /// search. In a full capture there is one per range; in a delta, only the
+    /// pieces that changed.
+    chunks: Vec<Chunk>,
+    /// Ranges as the runtime should report them, sorted, with a flag for
+    /// whether this capture could read them at all.
+    stored: Vec<(u64, u64, bool)>,
+    /// What this capture stores differences against. Reads fall through to it.
+    base: Option<Box<Snapshot>>,
+    /// The directory's own name, which is how a delta names its base.
+    pub directory_name: String,
     pub modules: Vec<ModuleInfo>,
     pub ranges: Vec<MemoryRange>,
     pub metadata: Metadata,
@@ -306,6 +433,14 @@ impl Snapshot {
                 "process_name" => metadata.process_name = rest.into(),
                 "frozen" => metadata.frozen = rest.trim() == "yes",
                 "satisfies" => metadata.satisfies.push(rest.trim().into()),
+                "base" => metadata.base = Some(rest.trim().into()),
+                "step" => {
+                    let (index, event) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+                    metadata.step = Some(Step {
+                        index: index.parse().unwrap_or(0),
+                        event: event.into(),
+                    });
+                }
                 "process_path" => metadata.process_path = Some(rest.into()),
                 "note" => notes.push(rest),
                 "module" => {
@@ -326,16 +461,13 @@ impl Snapshot {
                         u64::from_str_radix(f.next().unwrap_or_default(), 16).unwrap_or(0);
                     let size = u64::from_str_radix(f.next().unwrap_or_default(), 16).unwrap_or(0);
                     let flags = f.next().unwrap_or_default().parse().unwrap_or(0);
-                    let offset = match f.next() {
-                        Some("-") | None => None,
-                        Some(hex) => u64::from_str_radix(hex, 16).ok(),
-                    };
+                    let readable = !matches!(f.next(), Some("-") | None);
                     ranges.push(MemoryRange {
                         address,
                         size,
                         flags,
                     });
-                    stored.push((address, size, offset));
+                    stored.push((address, size, readable));
                 }
                 _ => {}
             }
@@ -343,13 +475,111 @@ impl Snapshot {
         metadata.notes = notes.join("\n");
         stored.sort_unstable_by_key(|&(address, _, _)| address);
 
+        // A delta names its base as a sibling directory, so a whole sequence
+        // moves or is copied as one unit.
+        let base = match &metadata.base {
+            Some(name) => {
+                let parent = dir.parent().unwrap_or(Path::new("."));
+                Some(Box::new(Snapshot::open(parent.join(name)).map_err(
+                    |e| {
+                        io::Error::new(
+                            e.kind(),
+                            format!(
+                                "{} stores differences against {name}, which could not be \
+                             opened: {e}. A delta is unreadable without its base.",
+                                dir.display()
+                            ),
+                        )
+                    },
+                )?))
+            }
+            None => None,
+        };
+
+        let raw = std::fs::read(dir.join(CHUNKS)).unwrap_or_default();
+        let mut chunks: Vec<Chunk> = raw
+            .chunks_exact(24)
+            .map(|record| Chunk {
+                address: u64::from_le_bytes(record[0..8].try_into().unwrap()),
+                len: u64::from_le_bytes(record[8..16].try_into().unwrap()),
+                offset: u64::from_le_bytes(record[16..24].try_into().unwrap()),
+            })
+            .collect();
+        chunks.sort_unstable_by_key(|c| c.address);
+
         Ok(Self {
             blob,
+            chunks,
             stored,
+            base,
+            directory_name: dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             modules,
             ranges,
             metadata,
         })
+    }
+
+    /// The chunk holding `address`, if this capture has one.
+    fn chunk_at(&self, address: u64) -> Option<Chunk> {
+        let index = match self.chunks.binary_search_by_key(&address, |c| c.address) {
+            Ok(index) => index,
+            Err(0) => return None,
+            Err(index) => index - 1,
+        };
+        let chunk = self.chunks[index];
+        (address < chunk.address + chunk.len).then_some(chunk)
+    }
+
+    /// Where the next chunk after `address` begins, for sizing a read that has
+    /// to fall through to the base.
+    fn next_chunk_after(&self, address: u64) -> Option<u64> {
+        let index = self.chunks.partition_point(|c| c.address <= address);
+        self.chunks.get(index).map(|c| c.address)
+    }
+
+    /// Satisfies a read from this capture's own bytes and its base's, without
+    /// re-checking range containment -- the outermost capture has done that.
+    fn read_through(&self, address: u64, buf: &mut [u8]) -> bool {
+        let mut done = 0usize;
+        while done < buf.len() {
+            let at = address + done as u64;
+            let remaining = buf.len() - done;
+            match self.chunk_at(at) {
+                Some(chunk) => {
+                    let available = (chunk.address + chunk.len - at) as usize;
+                    let take = available.min(remaining);
+                    let offset = chunk.offset + (at - chunk.address);
+                    if self
+                        .blob
+                        .read_exact_at(&mut buf[done..done + take], offset)
+                        .is_err()
+                    {
+                        return false;
+                    }
+                    done += take;
+                }
+                None => {
+                    let Some(base) = &self.base else {
+                        return false;
+                    };
+                    // Only up to the next chunk we do hold, so a read spanning
+                    // changed and unchanged memory is stitched from both.
+                    let boundary = self.next_chunk_after(at);
+                    let take = boundary
+                        .map(|next| (next - at) as usize)
+                        .unwrap_or(remaining)
+                        .min(remaining);
+                    if !base.read_through(at, &mut buf[done..done + take]) {
+                        return false;
+                    }
+                    done += take;
+                }
+            }
+        }
+        true
     }
 
     /// The captured process, ready to hand to a [`World`](crate::World).
@@ -363,18 +593,23 @@ impl Snapshot {
         process
     }
 
-    /// Total bytes actually captured.
+    /// Bytes this capture holds itself, excluding anything inherited.
     pub fn captured_bytes(&self) -> u64 {
-        self.stored
-            .iter()
-            .filter(|(_, _, offset)| offset.is_some())
-            .map(|&(_, size, _)| size)
-            .sum()
+        self.chunks.iter().map(|c| c.len).sum()
+    }
+
+    /// How many captures deep the chain runs, this one included.
+    pub fn chain_length(&self) -> usize {
+        1 + self.base.as_ref().map_or(0, |b| b.chain_length())
     }
 }
 
 impl Memory for Snapshot {
     fn read(&self, address: u64, buf: &mut [u8]) -> bool {
+        // Range containment first, and against *this* capture's range table:
+        // a read spanning two mappings fails as a whole, which is what the real
+        // runtime does. Where the bytes then come from -- here or a base -- is
+        // a storage question, not a semantic one.
         let index = match self
             .stored
             .binary_search_by_key(&address, |&(start, _, _)| start)
@@ -383,16 +618,11 @@ impl Memory for Snapshot {
             Err(0) => return false,
             Err(index) => index - 1,
         };
-        let (start, size, Some(offset)) = self.stored[index] else {
-            return false;
-        };
-        let within = address - start;
-        // A read spanning two ranges fails as a whole, which is what the real
-        // runtime does: adjacent mappings are not one readable region.
-        if within + buf.len() as u64 > size {
+        let (start, size, readable) = self.stored[index];
+        if !readable || address - start + buf.len() as u64 > size {
             return false;
         }
-        self.blob.read_exact_at(buf, offset + within).is_ok()
+        self.read_through(address, buf)
     }
 }
 
@@ -420,6 +650,8 @@ mod tests {
             notes: "folktails\nday 3".into(),
             frozen: true,
             satisfies: vec!["run-finished".into(), "main-menu".into()],
+            base: None,
+            step: None,
         };
         let mut writer = Writer::create(dir.to_path_buf(), metadata).unwrap();
         writer.add_modules(vec![ModuleInfo {
@@ -538,5 +770,176 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod delta_tests {
+    use super::*;
+    use crate::memory::flags;
+
+    fn dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tb-delta-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn metadata(label: &str) -> Metadata {
+        Metadata {
+            game_version: "1.1.2.4-52e959e-sw".into(),
+            build_id: "25096761".into(),
+            label: label.into(),
+            frozen: true,
+            satisfies: vec!["run-finished".into()],
+            ..Default::default()
+        }
+    }
+
+    /// One range, spanning several chunks, so a delta can change some and not
+    /// others.
+    fn body(fill: u8, mutate: &[(usize, u8)]) -> Vec<u8> {
+        let mut bytes = vec![fill; (CHUNK * 3) as usize];
+        for &(at, value) in mutate {
+            bytes[at] = value;
+        }
+        bytes
+    }
+
+    const AT: u64 = 0x10_0000;
+
+    fn write(dir: &Path, bytes: &[u8], base: Option<Snapshot>, label: &str) {
+        let mut writer = Writer::create(dir.to_path_buf(), metadata(label)).unwrap();
+        if let Some(base) = base {
+            writer = writer.with_base(base);
+        }
+        writer
+            .add_range(
+                MemoryRange {
+                    address: AT,
+                    size: bytes.len() as u64,
+                    flags: flags::HEAP,
+                },
+                Some(bytes),
+            )
+            .unwrap();
+        writer.finish().unwrap();
+    }
+
+    /// The point of the whole exercise: a step stores only what changed, and
+    /// still reads back as the complete address space.
+    #[test]
+    fn a_delta_stores_only_what_changed_and_reads_back_whole() {
+        let parent = dir("chain");
+        std::fs::create_dir_all(&parent).unwrap();
+
+        let first = body(0xAA, &[]);
+        write(&parent.join("base"), &first, None, "base");
+
+        // One byte, in the middle chunk.
+        let second = body(0xAA, &[(CHUNK as usize + 5, 0x42)]);
+        let base = Snapshot::open(parent.join("base")).unwrap();
+        write(&parent.join("step1"), &second, Some(base), "step1");
+
+        let step = Snapshot::open(parent.join("step1")).unwrap();
+        assert_eq!(step.chain_length(), 2);
+        assert_eq!(
+            step.captured_bytes(),
+            CHUNK,
+            "only the one changed chunk should have been stored"
+        );
+
+        // Reads come out whole regardless of which capture holds them.
+        let mut buf = vec![0u8; second.len()];
+        assert!(step.read(AT, &mut buf));
+        assert_eq!(buf, second);
+
+        std::fs::remove_dir_all(&parent).unwrap();
+    }
+
+    /// A read crossing the boundary between a changed chunk and an inherited
+    /// one has to be stitched from both. This is the case a naive
+    /// "chunk or base" lookup gets wrong.
+    #[test]
+    fn a_read_spanning_stored_and_inherited_bytes_is_stitched() {
+        let parent = dir("stitch");
+        std::fs::create_dir_all(&parent).unwrap();
+
+        let first = body(0x11, &[]);
+        write(&parent.join("base"), &first, None, "base");
+        let second = body(0x11, &[(CHUNK as usize, 0x99)]);
+        let base = Snapshot::open(parent.join("base")).unwrap();
+        write(&parent.join("step1"), &second, Some(base), "step1");
+
+        let step = Snapshot::open(parent.join("step1")).unwrap();
+        let mut buf = vec![0u8; 16];
+        // Straddles the end of chunk 0 (inherited) and the start of chunk 1
+        // (stored).
+        assert!(step.read(AT + CHUNK - 8, &mut buf));
+        assert_eq!(&buf[..8], &[0x11; 8]);
+        assert_eq!(buf[8], 0x99);
+        assert_eq!(&buf[9..], &[0x11; 7]);
+
+        std::fs::remove_dir_all(&parent).unwrap();
+    }
+
+    /// Deltas stack, so a recorded sequence is one full capture and a tail of
+    /// small ones.
+    #[test]
+    fn deltas_chain_through_several_steps() {
+        let parent = dir("stack");
+        std::fs::create_dir_all(&parent).unwrap();
+
+        write(&parent.join("base"), &body(0x00, &[]), None, "base");
+        let one = body(0x00, &[(0, 1)]);
+        write(
+            &parent.join("step1"),
+            &one,
+            Some(Snapshot::open(parent.join("base")).unwrap()),
+            "step1",
+        );
+        let two = body(0x00, &[(0, 1), (CHUNK as usize * 2 + 3, 2)]);
+        write(
+            &parent.join("step2"),
+            &two,
+            Some(Snapshot::open(parent.join("step1")).unwrap()),
+            "step2",
+        );
+
+        let last = Snapshot::open(parent.join("step2")).unwrap();
+        assert_eq!(last.chain_length(), 3);
+        assert_eq!(last.captured_bytes(), CHUNK, "step2 changed one chunk");
+
+        let mut buf = vec![0u8; two.len()];
+        assert!(last.read(AT, &mut buf));
+        assert_eq!(buf, two, "the first step's change must survive the second");
+
+        std::fs::remove_dir_all(&parent).unwrap();
+    }
+
+    /// A delta without its base is not a capture with holes, it is unreadable,
+    /// and it has to say so rather than serving stale bytes.
+    #[test]
+    fn a_delta_refuses_to_open_without_its_base() {
+        let parent = dir("orphan");
+        std::fs::create_dir_all(&parent).unwrap();
+        write(&parent.join("base"), &body(0x7, &[]), None, "base");
+        write(
+            &parent.join("step1"),
+            &body(0x7, &[(1, 9)]),
+            Some(Snapshot::open(parent.join("base")).unwrap()),
+            "step1",
+        );
+        std::fs::remove_dir_all(parent.join("base")).unwrap();
+
+        let error = match Snapshot::open(parent.join("step1")) {
+            Err(error) => error,
+            Ok(_) => panic!("opened a delta whose base is gone"),
+        };
+        assert!(
+            error.to_string().contains("stores differences against"),
+            "unhelpful error: {error}"
+        );
+
+        std::fs::remove_dir_all(&parent).unwrap();
     }
 }
