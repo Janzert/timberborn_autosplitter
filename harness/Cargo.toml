@@ -1,0 +1,11 @@
+[package]
+name = "harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Test harness for the Timberborn auto splitter: fake memory and a fake auto splitting runtime, so the splitter can be driven without the game"
+
+# Deliberately no dependency on `timberborn_autosplitter`. The splitter
+# dev-depends on this crate, so the arrow only points one way; a test owns both
+# and hands the splitter's future to `drive`.
+[dependencies]

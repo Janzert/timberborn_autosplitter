@@ -25,6 +25,11 @@ dlmalloc = { version = "0.2.4", features = ["global"] }
 [patch."https://github.com/LiveSplit/asr"]
 asr = { path = "vendor/asr" }
 
+# The test harness: a fake auto splitting runtime. A dev-dependency, so it is
+# never built for wasm and the shipped artifact cannot depend on it.
+[dev-dependencies]
+harness = { path = "harness" }
+
 [lib]
 # `rlib` as well as `cdylib` so the crate can be linked into native test
 # binaries. It costs about 9% on the shipped wasm -- 153 KB to 167 KB, measured
