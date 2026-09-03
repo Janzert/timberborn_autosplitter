@@ -117,12 +117,7 @@ pub fn field_offset(
 ///
 /// For objects reached by dereference rather than by scanning, where there is
 /// no need to build a [`Locatable`] for the class.
-pub fn field_of(
-    process: &Process,
-    module: &Module,
-    object: Address,
-    field: &str,
-) -> Option<u32> {
+pub fn field_of(process: &Process, module: &Module, object: Address, field: &str) -> Option<u32> {
     Class::of_object(process, module, object)?.get_field_offset(process, module, field)
 }
 
@@ -282,7 +277,8 @@ impl Locatable {
                 return found;
             }
         }
-        self.sweep(process, limit, &HotRanges::default(), || {}).await
+        self.sweep(process, limit, &HotRanges::default(), || {})
+            .await
     }
 
     /// Finds one instance the caller is willing to accept.
@@ -298,12 +294,7 @@ impl Locatable {
         hot: &HotRanges,
         accept: impl Fn(Address) -> bool,
     ) -> Found {
-        let picked = |found: &Found| {
-            found
-                .instances
-                .iter()
-                .position(|&address| accept(address))
-        };
+        let picked = |found: &Found| found.instances.iter().position(|&address| accept(address));
         let found = self
             .hot_then_full(process, Some(limit), hot, |f| picked(f).is_some())
             .await;

@@ -55,7 +55,13 @@ pub fn string_starts_with_segment(process: &Process, address: Address, expected:
         return false;
     };
     let chars = text.as_slice();
-    if chars.len() < wanted || !chars.iter().copied().take(wanted).eq(expected.encode_utf16()) {
+    if chars.len() < wanted
+        || !chars
+            .iter()
+            .copied()
+            .take(wanted)
+            .eq(expected.encode_utf16())
+    {
         return false;
     }
     chars.len() == wanted || chars[wanted] == u16::from(b'.')
@@ -169,10 +175,7 @@ impl HashSet {
             return None;
         }
 
-        Some(Self {
-            slots,
-            last_index,
-        })
+        Some(Self { slots, last_index })
     }
 
     /// Whether the set contains a string equal to `expected`.
@@ -232,8 +235,7 @@ impl List {
         asr::print_message(
             "[collections] List field names did not resolve; using the known layout.",
         );
-        Self::looks_like_a_list(process, address)
-            .then_some((Self::SIZE, Self::ITEMS))
+        Self::looks_like_a_list(process, address).then_some((Self::SIZE, Self::ITEMS))
     }
 
     /// Whether the object holds a plausible backing array and a count that fits

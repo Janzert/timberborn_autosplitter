@@ -256,7 +256,9 @@ impl Scan {
 
     pub fn is_conclusive(&self) -> bool {
         !self.aborted
-            && !self.restricted && self.stats.bytes_total > 0 && self.stats.bytes_unreadable == 0
+            && !self.restricted
+            && self.stats.bytes_total > 0
+            && self.stats.bytes_unreadable == 0
     }
 
     /// Check each match, sorting them into `found` and `rejected`.

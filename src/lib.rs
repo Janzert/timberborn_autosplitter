@@ -183,7 +183,6 @@ const RESCAN_DELAY_TICKS: u32 = 120;
 /// game on screen.
 const GIVE_UP_SKIPPING_AFTER: u32 = 3;
 
-
 /// The splitter itself. `async_main!` drives this on wasm; it is `pub` so that
 /// a native test harness can drive it too, which also keeps the whole crate
 /// reachable and its dead-code analysis honest off-target.
@@ -699,13 +698,15 @@ impl SceneLoad {
         let Some(vtable) = read_pointer_raw(process, params) else {
             return Scene::Unknown;
         };
-        let is = |image, class| {
-            service::class_vtable(process, module, image, class) == Some(vtable)
-        };
+        let is =
+            |image, class| service::class_vtable(process, module, image, class) == Some(vtable);
         if is("Timberborn.MainMenuSceneLoading", "MainMenuSceneParameters") {
             return Scene::MainMenu;
         }
-        if is("Timberborn.MapEditorSceneLoading", "MapEditorSceneParameters") {
+        if is(
+            "Timberborn.MapEditorSceneLoading",
+            "MapEditorSceneParameters",
+        ) {
             return Scene::MapEditor;
         }
         if !is("Timberborn.GameSceneLoading", "GameSceneParameters") {
@@ -831,9 +832,10 @@ async fn watch(
                     map = Some(scan::Scan::new(process, vtable).mapping());
                 }
             }
-            if map.as_mut().is_some_and(|scan| {
-                scan.step(process, scan::MAP_BUDGET)
-            }) {
+            if map
+                .as_mut()
+                .is_some_and(|scan| scan.step(process, scan::MAP_BUDGET))
+            {
                 if let Some(scan) = map.take() {
                     hot.remember(&scan.found_ranges);
                     *heap_mapped = true;
@@ -920,8 +922,7 @@ async fn watch(
                 registry.refresh(process).await;
             }
             if completion.is_none() {
-                completion =
-                    WonderCompletion::resolve(process, module, event_bus_vtable, registry);
+                completion = WonderCompletion::resolve(process, module, event_bus_vtable, registry);
                 if run_began {
                     if let Some(c) = &mut completion {
                         c.arrived_mid_run();
@@ -1158,10 +1159,7 @@ impl Buildings {
                     Some(value) => value,
                     None => {
                         if explain {
-                            asr::print_message(concat!(
-                                "buildings: cannot resolve yet -- ",
-                                $what
-                            ));
+                            asr::print_message(concat!("buildings: cannot resolve yet -- ", $what));
                         }
                         return None;
                     }
@@ -1214,7 +1212,12 @@ impl Buildings {
         // A vtable, unlike a field offset, only exists once the class has been
         // constructed -- so this one is a "not yet", not a rename.
         let block_state_vtable = need!(
-            service::class_vtable(process, module, "Timberborn.BlockSystem", "BlockObjectState"),
+            service::class_vtable(
+                process,
+                module,
+                "Timberborn.BlockSystem",
+                "BlockObjectState"
+            ),
             "BlockObjectState not constructed yet"
         );
 
@@ -1703,9 +1706,7 @@ impl WonderCompletion {
              Already finished in this save: {already}."
         ));
 
-        let unlock_day_on_arrival = process
-            .read::<f32>(instance.add(unlock_day as u64))
-            .ok();
+        let unlock_day_on_arrival = process.read::<f32>(instance.add(unlock_day as u64)).ok();
 
         Some(Self {
             class,
@@ -1744,7 +1745,9 @@ impl WonderCompletion {
     }
 
     fn unlock_day(&self, process: &Process) -> Option<f32> {
-        process.read::<f32>(self.instance.add(self.unlock_day as u64)).ok()
+        process
+            .read::<f32>(self.instance.add(self.unlock_day as u64))
+            .ok()
     }
 
     /// Notes when the wonder is activated, which is not the run end but is
