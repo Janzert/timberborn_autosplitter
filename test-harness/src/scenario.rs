@@ -96,19 +96,15 @@ impl Scenario {
             first.metadata.pid as u64,
             first.metadata.process_name.clone(),
         );
-        process.modules = first.modules.clone();
-        process.ranges = first
-            .ranges
-            .iter()
-            .map(|r| MemoryRange {
-                address: r.address,
-                size: r.size,
-                flags: r.flags,
-            })
-            .collect();
         process.memory = Box::new(Playhead {
             scenario: shared.clone(),
         });
+        // The tables move with the playhead, not just the bytes. A run's
+        // mappings grow as it goes -- the recorded scenario runs from 1443
+        // ranges at the main menu to over 2000 by the end -- and a table fixed
+        // at step 0 leaves the splitter sweeping a fraction of the heap.
+        let tables = shared.clone();
+        let process = process.with_tables(move || tables.tables());
         (process, shared)
     }
 
@@ -134,6 +130,12 @@ impl Scenario {
             .as_ref()
             .map(|s| s.event.clone())
             .unwrap_or_default()
+    }
+
+    /// The mapping tables of the step now being served.
+    pub fn tables(&self) -> (Vec<crate::memory::ModuleInfo>, Vec<MemoryRange>) {
+        let step = &self.steps[self.at.get()];
+        (step.modules.clone(), step.ranges.clone())
     }
 
     pub fn directory(&self) -> &Path {

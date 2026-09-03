@@ -13,11 +13,23 @@
 //! # How a moment is chosen
 //!
 //! The real splitter is driven against the live game through the same `Memory`
-//! seam the tests use, paced at whatever tick rate it asks for. Every time it
-//! touches the timer -- starts, splits, resets -- that is a moment, and the game
-//! is stopped and captured before it can move on. There is no separate list of
-//! things to watch for: the splitter's own decisions are the definition, so a
-//! scenario cannot drift out of step with what it actually does.
+//! seam the tests use, paced at whatever tick rate it asks for. A moment is any
+//! tick in which it **said something that was not routine progress**, or touched
+//! the timer.
+//!
+//! Timer events alone are not enough, which took a wasted run to learn. They are
+//! the splitter's *conclusions*, and its correctness depends on the states it
+//! passes through to reach them: the run start is only bound while the scene is
+//! still loading, and the timer only starts when `initializationState` reaches
+//! `ShowUI` having been watched from below. A recording that jumped from the
+//! main menu straight to "the overlay is up" showed the splitter a game already
+//! in progress, and it correctly refused to start a timer -- reproducing, from a
+//! recording of a perfectly good run, a bug that never happened.
+//!
+//! So the trigger is the splitter's log minus its own noise. That is deliberately
+//! a filter rather than a list of interesting phrases: a list would have to be
+//! kept in step with messages that change, and the failure mode of falling
+//! behind is a recording that looks complete and is not.
 //!
 //! Each step is a delta against the one before, so a run costs one full capture
 //! and a few hundred MiB a split rather than 5 GiB apiece.
@@ -40,6 +52,17 @@ use test_harness::{
     timer::TimerEvent,
     World,
 };
+
+/// Log lines that are progress rather than events. Everything else is a moment.
+///
+/// The scans report every slice, the entity walk reports its progress, and the
+/// probe dumps a line per class -- hundreds of lines that say only "still
+/// working". Capturing on those would fill a disk without adding a state.
+const NOISE: &[&str] = &["[scan]", "[entities]", "[collections]", "--- probe"];
+
+/// Refuse to record more than this many steps. A future splitter that logs more
+/// freely should stop a recording, not quietly fill the disk.
+const MAX_STEPS: u32 = 80;
 
 /// Give up if the splitter has done nothing for this long. Recording is meant
 /// to be watched; an unattended one that silently records nothing is worse than
@@ -199,22 +222,39 @@ struct Recorder {
 
 impl Recorder {
     /// Runs between ticks. Mirrors the splitter's log so the run can be
-    /// watched, and captures whenever it touches the timer.
+    /// watched, and captures if this tick was a moment.
     fn after_tick(&mut self, world: &World) -> bool {
-        for line in &world.log[self.seen_log..] {
+        let fresh: Vec<&String> = world.log[self.seen_log..].iter().collect();
+        for line in &fresh {
             println!("  | {line}");
         }
-        if world.log.len() > self.seen_log {
+        let said = fresh
+            .iter()
+            .find(|line| !NOISE.iter().any(|n| line.contains(n)) && !is_probe_body(line))
+            .map(|line| summarise(line));
+        if !fresh.is_empty() {
             self.seen_log = world.log.len();
             self.last_activity = Instant::now();
         }
 
-        let new = &world.timer.events[self.seen_events..];
-        let reasons: Vec<String> = new.iter().filter_map(describe).collect();
+        let did = world.timer.events[self.seen_events..]
+            .iter()
+            .filter_map(describe)
+            .next();
         self.seen_events = world.timer.events.len();
 
-        for reason in reasons {
+        // One capture a tick at most. What the splitter *did* names it in
+        // preference to what it said, since a timer event is the thing a test
+        // will assert on.
+        if let Some(reason) = did.or(said) {
             self.last_activity = Instant::now();
+            if self.step >= MAX_STEPS {
+                self.error = Some(format!(
+                    "stopping at {MAX_STEPS} steps. The splitter is logging more \
+                     than this was built for; widen NOISE or raise MAX_STEPS."
+                ));
+                return false;
+            }
             if let Err(message) = self.take(&reason) {
                 self.error = Some(message);
                 return false;
@@ -289,6 +329,23 @@ impl Recorder {
         self.step += 1;
         Ok(())
     }
+}
+
+/// A line of the probe's per-class dump, which is progress, not an event.
+fn is_probe_body(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("ok ") || trimmed.starts_with("MISSING")
+}
+
+/// A log line, shortened enough to name a step by.
+fn summarise(line: &str) -> String {
+    let text: String = line
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
+        .collect();
+    let slug: Vec<&str> = text.split_whitespace().take(5).collect();
+    slug.join("-").to_lowercase()
 }
 
 /// What made a moment worth keeping. Writes to the status variable are the

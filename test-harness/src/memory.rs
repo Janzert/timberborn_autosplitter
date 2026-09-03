@@ -127,15 +127,17 @@ pub struct FakeProcess {
     pub memory: Box<dyn Memory>,
     /// Set false to model a process that has exited but is still attached to.
     pub open: bool,
-    /// When set, `modules` and `ranges` are re-read from `/proc` before each
-    /// enumeration rather than being whatever they were when this was built.
+    /// Where `modules` and `ranges` come from, when they are not simply
+    /// whatever this was built with.
     ///
-    /// A capture's mappings are fixed, but a live process's are not: loading a
-    /// save took Timberborn from 1.5 GiB over 624 ranges to 5 GiB over 2098,
-    /// and a splitter shown the old table scans a third of the heap and reads
-    /// addresses that have since been unmapped. Which is exactly what happened
-    /// the first time a run was recorded.
-    pub live_pid: Option<u32>,
+    /// A single capture's mappings are fixed. Nothing else's are. A live
+    /// process grows -- loading a save took Timberborn from 1.5 GiB over 624
+    /// ranges to 5 GiB over 2098 -- and so does a scenario as it advances from
+    /// one step to the next. A splitter shown a stale table sweeps a fraction
+    /// of the heap, finds nothing, and reads addresses that are no longer
+    /// mapped. Both of those have now happened, once each.
+    #[allow(clippy::type_complexity)]
+    pub tables: Option<Box<dyn Fn() -> (Vec<ModuleInfo>, Vec<MemoryRange>)>>,
 }
 
 impl FakeProcess {
@@ -148,35 +150,48 @@ impl FakeProcess {
             ranges: Vec::new(),
             memory: Box::new(EmptyMemory),
             open: true,
-            live_pid: None,
+            tables: None,
         }
     }
 
-    /// Follows a live process's mappings as they change.
-    #[cfg(target_os = "linux")]
-    pub fn following(mut self, pid: u32) -> Self {
-        self.live_pid = Some(pid);
+    /// Takes the mapping tables from `source` before each enumeration.
+    pub fn with_tables(
+        mut self,
+        source: impl Fn() -> (Vec<ModuleInfo>, Vec<MemoryRange>) + 'static,
+    ) -> Self {
+        self.tables = Some(Box::new(source));
         self.refresh();
         self
     }
 
-    /// Re-reads the mapping tables, if this process is following a live one.
+    /// Follows a live process's mappings as they change.
+    #[cfg(target_os = "linux")]
+    pub fn following(self, pid: u32) -> Self {
+        self.with_tables(move || match crate::live::mappings(pid) {
+            Ok(mappings) => (
+                crate::live::modules(&mappings),
+                crate::live::ranges(&mappings),
+            ),
+            Err(_) => (Vec::new(), Vec::new()),
+        })
+    }
+
+    /// Re-reads the mapping tables, if they come from somewhere that moves.
     ///
     /// Called at the start of an enumeration rather than per query: asr asks
     /// for the range count once and then indexes into it, so refreshing
     /// mid-iteration would shift the indices under it.
-    #[cfg(target_os = "linux")]
     pub fn refresh(&mut self) {
-        let Some(pid) = self.live_pid else { return };
-        let Ok(mappings) = crate::live::mappings(pid) else {
-            return;
-        };
-        self.modules = crate::live::modules(&mappings);
-        self.ranges = crate::live::ranges(&mappings);
+        let Some(source) = &self.tables else { return };
+        let (modules, ranges) = source();
+        // An empty answer means the source could not be read, not that the
+        // process has no memory. Keeping the previous tables is the lesser
+        // wrong: a momentary /proc failure should not blank the world.
+        if !ranges.is_empty() {
+            self.modules = modules;
+            self.ranges = ranges;
+        }
     }
-
-    #[cfg(not(target_os = "linux"))]
-    pub fn refresh(&mut self) {}
 
     pub fn with_memory(mut self, memory: impl Memory + 'static) -> Self {
         self.memory = Box::new(memory);
