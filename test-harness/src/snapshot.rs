@@ -498,7 +498,9 @@ impl Snapshot {
 
         let raw = std::fs::read(dir.join(CHUNKS)).unwrap_or_default();
         let mut chunks: Vec<Chunk> = raw
-            .chunks_exact(24)
+            .as_chunks::<24>()
+            .0
+            .iter()
             .map(|record| Chunk {
                 address: u64::from_le_bytes(record[0..8].try_into().unwrap()),
                 len: u64::from_le_bytes(record[8..16].try_into().unwrap()),
