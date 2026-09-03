@@ -2,7 +2,7 @@
 # binary can be built by name. `cargo build` in this directory still builds only
 # this package, and so still only the wasm artifact.
 [workspace]
-members = ["test-harness", "tb-record"]
+members = ["test-harness", "tb-ptrace-open", "tb-record"]
 
 [package]
 name = "timberborn_autosplitter"

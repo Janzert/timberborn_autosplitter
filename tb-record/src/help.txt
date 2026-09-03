@@ -21,10 +21,10 @@ a few hundred MiB a split.
 Each step is written and closed as it is taken, so stopping early -- Ctrl-C, or
 closing the game -- leaves a shorter scenario rather than a broken one.
 
-Needs ptrace rights of its own -- it reads /proc/<pid>/mem directly rather than
-calling tb-dump, so the capability has to be on this binary:
+Needs no privilege of its own: when a direct open is refused it runs
+tb-ptrace-open, which holds the capability. Install that once:
 
-    cargo install --path tb-record --root ~/.local \
-      && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-record
+    cargo install --path tb-ptrace-open --root ~/.local \
+      && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-ptrace-open
 
 See snapshots/README.md.

@@ -8,30 +8,11 @@
 //! development tool: nothing here ships to runners, and it is never run during
 //! a submitted run.
 //!
-//! **Permissions.** Reading another process's memory needs ptrace rights. The
-//! grant is a file capability on an installed copy, which persists across
-//! reboots and leaves `kernel.yama.ptrace_scope` alone for the rest of the
-//! machine:
-//!
-//! ```text
-//! cargo install --path test-harness --bin tb-dump --root ~/.local
-//! sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
-//! ```
-//!
-//! `cap_sys_ptrace` would let this binary read any process the user owns, so
-//! [`is_the_game`] refuses every process with nothing mapped from the
-//! Timberborn install. That is a guard against a mistyped `--pid` rather than a
-//! security boundary, but it means a slip cannot read a browser.
-
-// Captures through `/proc`, so there is nothing to build elsewhere yet. Without
-// this the failure is a pair of unresolved imports pointing at a `cfg`, which
-// says nothing about why. A Windows capture would use VirtualQueryEx and
-// ReadProcessMemory; see TEST_HARNESS_PLAN.md.
-#[cfg(not(target_os = "linux"))]
-compile_error!(
-    "tb-dump captures memory through /proc and is Linux-only. \
-     A Windows capture would need VirtualQueryEx and ReadProcessMemory."
-);
+//! **Permissions.** This needs none of its own. When a direct open of
+//! `/proc/<pid>/mem` is refused, [`LiveMemory::open`] runs `tb-ptrace-open`,
+//! which holds `cap_sys_ptrace` and passes the descriptor back. That is also
+//! where the "is this really Timberborn" check lives, since a check in the
+//! caller is one the caller can skip.
 
 use std::{
     io::{self, IsTerminal, Write},
@@ -152,16 +133,7 @@ fn run() -> Result<(), String> {
         )
     })?;
 
-    let memory = LiveMemory::open(pid).map_err(|e| {
-        format!(
-            "cannot read /proc/{pid}/mem: {e}.\n       \
-             Reading another process needs ptrace rights. Grant them to an \
-             installed copy:\n       \
-             cargo install --path test-harness --bin tb-dump --root ~/.local\n       \
-             sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump\n       \
-             Rebuilding drops the capability, so a reinstall needs the setcap again."
-        )
-    })?;
+    let memory = LiveMemory::open(pid).map_err(|e| format!("{e}"))?;
 
     let mappings = live::mappings(pid).map_err(|e| format!("cannot read /proc/{pid}/maps: {e}"))?;
     let modules = live::modules(&mappings);

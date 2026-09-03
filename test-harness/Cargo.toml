@@ -14,3 +14,9 @@ description = "Test harness for the Timberborn auto splitter: fake memory and a 
 # else here is std. Dev-only, and never built for wasm.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+
+# A fixture for the descriptor-passing tests: the same protocol as
+# tb-ptrace-open, without the privilege. Nothing ships it.
+[[bin]]
+name = "fd-source"
+path = "src/bin/fd-source.rs"

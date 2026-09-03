@@ -1,0 +1,14 @@
+[package]
+name = "tb-ptrace-open"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Opens Timberborn's memory and hands back the descriptor. The only piece that needs a capability."
+
+# Deliberately depends on nothing but libc, and deliberately does almost
+# nothing. This is the binary that carries cap_sys_ptrace, and a capability is
+# lost on every rebuild -- so the less reason it has to change, the fewer times
+# anyone has to think about it. It must not depend on test-harness, which
+# changes constantly.
+[dependencies]
+libc = "0.2"

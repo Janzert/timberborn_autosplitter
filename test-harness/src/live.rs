@@ -8,8 +8,12 @@
 use std::{
     fs::File,
     io,
-    os::unix::fs::FileExt,
+    os::{
+        fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
+        unix::{fs::FileExt, net::UnixStream, process::CommandExt},
+    },
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use crate::memory::{flags, Memory, MemoryRange, ModuleInfo};
@@ -170,14 +174,174 @@ pub struct LiveMemory {
 }
 
 impl LiveMemory {
+    /// Opens a process's memory, directly if allowed and through the helper if
+    /// not.
+    ///
+    /// A direct open needs ptrace rights, which `kernel.yama.ptrace_scope`
+    /// withholds at its usual setting. Rather than granting a capability to
+    /// every tool that wants to read -- all of which are rebuilt constantly,
+    /// dropping it each time -- the privilege lives in `tb-ptrace-open`, which
+    /// opens the file and passes the descriptor back. The check happens at open
+    /// time, so the descriptor keeps working here.
+    ///
     /// # Errors
     ///
-    /// Opening fails with `EACCES` when ptrace is restricted, which is the
-    /// usual reason rather than a missing process.
+    /// If both routes fail, with what to install and why -- `EACCES` on its own
+    /// says nothing about which of the two is missing.
     pub fn open(pid: u32) -> io::Result<Self> {
-        Ok(Self {
-            mem: File::open(format!("/proc/{pid}/mem"))?,
-        })
+        match File::open(format!("/proc/{pid}/mem")) {
+            Ok(mem) => Ok(Self { mem }),
+            Err(direct) => match open_via_helper(pid) {
+                Ok(mem) => Ok(Self { mem }),
+                Err(helper) => Err(io::Error::new(
+                    direct.kind(),
+                    format!(
+                        "cannot read /proc/{pid}/mem.\n       \
+                         Directly: {direct}\n       \
+                         Through {HELPER}: {helper}\n       \
+                         Install the helper and grant it the capability -- it is the \
+                         only piece that needs one:\n       \
+                         cargo install --path tb-ptrace-open --root ~/.local \\\n       \
+                           && sudo setcap cap_sys_ptrace+ep ~/.local/bin/{HELPER}"
+                    ),
+                )),
+            },
+        }
+    }
+}
+
+/// The privileged helper, by name on `PATH`. `TB_PTRACE_OPEN` names it
+/// explicitly, which is what a test uses to point at a stand-in.
+const HELPER: &str = "tb-ptrace-open";
+
+/// Asks the helper to open the process and hand back the descriptor.
+fn open_via_helper(pid: u32) -> io::Result<File> {
+    let helper = std::env::var_os("TB_PTRACE_OPEN").unwrap_or_else(|| HELPER.into());
+    spawn_and_receive(&mut Command::new(helper), &[pid.to_string()])
+}
+
+/// Runs `command` with a socket on fd 3 and takes the descriptor it sends back.
+///
+/// Public so the descriptor-passing can be tested against a stand-in helper;
+/// nothing outside this crate should need it.
+///
+/// Passing the socket as an inherited descriptor rather than binding a path
+/// means there is nothing to guess and no window for anyone else to connect.
+#[doc(hidden)]
+pub fn spawn_and_receive(command: &mut Command, args: &[String]) -> io::Result<File> {
+    let (ours, theirs) = UnixStream::pair()?;
+    let theirs = theirs.into_raw_fd();
+
+    command.args(args);
+    // SAFETY: between fork and exec only async-signal-safe calls are made.
+    // `dup2` clears FD_CLOEXEC on the copy, which is what lets fd 3 survive the
+    // exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(theirs, 3) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().inspect_err(|_| {
+        // SAFETY: `theirs` is ours to close on the failure path.
+        unsafe { libc::close(theirs) };
+    })?;
+    // SAFETY: the child has its own copy now; holding this end open would make
+    // a failed helper look like a hang rather than an EOF.
+    unsafe { libc::close(theirs) };
+
+    let received = receive_fd(ours.as_raw_fd());
+    let status = child.wait()?;
+    match received {
+        Ok(fd) if status.success() => {
+            // SAFETY: `fd` came from the kernel via SCM_RIGHTS and is ours.
+            Ok(unsafe { File::from_raw_fd(fd) })
+        }
+        Ok(fd) => {
+            // SAFETY: as above; discarded because the helper reported failure.
+            unsafe { libc::close(fd) };
+            Err(io::Error::other(format!("helper exited with {status}")))
+        }
+        Err(error) if !status.success() => Err(io::Error::other(format!(
+            "helper exited with {status} ({error})"
+        ))),
+        Err(error) => Err(error),
+    }
+}
+
+/// Sends one descriptor as an SCM_RIGHTS message.
+///
+/// Only the test fixture needs this -- `tb-ptrace-open` carries its own copy
+/// rather than depending on this crate, which changes constantly.
+#[doc(hidden)]
+pub fn send_fd_for_test(socket: RawFd, fd: RawFd) -> io::Result<()> {
+    let mut payload = [0u8; 1];
+    let mut iov = libc::iovec {
+        iov_base: payload.as_mut_ptr().cast(),
+        iov_len: 1,
+    };
+    let mut control = [0u8; 64];
+
+    // SAFETY: as in `receive_fd`.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    unsafe {
+        message.msg_controllen = libc::CMSG_SPACE(size_of::<RawFd>() as u32) as _;
+        let header = libc::CMSG_FIRSTHDR(&message);
+        if header.is_null() {
+            return Err(io::Error::other("no room for the control message"));
+        }
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(size_of::<RawFd>() as u32) as _;
+        std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<RawFd>(), fd);
+        if libc::sendmsg(socket, &message, 0) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Takes one descriptor from an SCM_RIGHTS message.
+fn receive_fd(socket: RawFd) -> io::Result<RawFd> {
+    let mut payload = [0u8; 1];
+    let mut iov = libc::iovec {
+        iov_base: payload.as_mut_ptr().cast(),
+        iov_len: 1,
+    };
+    let mut control = [0u8; 64];
+
+    // SAFETY: msghdr is a plain C struct, and every pointer outlives the call.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = control.len() as _;
+
+    unsafe {
+        let read = libc::recvmsg(socket, &mut message, 0);
+        if read < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if read == 0 {
+            return Err(io::Error::other("the helper sent nothing"));
+        }
+        let header = libc::CMSG_FIRSTHDR(&message);
+        if header.is_null()
+            || (*header).cmsg_level != libc::SOL_SOCKET
+            || (*header).cmsg_type != libc::SCM_RIGHTS
+        {
+            return Err(io::Error::other(
+                "the helper's reply carried no file descriptor",
+            ));
+        }
+        Ok(std::ptr::read_unaligned(
+            libc::CMSG_DATA(header).cast::<RawFd>(),
+        ))
     }
 }
 

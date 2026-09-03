@@ -52,30 +52,38 @@ changing the tool but has no capability, so it can only report.
 
 Reading another process's memory needs ptrace rights, which
 `kernel.yama.ptrace_scope` withholds at its usual setting of `1` even from the
-same user. The grant goes to an installed copy of the tool rather than to the
-whole machine:
+same user. Only **one** small program needs them:
 
 ```bash
-cargo install --path test-harness --bin tb-dump --root ~/.local \
-  && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-dump
+cargo install --path tb-ptrace-open --root ~/.local \
+  && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-ptrace-open
 ```
 
-`tb-record` needs the same, separately. It does its own reading rather than
-calling `tb-dump`, so the capability has to be on its own binary:
+`tb-dump` and `tb-record` need no privilege of their own. When a direct open is
+refused they run `tb-ptrace-open`, which opens `/proc/<pid>/mem` and passes the
+descriptor back over an inherited socket. `/proc/<pid>/mem` is
+permission-checked when it is *opened*, not on each read -- verified on this
+kernel rather than assumed -- so the descriptor keeps working in a process with
+no rights at all.
+
+The point of the split is that a capability is an attribute of a file and is
+lost on every rebuild. `tb-dump` and `tb-record` change constantly; the helper
+does almost nothing and depends on nothing but libc, so it should need
+re-granting only when its validation rule changes. It also means development
+binaries are not run with more privilege than they need.
+
+`tb-ptrace-open` does its own check and refuses any process with no Timberborn
+data mapped, so a mistyped `--pid` cannot read something else. That check lives
+there rather than in the callers because it is the piece holding the capability,
+and a check in the caller is one whoever invokes it can skip.
+
+Install the tools themselves however you like -- `cargo dump` and
+`cargo record` run them straight from the repo:
 
 ```bash
-cargo install --path tb-record --root ~/.local \
-  && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-record
+cargo install --path test-harness --bin tb-dump --root ~/.local
+cargo install --path tb-record --root ~/.local
 ```
-
-Then run `tb-dump` rather than `cargo dump`. The capability is an attribute of
-the file, so it survives reboots and applies to nothing else on the system --
-but it is lost whenever the binary is rebuilt, so **a reinstall needs the
-setcap again** -- which is why the two are written above as one command.
-
-`cap_sys_ptrace` would let that binary read any process you own, so it refuses
-any process with nothing mapped from the Timberborn install directory. That is
-a guard against a mistyped `--pid`, not a security boundary.
 
 Snapshots land here by default. `TIMBERBORN_SNAPSHOTS` moves them, which is
 worth doing if this disk is small.

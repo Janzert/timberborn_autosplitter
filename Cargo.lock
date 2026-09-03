@@ -144,6 +144,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tb-ptrace-open"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "tb-record"
 version = "0.1.0"
 dependencies = [
