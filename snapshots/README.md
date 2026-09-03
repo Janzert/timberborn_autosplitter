@@ -9,14 +9,43 @@ from what we believe the game's layout to be, and cannot tell us that a belief
 is wrong; a snapshot can, by being what the game actually had in memory. See
 `TEST_HARNESS_PLAN.md` in the parent repository.
 
+## Tests ask for a state, not for a file
+
+A test needs the game in a particular condition, not a particular capture on
+one machine. So each test names a **state** — `main-menu`, `run-finished` — a
+capture records which states it is of, and a test searches the store for one
+that matches. Nothing searches on the directory name.
+
+The consequence worth having: a missing capture fails with the steps for
+producing it rather than with a path that means nothing to whoever hit it.
+
+```text
+No snapshot satisfies "run-finished" (a finished wonder run, Congratulations
+screen already shown).
+
+To make one:
+  - Start a new game as either faction.
+  - Build every split-triggering building: Forester, Gear Workshop, ...
+  ...
+  - then, with the game left in that state:
+      tb-dump --freeze --state run-finished --notes '<what you did>'
+```
+
+The states are defined in `test-harness/src/requirement.rs`, which is also
+where a new one is added. `tb-dump` refuses a `--state` that is not listed
+there, so a typo cannot produce gigabytes that no test will ever look at.
+
 ## Capturing one
 
-The game must already be running.
+The game must already be running, and left in the state you are capturing.
 
 ```bash
 tb-dump --dry-run
-tb-dump --label folktails-loaded --notes "day 3, nothing built yet"
+tb-dump --freeze --state run-finished --notes "folktails, developer mode"
 ```
+
+Run `tb-dump --help` for the list of known states. A capture with no `--state`
+is still written, and says so, but no test will find it.
 
 `cargo dump -- ...` runs it straight from the repo, which is convenient while
 changing the tool but has no capability, so it can only report.
@@ -113,6 +142,10 @@ A directory per capture, named `<build-id>-<label>`, holding:
 
 - `manifest.txt` -- provenance and the range table, one record per line
 - `memory.bin` -- the captured bytes, concatenated in manifest order
+
+The manifest records `frozen yes|no` and one `satisfies <state>` line per state
+the capture is of. Those two are what searching uses; everything else in it is
+provenance.
 
 A range that was listed but could not be read is recorded with `-` in place of
 its offset, so replay can say "unreadable" rather than "absent".

@@ -47,35 +47,61 @@ pub fn default_store() -> PathBuf {
     }
 }
 
-/// Finds a capture in the store by the label it was taken with.
+/// Reads only a capture's manifest, to see what it is without opening 5 GiB.
+fn peek(dir: &Path) -> Option<Metadata> {
+    Snapshot::open(dir).ok().map(|s| s.metadata)
+}
+
+/// Finds a capture of the state a test needs.
+///
+/// Searches on what a capture *is*, from its manifest, rather than on where it
+/// sits: a test that names a directory is a test only one machine can run, and
+/// only until the next game update. `frozen` narrows to captures taken with the
+/// game stopped, or without; `None` accepts either.
 ///
 /// # Errors
 ///
-/// Says how to make one rather than just reporting a missing path: a snapshot
-/// test that cannot find its snapshot is a setup problem, not a failure of the
-/// code under test.
-pub fn locate(label: &str) -> io::Result<PathBuf> {
+/// With the instructions for producing the missing capture, not just a path.
+pub fn find(requirement_id: &str, frozen: Option<bool>) -> Result<PathBuf, String> {
+    let requirement = crate::requirement::get(requirement_id).ok_or_else(|| {
+        format!(
+            "no such requirement {requirement_id:?}. Known states:\n{}",
+            crate::requirement::listing()
+        )
+    })?;
+
+    // A store that does not exist yet is just a store with nothing in it. It
+    // must not short-circuit past the instructions below -- being told the
+    // directory is missing is exactly as useless as being told a file is.
     let store = default_store();
-    let suffix = format!("-{label}");
-    let found = std::fs::read_dir(&store)
-        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", store.display())))?
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(&store)
+        .into_iter()
+        .flatten()
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
-        .find(|path| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(&suffix))
-        });
+        .collect();
+    candidates.sort();
+
+    let candidate_count = candidates.len();
+    let found = candidates.into_iter().find(|dir| {
+        peek(dir).is_some_and(|m| {
+            m.satisfies.iter().any(|id| id == requirement_id)
+                && frozen.is_none_or(|wanted| m.frozen == wanted)
+        })
+    });
+
     found.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "no snapshot labelled {label:?} in {}. Capture one with:\n    \
-                 tb-dump --label {label} --notes '...'\n\
-                 See snapshots/README.md.",
-                store.display()
-            ),
+        let qualifier = match frozen {
+            Some(true) => " Note that this one must be captured with --freeze.",
+            Some(false) => " Note that this one must be captured *without* --freeze.",
+            None => "",
+        };
+        format!(
+            "{}{qualifier}\n\nLooked in {}, which holds {} capture(s).",
+            requirement.instructions(),
+            store.display(),
+            candidate_count
         )
     })
 }
@@ -92,6 +118,12 @@ pub struct Metadata {
     pub pid: u32,
     /// Free text: which faction, how far into the run, what was on screen.
     pub notes: String,
+    /// Whether the game was stopped for the read. A capture that cannot say
+    /// whether it is consistent is one nobody can trust later.
+    pub frozen: bool,
+    /// Which [`Requirement`](crate::requirement::Requirement) ids this capture
+    /// is of. What tests search on, rather than the directory name.
+    pub satisfies: Vec<String>,
 }
 
 /// A captured range and where its bytes sit in the blob.
@@ -165,6 +197,10 @@ impl Writer {
         writeln!(manifest, "captured_at {}", m.captured_at).unwrap();
         writeln!(manifest, "pid {}", m.pid).unwrap();
         writeln!(manifest, "process_name {}", m.process_name).unwrap();
+        writeln!(manifest, "frozen {}", if m.frozen { "yes" } else { "no" }).unwrap();
+        for id in &m.satisfies {
+            writeln!(manifest, "satisfies {id}").unwrap();
+        }
         if let Some(path) = &m.process_path {
             writeln!(manifest, "process_path {path}").unwrap();
         }
@@ -244,6 +280,8 @@ impl Snapshot {
                 "captured_at" => metadata.captured_at = rest.into(),
                 "pid" => metadata.pid = rest.trim().parse().unwrap_or(0),
                 "process_name" => metadata.process_name = rest.into(),
+                "frozen" => metadata.frozen = rest.trim() == "yes",
+                "satisfies" => metadata.satisfies.push(rest.trim().into()),
                 "process_path" => metadata.process_path = Some(rest.into()),
                 "note" => notes.push(rest),
                 "module" => {
@@ -355,6 +393,8 @@ mod tests {
             process_path: Some("/games/Timberborn.exe".into()),
             pid: 4242,
             notes: "folktails\nday 3".into(),
+            frozen: true,
+            satisfies: vec!["run-finished".into(), "main-menu".into()],
         };
         let mut writer = Writer::create(dir.to_path_buf(), metadata).unwrap();
         writer.add_modules(vec![ModuleInfo {
@@ -418,6 +458,9 @@ mod tests {
         assert_eq!(snapshot.metadata.pid, 4242);
         assert_eq!(snapshot.metadata.process_name, "Unity Main Thre");
         assert_eq!(snapshot.metadata.notes, "folktails\nday 3");
+        // What searching runs on, so it has to survive the round trip.
+        assert!(snapshot.metadata.frozen);
+        assert_eq!(snapshot.metadata.satisfies, ["run-finished", "main-menu"]);
         assert_eq!(snapshot.modules.len(), 1);
         assert_eq!(snapshot.modules[0].address, 0x7000_0000);
         assert_eq!(snapshot.ranges.len(), 4);

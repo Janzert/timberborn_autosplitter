@@ -33,6 +33,7 @@ pub mod imports;
 #[cfg(target_os = "linux")]
 pub mod live;
 pub mod memory;
+pub mod requirement;
 #[cfg(target_os = "linux")]
 pub mod snapshot;
 pub mod timer;

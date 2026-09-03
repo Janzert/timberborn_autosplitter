@@ -4,8 +4,12 @@ Captures a snapshot of Timberborn's memory for offline testing.
     cargo dump -- [options]        (from this repo, without it)
 
 Options:
-  --label <name>   Names the snapshot directory, after the build id. Say what
-                   state the game is in: "folktails-loaded", "wonder-unlocked".
+  --state <id>     What game state this capture is of. This is what tests search
+                   on -- they ask for a state, never for a directory -- so a
+                   capture without one will never be found. May be repeated;
+                   the known ones are listed at the end of this help.
+  --label <name>   Names the snapshot directory, after the build id. Defaults to
+                   the first --state. Only cosmetic; nothing searches on it.
   --notes <text>   Free text recorded in the manifest: faction, day, what is on
                    screen. A snapshot nobody can identify later is wasted.
   --pid <pid>      Capture this process instead of searching for the game.

@@ -60,6 +60,7 @@ struct Args {
     pid: Option<u32>,
     dry_run: bool,
     freeze: bool,
+    states: Vec<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -69,6 +70,7 @@ fn parse_args() -> Result<Args, String> {
         pid: None,
         dry_run: false,
         freeze: false,
+        states: Vec::new(),
     };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -85,6 +87,18 @@ fn parse_args() -> Result<Args, String> {
             }
             "--dry-run" => args.dry_run = true,
             "--freeze" => args.freeze = true,
+            "--state" => {
+                let id = argv.next().ok_or("--state needs a value")?;
+                // Checked here rather than at capture time: a typo would
+                // otherwise produce a 5 GiB file no test will ever look at.
+                if test_harness::requirement::get(&id).is_none() {
+                    return Err(format!(
+                        "no such state {id:?}. Known states:\n{}",
+                        test_harness::requirement::listing()
+                    ));
+                }
+                args.states.push(id);
+            }
             "--help" | "-h" => return Err("help".into()),
             other => return Err(format!("unknown argument {other}")),
         }
@@ -107,6 +121,7 @@ fn run() -> Result<(), String> {
         Ok(args) => args,
         Err(message) if message == "help" => {
             println!("{}", include_str!("tb-dump_help.txt"));
+            println!("Known states:\n{}", test_harness::requirement::listing());
             return Ok(());
         }
         Err(message) => return Err(message),
@@ -159,7 +174,11 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let dir = snapshot::default_store().join(format!("{}-{}", build_id(), args.label));
+    let label = match (args.label.as_str(), args.states.first()) {
+        ("unlabelled", Some(state)) => state.clone(),
+        _ => args.label.clone(),
+    };
+    let dir = snapshot::default_store().join(format!("{}-{}", build_id(), label));
     if dir.exists() {
         return Err(format!(
             "{} already exists; remove it or pass a different --label",
@@ -176,13 +195,17 @@ fn run() -> Result<(), String> {
             .ok()
             .and_then(|p| p.to_str().map(str::to_owned)),
         pid,
-        // Recorded, because a snapshot that cannot say whether it is
-        // consistent is one nobody can trust a year later.
-        notes: match args.freeze {
-            true => format!("{}\nfrozen: yes (SIGSTOP held for the read)", args.notes),
-            false => format!("{}\nfrozen: no -- ranges read seconds apart", args.notes),
-        },
+        notes: args.notes.clone(),
+        frozen: args.freeze,
+        satisfies: args.states.clone(),
     };
+
+    if args.states.is_empty() {
+        println!(
+            "note: no --state given, so no test will find this capture. Known states:\n{}",
+            test_harness::requirement::listing()
+        );
+    }
 
     let mut writer = Writer::create(dir, metadata).map_err(|e| format!("cannot create: {e}"))?;
     writer.add_modules(modules);

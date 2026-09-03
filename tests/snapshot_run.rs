@@ -15,6 +15,9 @@ use std::sync::OnceLock;
 
 use test_harness::{snapshot::Snapshot, timer::TimerEvent, World};
 
+/// The state these need, by description rather than by filename.
+const RUN_FINISHED: &str = "run-finished";
+
 /// Ticks to run. The three full heap sweeps are budget-limited to 32 MiB each,
 /// and the capture holds 4678 MiB of scannable range, so this is a few hundred
 /// ticks of scanning before anything interesting is reachable.
@@ -30,7 +33,8 @@ struct Outcome {
 fn finished_run() -> &'static Outcome {
     static OUTCOME: OnceLock<Outcome> = OnceLock::new();
     OUTCOME.get_or_init(|| {
-        let dir = test_harness::snapshot::locate("run-complete").expect("snapshot");
+        let dir =
+            test_harness::snapshot::find(RUN_FINISHED, None).unwrap_or_else(|e| panic!("{e}"));
         let snapshot = Snapshot::open(&dir).expect("opening the snapshot");
         let world = World::new().with_process(snapshot.process());
         let world = test_harness::drive(world, timberborn_autosplitter::main(), TICKS);

@@ -6,11 +6,12 @@
 //! matters in practice: two captures of the same game state, one frozen and one
 //! not, driven through the splitter, should reach the same conclusions.
 //!
-//! **Needs a pair of captures**, taken back to back of one unchanged state:
+//! **Needs a pair of captures** of one unchanged state, taken back to back --
+//! one with `--freeze` and one without:
 //!
 //! ```text
-//! tb-dump --label run-complete        --notes '...'
-//! tb-dump --freeze --label run-complete-frozen --notes '...'
+//! tb-dump --state run-finished --notes '...'
+//! tb-dump --state run-finished --freeze --notes '...'
 //! ```
 //!
 //! One caveat on how far the result generalises: the state this was first run
@@ -20,10 +21,13 @@
 
 use test_harness::{snapshot::Snapshot, World};
 
+const RUN_FINISHED: &str = "run-finished";
+
 const TICKS: usize = 2000;
 
-fn log_of(label: &str) -> Vec<String> {
-    let dir = test_harness::snapshot::locate(label).expect("snapshot");
+fn log_of(frozen: bool) -> Vec<String> {
+    let dir =
+        test_harness::snapshot::find(RUN_FINISHED, Some(frozen)).unwrap_or_else(|e| panic!("{e}"));
     let snapshot = Snapshot::open(&dir).expect("opening the snapshot");
     let world = World::new().with_process(snapshot.process());
     test_harness::drive(world, timberborn_autosplitter::main(), TICKS).log
@@ -56,8 +60,8 @@ fn normalise(log: &[String]) -> Vec<String> {
 
 #[test]
 fn freezing_the_game_changes_nothing_the_splitter_concludes() {
-    let unfrozen = normalise(&log_of("run-complete"));
-    let frozen = normalise(&log_of("run-complete-frozen"));
+    let unfrozen = normalise(&log_of(false));
+    let frozen = normalise(&log_of(true));
 
     let differences: Vec<String> = (0..unfrozen.len().max(frozen.len()))
         .filter(|&i| unfrozen.get(i) != frozen.get(i))

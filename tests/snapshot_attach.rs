@@ -15,11 +15,12 @@
 
 use test_harness::{snapshot::Snapshot, World};
 
-/// A capture taken at the main menu, before any save is loaded.
+/// The state these need. Asked for by what it is, not by which file holds it --
+/// a missing one fails with the steps for producing it.
 const MAIN_MENU: &str = "main-menu";
 
-fn world(label: &str) -> World {
-    let dir = test_harness::snapshot::locate(label).expect("snapshot");
+fn world(state: &str) -> World {
+    let dir = test_harness::snapshot::find(state, None).unwrap_or_else(|e| panic!("{e}"));
     let snapshot = Snapshot::open(&dir).expect("opening the snapshot");
     World::new().with_process(snapshot.process())
 }
