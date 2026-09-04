@@ -11,7 +11,11 @@ asr = { path = "vendor/asr" }
 The exact revision is pinned by the submodule gitlink, so a clone with
 `--recurse-submodules` always builds against the same asr.
 
-## Why we need a change at all
+## What the fork carries
+
+Two accessors the splitter needs, and one bug fix.
+
+## The accessors, and why they are needed
 
 `mono::Class` stores its address in a `pub(super)` field, and `get_name` is
 `pub(super)`. Locating a service by scanning for instances of its class
@@ -27,6 +31,26 @@ and a splitter can already `read` any address, enumerate every memory range via
 addresses from `get_static_table()`, `UnityPointer::deref_offsets()` and
 `MemoryRange::address()`.
 
+## The signature scanner's dangling buffer
+
+`Signature::scan_iter` zero-initialised a `Buffer<N>` as a local, took a
+`&mut [u8]` over it through `slice::from_raw_parts_mut`, and moved *that slice*
+into the `iter::from_fn` closure it returned. The buffer itself stayed a local
+of `scan_iter`, so every poll of the returned iterator read and wrote a stack
+frame that had already been given back — 4 KiB of it, in a scan that runs on
+every `Module::attach`.
+
+It is the sort of unsoundness that behaves for years: the stale address is
+usually still slack stack. It stops behaving when the caller is deeper than
+whatever ran before, which is how it turned up here — replaying a recording
+reads through a chain of twenty delta captures, and the scan's 256-byte write
+landed on one of those frames' return addresses.
+
+The fix is to move the buffer into the closure and take the slice inside each
+call, where the storage is live for as long as the pointer is used. It is a
+soundness fix rather than an API change, and worth upstreaming on its own
+account: nothing about it is Timberborn-specific.
+
 ## Where the submodule points
 
 `.gitmodules` points at the fork, <https://github.com/Janzert/asr>, and inside
@@ -37,10 +61,10 @@ the submodule:
 | `origin` | the fork — fetch over https, push over ssh |
 | `upstream` | <https://github.com/LiveSplit/asr> — pull from it to stay current |
 
-The two accessors live on the `class-vtable` branch, which is what the parent
-repo's gitlink points at. `mono-class-vtable` carries the same work shaped for
-upstream review -- retitled to the house style, with the dedup and the doc
-comments a reviewer asked for in advance.
+The two accessors and the scanner fix live on the `class-vtable` branch, which
+is what the parent repo's gitlink points at. `mono-class-vtable` carries the
+accessors shaped for upstream review -- retitled to the house style, with the
+dedup and the doc comments a reviewer asked for in advance.
 
 **The gitlink tracks `class-vtable`, never `mono-class-vtable`.** A PR branch is
 rewritten as review proceeds, and a gitlink pointing at a commit that a later
@@ -92,6 +116,10 @@ the API being proposed and cost a session to find.
 Upstream uses neither conventional commits nor an `Area:` prefix -- 93% of the
 last 150 subjects are a bare imperative sentence -- so the commits are titled
 to match rather than to match this repo.
+
+The scanner fix belongs in its own pull request rather than in that one: it is
+a soundness bug in code the accessors do not touch, and reviewing it alongside
+an API proposal would hold up whichever of the two is slower.
 
 Upstream may prefer a higher-level API (e.g. `Image::find_instances(&class)`)
 over exposing the raw address. That is a nicer contribution but more surface to
