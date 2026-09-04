@@ -182,13 +182,36 @@ fn walks_the_global_entity_registry() {
     require("entities for 6 tracked buildings");
 }
 
-/// The map is what makes later scans cheap, and it is only worth anything if it
-/// narrows the search. Asserting it found *something* rather than a particular
-/// figure: the fraction is a property of the save, not of the code.
+/// The reference table is what makes every search after the first cheap, so a
+/// run that never finds one has quietly fallen back to sweeping for everything.
+///
+/// Asserting that it was found and then used, not which address it was at:
+/// the address differs per build -- 0x1f0000000 on one, 0x230000000 on another
+/// -- which is the whole reason it is discovered rather than tabulated.
 #[test]
-fn maps_the_heap_to_narrow_later_scans() {
-    require("[scan] heap mapped:");
-    require("Later scans read only those.");
+fn finds_the_reference_table_and_searches_it() {
+    require("[table] found at");
+    require("[table] SingletonRepository:");
+}
+
+/// The container is found through the table, not by sweeping for it.
+///
+/// The sweep is still there as a fallback and a run may legitimately use it,
+/// but a *loaded game* whose container came from a sweep means the table was
+/// found and then did not contain the one object it most needs to.
+#[test]
+fn the_container_does_not_cost_a_sweep() {
+    for run in finished_runs() {
+        let swept = run
+            .log
+            .iter()
+            .any(|line| line.contains("[scan] SingletonRepository starting"));
+        assert!(
+            !swept,
+            "{}: the container was swept for despite a table being found; log was {:#?}",
+            run.version, run.log
+        );
+    }
 }
 
 /// Reads either succeed or are reported. A capture with holes in it would show

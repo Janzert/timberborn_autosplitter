@@ -222,3 +222,123 @@ fn reports_which_runs_are_being_replayed() {
     println!("wonder-run recordings in use: {names:?}");
     assert!(!names.is_empty());
 }
+
+/// Two games in one process, which is what a runner resetting for another
+/// attempt actually does.
+///
+/// Replayed separately from the wonder runs because it is a different
+/// recording of a different thing: no buildings, no wonder, just two scene
+/// loads with a trip through the main menu between them.
+fn two_games() -> &'static Replay {
+    static ONCE: std::sync::OnceLock<Replay> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let all = Scenario::all("two-games").unwrap_or_else(|e| panic!("{e}"));
+        let (name, dirs) = all.first().expect("a two-games recording");
+        replay(name, dirs)
+    })
+}
+
+/// The second game's container is found through the reference table, not by
+/// sweeping for it.
+///
+/// This is the case the table was added for, and the only one no other
+/// recording covers. The sweep it replaces is at its worst here: the process
+/// grew from 3916 MiB to 5195 MiB between the two games, so the scan a runner
+/// pays for gets slower with every attempt of the session.
+#[test]
+fn the_second_game_costs_no_sweep() {
+    let run = two_games();
+    let containers: Vec<&String> = run
+        .log
+        .iter()
+        .filter(|line| line.contains("The game's singleton container is at"))
+        .collect();
+    assert_eq!(
+        containers.len(),
+        2,
+        "{}: expected a container per game, got {containers:?}",
+        run.name
+    );
+    assert!(
+        containers[0] != containers[1],
+        "{}: both games resolved the same container: {containers:?}",
+        run.name
+    );
+    assert!(
+        !run.log
+            .iter()
+            .any(|line| line.contains("[scan] SingletonRepository starting")),
+        "{}: swept for a container despite a table being found; log was {:#?}",
+        run.name,
+        run.log
+    );
+}
+
+/// The second game is free: not one sweep after the first scene load ends.
+///
+/// The first game is not quite, and the reason is worth recording. Sweeping
+/// for the anchor is by design -- there is nothing to find the table with until
+/// something has been found the hard way. The other sweep is the run start's,
+/// and it happens because during the *first* load the incoming
+/// `GameInitializer` is on the heap before the runtime has a reference to it:
+/// the table reported "0 live instances" while a sweep found it. By the second
+/// load there are two of them in the table and no sweep happens at all.
+///
+/// So the fallback is not decoration. It covers a real window, once per
+/// session, at main-menu prices -- 894 MiB rather than the 5195 MiB the same
+/// sweep would cost by the second game.
+#[test]
+fn the_second_game_costs_nothing_at_all() {
+    let run = two_games();
+    let second_load = run
+        .log
+        .iter()
+        .rposition(|line| line.contains("A scene is loading"))
+        .unwrap_or_else(|| panic!("{}: no second load in the log", run.name));
+    let after: Vec<&String> = run.log[second_load..]
+        .iter()
+        .filter(|line| line.contains("starting (full sweep)"))
+        .collect();
+    assert!(
+        after.is_empty(),
+        "{}: the second game still swept: {after:?}",
+        run.name
+    );
+}
+
+/// The sweeps the first game does pay for are the two named above, and no
+/// others. A third means something stopped being findable through the table.
+#[test]
+fn the_first_game_sweeps_only_for_the_anchor_and_the_run_start() {
+    let run = two_games();
+    let swept: Vec<&str> = run
+        .log
+        .iter()
+        .filter_map(|line| line.strip_prefix("[scan] "))
+        .filter(|line| line.contains("starting (full sweep)"))
+        .filter_map(|line| line.split_once(' ').map(|(name, _)| name))
+        .collect();
+    assert_eq!(
+        swept,
+        ["SceneLoader", "GameInitializer"],
+        "{}: unexpected sweeps; log was {:#?}",
+        run.name,
+        run.log
+    );
+}
+
+/// Both games start their timer, which is what the table has to not break.
+#[test]
+fn both_games_bind_a_run_start() {
+    let run = two_games();
+    let bound = run
+        .log
+        .iter()
+        .filter(|line| line.contains("run start bound during the load"))
+        .count();
+    assert_eq!(
+        bound, 2,
+        "{}: expected a run start bound in each game; log was {:#?}",
+        run.name, run.log
+    );
+}

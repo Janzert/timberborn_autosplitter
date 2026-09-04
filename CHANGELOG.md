@@ -7,6 +7,16 @@ release date.
 
 ### Changed
 
+- **Starting a game no longer costs a multi-second sweep of the game's
+  memory.** The splitter used to search every writable byte in the process to
+  find what it needs at each scene change — 1–2s on Linux, up to 29s on
+  Windows, and getting slower with every game started in one session, because
+  the process keeps growing. It now finds Unity's own table of live objects
+  once, at the main menu, and reads that instead: 20–70 MiB rather than 4–5 GiB,
+  and it does not grow. Runners on Windows resetting for another attempt should
+  notice this most. If the table cannot be found or does not hold what is
+  wanted, the old search still runs, so nothing depends on it working.
+
 - **The splitter now idles at one tick a second while no game is running**,
   instead of polling 120 times a second for as long as LiveSplit is open. It
   goes back to full rate the moment it attaches, so nothing about split timing

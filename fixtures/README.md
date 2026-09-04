@@ -82,6 +82,12 @@ one. Those are allocation results, not layout — they differ between two runs o
 the same build, so recording them would be recording one process's luck. The
 builder assigns its own and keeps them consistent.
 
+**Where the runtime's reference table is.** The real one is at `0x1f0000000` on
+one build and `0x230000000` on another, so an address is luck in the same way.
+The builder puts its own wherever it likes and the splitter finds it by content
+— see DESIGN.md under *Reading fewer bytes* — which means a fixture that pinned
+one would be testing a shortcut the splitter does not take.
+
 **Anything about the game's data.** A fixture says a `List<T>` field sits at
 +0x18; it says nothing about what was in the list.
 

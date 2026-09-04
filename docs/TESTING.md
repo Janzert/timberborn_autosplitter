@@ -51,6 +51,13 @@ does not run it.
 Both are kept deliberately. A fixture and the builder can agree with each other
 perfectly while both being wrong about Timberborn.
 
+The synthetic world models the runtime's reference table as well as the heap —
+every object placed gets an entry, in a range of its own holding pointers and
+nothing else. `Scene::container_unreferenced` leaves the DI container out of it
+while leaving the object on the heap, which is the one discrepancy a capture
+actually showed and the reason the sweep behind the table is tested rather than
+assumed. See [DESIGN.md](DESIGN.md) under *Reading fewer bytes*.
+
 ## What this catches, and what it does not
 
 Worth being explicit, because a harness like this is easy to oversell.
@@ -79,10 +86,14 @@ return address. Fixed in the vendored fork; see [ASR_FORK.md](ASR_FORK.md).
 Worth recording because the harness found it by *being* an unusual caller, which
 is not something either suite was designed to do.
 
-**It does not catch anything about timing** — the 29s Windows heap scan, ~30µs
-reads through Wine, `MAP_BUDGET` stutter — **or the Proton prefix and
-start-order constraints.** Those need the real thing; see
-[DESIGN.md](DESIGN.md) under *Measurements*.
+**It does not catch anything about timing** — the 29s Windows heap sweep, ~30µs
+reads through Wine, slice stutter — **or the Proton prefix and start-order
+constraints.** Those need the real thing; see [DESIGN.md](DESIGN.md) under
+*Measurements*. What it does catch is which *path* answered a question, which
+is the next best thing: both suites assert that the container is resolved
+through the reference table rather than by sweeping for it, so a change that
+quietly falls back shows up as a failure rather than as a slow run nobody
+measures.
 
 So it substitutes for the *repeat* runs, not the first one: fast iteration and a
 regression net, not correctness assurance.
@@ -123,6 +134,12 @@ So they are not re-litigated.
   such. Keeping single captures of those states as well costs gigabytes apiece
   for instants already held. The tests are unchanged: they ask for a state, and
   a state is what they get.
+- **A recording exists for the case no run covers.** A `two-games` recording is
+  a second game started in the same process, which is what a runner resetting
+  for another attempt actually does, and the case any shortcut past a per-scene
+  sweep has to survive. It is deliberately short — two overlays with a trip
+  through the main menu between them, no buildings and no wonder — because
+  what it is a recording *of* is the scene load, not the run.
 - **The offline suite gated commits from day one**, when it held three tests.
   Snapshot tests are development scaffolding with a machine-local dependency;
   they are not the product.
@@ -130,7 +147,7 @@ So they are not re-litigated.
 ## Risks that are still live
 
 - **A separate suite is a forgettable suite.** `cargo test` will not mention it.
-  It is now ~2 minutes, up from 54s, because three recordings are replayed
+  It is now ~2 minutes, up from 54s, because four recordings are replayed
   rather than two — long enough that nobody will run it absent-mindedly. Keep a
   line for it wherever notes carry between sessions, or it becomes stale code
   nobody has run against a current capture. Partly mitigated: a missing capture fails with the steps for

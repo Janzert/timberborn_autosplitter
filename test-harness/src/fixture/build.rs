@@ -112,6 +112,14 @@ const METADATA_BASE: u64 = 0x2000_0000;
 /// The managed heap, which is where a scenario's objects go.
 const HEAP_BASE: u64 = 0x4000_0000;
 
+/// Where the synthetic runtime keeps its references to live objects.
+///
+/// A real one sits at `0x1f0000000` on one game build and `0x230000000` on
+/// another, so the splitter finds it by content rather than by address and a
+/// fixture is free to put it anywhere. Far enough above the heap that the two
+/// cannot meet; `finish_live` asserts it.
+const TABLE_BASE: u64 = 0x8000_0000;
+
 /// The synthetic process's pid, when nothing says otherwise. Nothing reads it
 /// but the fake runtime, which only needs it to be unique within a world.
 const DEFAULT_PID: u64 = 4242;
@@ -208,6 +216,9 @@ pub struct Builder {
     instances: HashMap<String, ClassLayout>,
     game_version: String,
     pid: u64,
+    /// Every object placed on the heap, in the order it was placed, as the
+    /// runtime's reference table would hold them. See [`Builder::forget`].
+    references: Vec<u64>,
 }
 
 impl Builder {
@@ -295,6 +306,7 @@ impl Builder {
         Self {
             metadata,
             heap: Region::new(HEAP_BASE),
+            references: Vec::new(),
             classes,
             instances,
             game_version: fixture.game_version.clone(),
@@ -334,6 +346,7 @@ impl Builder {
         });
         let address = self.heap.alloc(layout.instance_size + extra);
         self.heap.write_u64(address + OBJECT_VTABLE, layout.vtable);
+        self.references.push(address);
         address
     }
 
@@ -360,7 +373,21 @@ impl Builder {
         let layout = self.expect_class(image, name);
         let address = self.heap.alloc(layout.instance_size + extra);
         self.heap.write_u64(address + OBJECT_VTABLE, layout.vtable);
+        self.references.push(address);
         address
+    }
+
+    /// Drops an object's entry from the reference table, leaving the object
+    /// itself on the heap.
+    ///
+    /// Models the one case a capture actually showed: a `SingletonRepository`
+    /// that still validated and still had its contents, with no entry in the
+    /// table at all -- a container whose scene had been torn down. Whether that
+    /// object was dead or merely unheld cannot be told from a memory image, so
+    /// the splitter must not depend on either, and a fixture that can express
+    /// it is how the sweep behind the table stays tested.
+    pub fn forget(&mut self, object: u64) {
+        self.references.retain(|&placed| placed != object);
     }
 
     /// Reserves `len` zeroed bytes on the heap — an array's storage, a string,
@@ -415,9 +442,26 @@ impl Builder {
         // A heap with nothing on it is still a heap; an empty block would make
         // every read of it fail rather than read a zero.
         let heap_size = self.heap.len().max(0x1000);
+        assert!(
+            HEAP_BASE + heap_size <= TABLE_BASE,
+            "the synthetic heap has grown into the reference table"
+        );
         let mut heap = self.heap.bytes;
         heap.resize(heap_size as usize, 0);
         memory.put(HEAP_BASE, heap);
+
+        // The reference table: one entry per object placed, and nothing else.
+        // Holding no object headers is what tells it from a heap section, so
+        // it must contain pointers and only pointers -- see `src/table.rs`.
+        let mut table = Vec::with_capacity(self.references.len() * 8);
+        for object in &self.references {
+            table.extend_from_slice(&object.to_le_bytes());
+        }
+        // Never empty: a zero-length range would make every read of it fail,
+        // and the splitter would find no table rather than an empty one.
+        table.resize(table.len().max(0x1000), 0);
+        let table_size = table.len() as u64;
+        memory.put(TABLE_BASE, table);
         let memory = SharedMemory::new(memory);
         let pid = self.pid;
 
@@ -442,6 +486,11 @@ impl Builder {
                 MemoryRange {
                     address: HEAP_BASE,
                     size: heap_size,
+                    flags: flags::HEAP,
+                },
+                MemoryRange {
+                    address: TABLE_BASE,
+                    size: table_size,
                     flags: flags::HEAP,
                 },
             ],

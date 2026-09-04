@@ -59,20 +59,24 @@ static table.
 Every Timberborn service is a singleton, so there is exactly one instance of
 each service class in the process.
 
-This is how a service is found when nothing else knows where it is. Most are
-not found this way any more -- see *Locating services through the DI container*
-below, which turns four of the five scans a loaded game used to cost into
-lookups. The scan is still what finds the container itself, and the scene
-loader, and the run start.
+This is how a service is found when nothing else knows where it is, and it is
+the fallback rather than the usual path. Most services are reached through the
+DI container -- see *Locating services through the DI container* below, which
+turns four of the five scans a loaded game used to cost into lookups -- and the
+container itself, the run start and every later search go through the runtime's
+reference table, described below. A full sweep is what finds the scene loader
+once at the main menu, and what stands behind the table whenever it does not
+settle a question.
 
 On Mono, `object[0]` is a `MonoVTable*` and `vtable[0]` is a `MonoClass*`
 (confirmed by asr's own `UnityPointer` traversal). So:
 
 1. Resolve the target class by name via the Mono module to get its `MonoClass*`.
 2. Find its `MonoVTable` (a vtable whose first pointer is that class).
-3. Scan writable committed ranges from `Process::memory_ranges()` for a
-   pointer-aligned word equal to that vtable address. That is the instance.
-4. Cache it, revalidate cheaply each tick, rescan on scene change.
+3. Look for a pointer-aligned word equal to that vtable address -- among the
+   objects the reference table names, or failing that across every writable
+   committed range from `Process::memory_ranges()`. That is the instance.
+4. Cache it, revalidate cheaply each tick, re-resolve on scene change.
 
 This needs **zero Unity-native offsets**, so it does not depend on asr's
 `scene_manager` module working on Unity 6.3, and it stays name-resolved
@@ -130,9 +134,9 @@ way to go the other way either — from an object found at runtime back to a
 Neither leaks offset internals, which makes both better upstreaming
 propositions than a raw address getter. See `docs/ASR_FORK.md`.
 
-### Scanning only the ranges that can hold an object
+### Reading fewer bytes: the runtime's reference table
 
-A scan reads every readable-writable range in the process. Under Proton that is
+A sweep reads every readable-writable range in the process. Under Proton that is
 cheap enough not to matter. On Windows it is not, and the gap is not one of
 degree — measured against the same game version:
 
@@ -152,64 +156,93 @@ Slicing cannot fix it. Total sweep time is bandwidth-bound, so a smaller budget
 makes the stalls shorter and more numerous and leaves the total where it was.
 The only lever is reading fewer bytes.
 
-Most of what is read cannot hold a managed object at all. Measured on Windows,
-of 3043 readable-writable ranges totalling 6906 MiB, only 139 — 1497 MiB, 21%
-— contained one. The rest is Unity's native memory. Skipping it is worth more
-than the byte ratio suggests, because those ranges are also slower per byte:
-124ms per 32 MiB slice against 26ms.
+**The lever is not to search memory at all.** Unity's native side holds the
+managed objects it cares about through a table of references, and everything the
+splitter has to locate has an entry in it. Reading that table gives a few
+hundred thousand object addresses directly; checking which of them are instances
+of the class wanted costs only the pages those objects sit on, because managed
+objects cluster. Measured across three recordings on two game builds:
 
-**That 21% is a Windows number.** Measured under Proton on the same game
-build, twice in one session: 64 ranges holding 1416 MiB of 3883 MiB, and 76
-holding 1608 MiB of 4320 MiB — around **36%**, of an address space little more
-than half the size. So the shortcut reads a larger share of a smaller space
-there, and saves proportionally less.
+| moment | through the table | a full sweep |
+|---|---|---|
+| main menu | 3 MiB | 811 MiB |
+| first game | 20 MiB | 3916 MiB |
+| second game of the session | 70 MiB | 5195 MiB |
 
-It can even cost, and whether it does is not predictable. Binding the run start
-scans with a predicate that rejects the outgoing world's initializer, so a
-restricted sweep turning up only that one is not settled and falls through to
-the full sweep anyway. Measured on Linux over three new-game binds it fell
-through twice and settled once: the worst read 1427 MiB and then 3654 MiB where
-a single full pass would have read 3654, while the best settled in 1608 MiB
-against a 4320 MiB sweep. It turns on whether the incoming world's initializer
-happens to land in a range already mapped, which nothing controls.
+Note the last row. The sweep grows as the process does — 3916 MiB to 5195 MiB
+between two games of one session — so the cost this removes is at its worst
+exactly when a runner is resetting for another attempt.
 
-Every one of them still bound during the load — on Linux a full sweep is 1–2s,
-so the extra pass is affordable either way. The shortcut is kept because the
-platform it rescues is the one where a sweep costs 29s and the retry loop gets
-a single attempt.
+It is also *cleaner* than a sweep. Sweeping for `SingletonRepository` reports
+"3 found, 21 rejected": the rejects are words inside Mono's own metadata that
+happen to equal the vtable. The table holds object pointers and nothing else,
+so those never arise.
 
-So `HotRanges` in `src/scan.rs` records which ranges hold managed objects, and
-scans read only those, with the full sweep behind them as a fallback.
+#### It is found, never tabulated
 
-**The set is learned, not guessed.** Nearly every range holding objects is
-exactly 16 MiB, which is Boehm's heap section size, and a rule on size would
-have been easy to write and wrong: one of the three containers measured sat in
-a 2 MiB range. A learned set cannot fail that way — at worst it is incomplete,
-and the sweep behind it still runs.
+The table is at `0x1f0000000` on one build and `0x230000000` on another, so an
+address would be wrong on the next update — the same reason nothing else here is
+a hardcoded offset. `ReferenceTable::find` in `src/table.rs` looks for it
+instead:
 
-**A restricted scan never proves absence.** `is_conclusive` returns false for
-one however cleanly it read what it was given, because "not in the ranges we
-knew about" is not "not there". That matters concretely: the give-up-skipping
-rule counts *conclusive* empty scans, and would otherwise be talked into
-binding the previous game's container.
+1. Locate one long-lived object the ordinary way. The scene loader is ideal: it
+   exists at the main menu and outlives every scene.
+2. Sweep for words equal to that object's address. Around 28 come back, in
+   roughly ten distinct ranges.
+3. Pick out the range that is a table rather than a heap section.
 
-**The map is built by scanning for a class with many instances.**
-`ComponentCache` has one per entity — 5916 of them, spread across the heap's
-whole footprint. No validator: an over-match only adds a range to look at
-later, and the scans that use the map validate their own hits anyway.
+Step 3 is decided by content. A heap section is full of *object headers* — words
+pointing into the region where vtables live — and a table has none. Measured
+across both builds: a table has 0 to 2 such words, and the sparsest heap section
+competing with one has 2355. `MAX_HEADER_WORDS` sits at 64, a factor of thirty
+from either side, and the count is checked as a candidate is read so a heap
+section is abandoned after sixty-five headers rather than read to the end.
 
-**It is built from the watch loop, a slice at a time.** That loop is the only
-place reliably in a game with time to spare. The main menu is not: exiting to
-it does *not* always register as a scene load, so `Scene::MainMenu` is not
-somewhere work can be scheduled — a mistake that cost a full round of testing.
-A slice per tick keeps every split check below it running, where awaiting the
-whole map would stop them for the best part of a minute, and the loop's own
-exit abandons it when a load starts.
+A *fraction* was tried instead, on the theory that the ranges differ in size by
+two orders of magnitude, and it is worse in both directions at once: the heap
+sections run from 0.7% to 30% object headers, and a threshold loose enough to
+admit a real table was measured accepting a 2600 KiB heap section as one. The
+absolute count is the one the data supports.
 
-The first game of a session pays for two full sweeps — the container scan, and
-then the map — and every game after it is fast. Worth improving: the container
-scan already reads every byte, so counting a second needle in the same pass
-would build the map for nothing.
+One candidate needs no statistics at all: the range the anchor itself sits in
+holds an object by definition, so it is skipped outright. That is what makes the
+rule exact in a synthetic world, where a heap with a dozen objects in it is
+otherwise sparse enough to look like a table.
+
+#### Both sweeps happen at the main menu
+
+Finding the anchor and then finding the table are two full passes, and both run
+before a run can start — on a process a fifth the size it will be in a game.
+Measured: 811 MiB scannable at the menu against 3916 MiB in a game, with the
+anchor sweep stopping early at 376 MiB.
+
+#### What it is not
+
+**It is not a superset of the heap.** A capture taken while a second game loaded
+held a `SingletonRepository` that validated cleanly and still had its 103
+singletons, with no entry in the table at all — a main-menu container whose scene
+had already been torn down, with two references left to it against the seven each
+live container had. Its predecessor from the first menu visit was in the table
+throughout the whole time it was in use, and by then had been freed outright.
+
+The reading that fits every observation is that an entry goes when the object
+dies and the heap keeps the corpse until it is collected — which would make this
+the *live* set, and so better than what a sweep returns: the stale leftovers that
+`skip` exists to work around would never be offered in the first place. That
+cannot be proven from a memory image, so nothing depends on it.
+
+**So a table search never proves absence.** `Found::conclusive` is false for one
+however cleanly it read, and an unsettled result falls through to the sweep.
+That matters concretely: the give-up-skipping rule counts *conclusive* empty
+searches, and would otherwise be talked into binding the previous game's
+container.
+
+**The fallback is not decoration.** During the *first* scene load of a session
+the incoming `GameInitializer` is on the heap before the runtime has a reference
+to it: the table reports zero instances and the sweep finds it. That is once per
+session, at main-menu prices — 894 MiB, against the 5195 MiB the same sweep
+would cost by the second game — and by the second load there are two
+initializers in the table and no sweep happens at all.
 
 ## Split sources
 
@@ -982,10 +1015,14 @@ Two things cost time getting there and are worth knowing:
 
 ## Risks
 
-1. **Heap scan performance** — settled, see *Measurements* below. A full scan of
-   3.3 GiB takes 1–2s, and with early stop a singleton lookup does not need
-   anything like the full sweep. The scan is resumable, so it never stalls the
-   splitter's update loop.
+1. **Search performance** — settled, see *Reading fewer bytes* and
+   *Measurements*. A session pays two full sweeps at the main menu, where the
+   process is smallest, and every search after that reads the reference table
+   and the pages it names: 20–70 MiB against a sweep of 4–5 GiB. Both paths are
+   resumable, so neither stalls the splitter's update loop. The residual risk is
+   a game or engine update that stops the table being findable, which costs
+   speed rather than correctness — the sweep is still behind it, and the log
+   says which path answered.
 2. `List<T>` / `HashSet<T>` / `Dictionary<K, V>` internal layout is Unity's Mono
    BCL — stable across game patches, but moves on a Unity upgrade. Resolved by
    name, so a move shows up as a failed lookup rather than a bad read.
@@ -1138,21 +1175,17 @@ attached. The Proton numbers above do not carry over.
 29s, ~240 MiB/s. Read failures are not the reason — 83 chunks failed out of
 ~110,000 on one run, so the page-by-page fallback is not what costs. Volume is.
 
-**Restricting to the mapped ranges**, cold two-cycle run in one session:
-
-| | first game | second game |
-|---|---|---|
-| `GameInitializer`, during the load | 4.0s (full, 831 MiB) | **2.0s** (mapped, 1429 MiB) |
-| `SingletonRepository`, after it | 40.3s (full, 6151 MiB) | **1.0s** (mapped) |
-
-The first game's during-load scan is cheap only because the process has not
-grown yet — 831 MiB mid-load against 6.3 GiB once the game is up.
-
 **Process size is the variable that matters.** A fresh process is 0.65 GB at
 the main menu and 6.3 GB with a game loaded, and it keeps growing across games.
 So how bad this gets depends on how long the process has lived, which is why a
 first game can look fine and a second cannot, and why none of it reproduces on
-a small process.
+a small process. It is also why the reference table matters most here: the
+20–70 MiB it reads does not grow with the process, while the sweep it replaces
+grew from 3916 MiB to 5195 MiB across two games of one recorded session.
+
+These Windows figures predate the table and describe the fallback path. What
+they establish is the size of the problem it removes: at ~240 MiB/s, the 40.3s
+`SingletonRepository` sweep above becomes a read of 70 MiB.
 
 ### Scanning and attaching, learned the hard way
 

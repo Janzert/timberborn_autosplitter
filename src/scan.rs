@@ -33,62 +33,6 @@ const CHUNK_WORDS: usize = 8 * 1024;
 /// about at the host's update interval.
 pub const DEFAULT_BUDGET: u64 = 32 << 20;
 
-/// Bytes to scan per slice when mapping the heap. Never on the timing-critical
-/// path, so it is spread thin: ~17ms a slice instead of ~134ms.
-pub const MAP_BUDGET: u64 = 4 << 20;
-
-/// Memory ranges that have been seen to hold managed objects.
-///
-/// Measured against the game on Windows: of 3043 readable-writable ranges
-/// totalling 6906 MiB, only 139 -- 1497 MiB, 21% -- contained any managed
-/// object at all. The other 79% is Unity's native memory, which cannot hold
-/// one, and reading it is the whole reason a scan costs 29s there against
-/// 1-2s under Proton.
-///
-/// The set is *learned* rather than guessed. A size heuristic looked tempting
-/// -- nearly every range holding objects is exactly 16 MiB, which is Boehm's
-/// heap section size -- but one of the three containers measured sat in a
-/// 2 MiB range, so a rule on size would have silently missed it. Remembering
-/// where objects were actually found cannot be wrong in that way: at worst the
-/// set is incomplete, and the full scan behind it still runs.
-#[derive(Default, Clone)]
-pub struct HotRanges {
-    ranges: Vec<(Address, u64)>,
-}
-
-impl HotRanges {
-    pub fn is_empty(&self) -> bool {
-        self.ranges.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.ranges.len()
-    }
-
-    /// Total size of the known ranges, for reporting what the shortcut saves.
-    pub fn bytes(&self) -> u64 {
-        self.ranges.iter().map(|&(_, size)| size).sum()
-    }
-
-    /// Adds ranges a scan found something in, ignoring ones already known.
-    pub fn remember(&mut self, ranges: &[(Address, u64)]) {
-        for &(base, size) in ranges {
-            if !self.contains(base) {
-                self.ranges.push((base, size));
-            }
-        }
-    }
-
-    /// The known ranges, so one set can be merged into another.
-    pub fn ranges(&self) -> &[(Address, u64)] {
-        &self.ranges
-    }
-
-    fn contains(&self, base: Address) -> bool {
-        self.ranges.iter().any(|&(known, _)| known == base)
-    }
-}
-
 /// Tells a real instance from a word that merely happens to equal the vtable
 /// address.
 ///
@@ -152,21 +96,10 @@ pub struct Scan {
     range_index: usize,
     offset: u64,
     buf: Vec<u64>,
-    /// Whether the range list was cut down to [`HotRanges`]. A restricted scan
-    /// never proves absence, however cleanly it read what it was given.
-    restricted: bool,
-    /// Record which ranges matched rather than the matches themselves. For
-    /// mapping the heap with a class that has thousands of instances, where
-    /// the addresses are of no interest and keeping them all is just waste.
-    map_only: bool,
-    /// Whether the caller cut the scan short. A partial scan is still useful
-    /// -- the ranges it did find really do hold objects -- but it has not
-    /// covered what it set out to.
-    aborted: bool,
     /// Matches that passed validation, or all matches if there is no validator.
     pub found: Vec<Address>,
-    /// The base of the range each entry in `found` came from, so the caller can
-    /// remember where objects actually live. Same length as `found`.
+    /// The base of the range each entry in `found` came from. Same length as
+    /// `found`, and what [`crate::table`] picks its candidate ranges out of.
     pub found_ranges: Vec<(Address, u64)>,
     /// Matches that failed validation. Kept for diagnostics.
     pub rejected: Vec<Address>,
@@ -209,38 +142,11 @@ impl Scan {
             range_index: 0,
             offset: 0,
             buf: vec![0u64; CHUNK_WORDS],
-            restricted: false,
-            map_only: false,
-            aborted: false,
             found: Vec::new(),
             found_ranges: Vec::new(),
             rejected: Vec::new(),
             stats,
         }
-    }
-
-    /// Cuts the range list down to those already known to hold managed objects.
-    ///
-    /// This is the whole speed-up: on the measured Windows process it drops
-    /// 6906 MiB to 1497 MiB, and a scan from ~29s to ~6s. It is only ever a
-    /// first attempt -- an empty result means "not in the ranges we knew
-    /// about", never "not present", which is why [`is_conclusive`] refuses to
-    /// vouch for a restricted scan.
-    ///
-    /// Does nothing when the set is empty, so the first scan of a session is a
-    /// full one and the set has something to learn from.
-    pub fn restricted_to(mut self, hot: &HotRanges) -> Self {
-        if hot.is_empty() {
-            return self;
-        }
-        self.ranges.retain(|&(base, _)| hot.contains(base));
-        self.restricted = true;
-        // `ranges_skipped` keeps its meaning -- rejected by the filter -- but
-        // the scanned count has to follow the trimmed list, or the log claims
-        // a restricted scan covered every range the filter passed.
-        self.stats.ranges_scanned = self.ranges.len() as u32;
-        self.stats.bytes_total = self.ranges.iter().map(|&(_, size)| size).sum();
-        self
     }
 
     /// Whether an empty result actually means "not present".
@@ -249,27 +155,13 @@ impl Scan {
     /// Memory can be transiently unreadable -- measured at ~193 MiB during a
     /// scene teardown under Proton -- and a dying process reports no ranges at
     /// all, which would otherwise look like a clean negative.
-    /// Whether the caller stopped the scan before it finished.
-    pub fn aborted(&self) -> bool {
-        self.aborted
-    }
-
     pub fn is_conclusive(&self) -> bool {
-        !self.aborted
-            && !self.restricted
-            && self.stats.bytes_total > 0
-            && self.stats.bytes_unreadable == 0
+        self.stats.bytes_total > 0 && self.stats.bytes_unreadable == 0
     }
 
     /// Check each match, sorting them into `found` and `rejected`.
     pub fn validating(mut self, validator: Validator) -> Self {
         self.validator = Some(validator);
-        self
-    }
-
-    /// Record only which ranges held a match, not the matches themselves.
-    pub fn mapping(mut self) -> Self {
-        self.map_only = true;
         self
     }
 
@@ -353,16 +245,6 @@ impl Scan {
                 Some(v) if !v.accepts(process, candidate) => self.rejected.push(candidate),
                 _ => {
                     let base = self.ranges.get(self.range_index).copied();
-                    if self.map_only {
-                        // Thousands of matches land in the same range; only the
-                        // first of each is worth anything.
-                        if let Some(base) = base {
-                            if self.found_ranges.last() != Some(&base) {
-                                self.found_ranges.push(base);
-                            }
-                        }
-                        continue;
-                    }
                     self.found.push(candidate);
                     if let Some(base) = base {
                         self.found_ranges.push(base);
@@ -421,28 +303,6 @@ impl Scan {
         self
     }
 
-    /// [`run_polling`](Self::run_polling), but the callback can call it off.
-    ///
-    /// For work that is worth doing only while nothing else is happening. The
-    /// heap map is seconds long and runs on the main menu; a scene load
-    /// starting underneath it has to win, or the loop never sees the load and
-    /// the run start is missed outright -- which is the very thing the map
-    /// exists to prevent.
-    pub async fn run_polling_while(
-        mut self,
-        process: &Process,
-        budget: u64,
-        mut keep_going: impl FnMut() -> bool,
-    ) -> Self {
-        while !self.step(process, budget) {
-            if !keep_going() {
-                self.aborted = true;
-                break;
-            }
-            next_tick().await;
-        }
-        self
-    }
 }
 
 /// Reads the vtable pointer of a managed object, i.e. its class identity.

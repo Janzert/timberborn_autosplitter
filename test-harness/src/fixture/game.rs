@@ -69,6 +69,9 @@ pub struct Scene {
     singletons: Vec<u64>,
     /// The shared validation target every service points at.
     event_bus: Object,
+    /// Whether the DI container gets an entry in the reference table. See
+    /// [`Scene::container_unreferenced`].
+    container_referenced: bool,
 }
 
 impl Scene {
@@ -89,6 +92,7 @@ impl Scene {
             builder,
             singletons: Vec::new(),
             event_bus,
+            container_referenced: true,
         };
         scene.singletons.push(address);
         scene
@@ -102,6 +106,24 @@ impl Scene {
     /// The builder underneath, for anything this does not model.
     pub fn builder(&mut self) -> &mut Builder {
         &mut self.builder
+    }
+
+    /// Builds the DI container with no entry in the runtime's reference table.
+    ///
+    /// The object is still on the heap and still validates -- only the
+    /// runtime's reference to it is missing. That is the one discrepancy a
+    /// capture actually showed, and it is what the sweep behind the table
+    /// exists for, so a world that can express it is how the fallback stays
+    /// tested rather than assumed.
+    pub fn container_unreferenced(mut self) -> Self {
+        self.container_referenced = false;
+        self
+    }
+
+    /// Drops an object's entry from the reference table, leaving the object
+    /// itself alone.
+    pub fn forget(&mut self, object: &Object) {
+        self.builder.forget(object.address);
     }
 
     /// A bare object of a class: no fields set, not in the container.
@@ -259,6 +281,9 @@ impl Scene {
 
         let repository = self.object("Timberborn.SingletonSystem", "SingletonRepository");
         self.set_ptr(&repository, "_singletonListener", listener.address);
+        if !self.container_referenced {
+            self.builder.forget(repository.address);
+        }
 
         let (process, memory) = self.builder.finish_live();
         (

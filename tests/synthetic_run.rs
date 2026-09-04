@@ -117,3 +117,69 @@ fn every_name_the_design_depends_on_resolves() {
         },
     );
 }
+
+/// The runtime's reference table is found, and found by content.
+///
+/// The synthetic table is at an address of the fixture's choosing, and the
+/// real ones are at two different addresses again, so a splitter that found
+/// this one by looking anywhere in particular would be finding the wrong
+/// thing for the right reason.
+#[test]
+fn finds_the_reference_table() {
+    for_each_fixture(
+        |fixture| game_in_progress(fixture, 5),
+        |version, world| {
+            require(world, version, "[table] found at");
+            require(world, version, "object headers in it");
+        },
+    );
+}
+
+/// Having found the table, the splitter uses it: the container is resolved
+/// without sweeping the address space for it.
+///
+/// This is the whole point of the change. A run that still sweeps has fallen
+/// back, which is safe but is not what the table was added for.
+#[test]
+fn resolves_the_container_without_sweeping_for_it() {
+    for_each_fixture(
+        |fixture| game_in_progress(fixture, 5),
+        |version, world| {
+            require(world, version, "[table] SingletonRepository:");
+            assert!(
+                !world.logged("[scan] SingletonRepository starting"),
+                "{version}: swept for the container despite finding a table; log was {:#?}",
+                world.log
+            );
+        },
+    );
+}
+
+/// An object the table does not know about is still found, by sweeping.
+///
+/// The table holds what the runtime is holding, which a capture showed is not
+/// provably everything the heap holds: a `SingletonRepository` that still
+/// validated and still had its 103 singletons had no entry at all. Whether it
+/// was dead or merely unheld cannot be told from a memory image, so the
+/// splitter must not need the answer -- and this is the test that says so.
+#[test]
+fn sweeps_for_what_the_table_does_not_hold() {
+    for_each_fixture(
+        |fixture| {
+            let mut scene = fixture::game::Scene::new(fixture).container_unreferenced();
+            let services = scene.core_services(FINISHED);
+            scene.set_i32(&services.clock, "DayNumber", 5);
+            let loader = scene.scene_loader(false, true);
+            scene.register(&loader);
+            World::new().with_process(scene.finish())
+        },
+        |version, world| {
+            // The table was found and asked, and had nothing.
+            require(world, version, "[table] found at");
+            require(world, version, "[table] SingletonRepository: 0 live instances");
+            // And the sweep behind it got there anyway.
+            require(world, version, "[scan] SingletonRepository starting");
+            require(world, version, "The game's singleton container is at");
+        },
+    );
+}

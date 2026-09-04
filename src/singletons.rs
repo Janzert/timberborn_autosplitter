@@ -50,7 +50,7 @@ use alloc::{format, vec, vec::Vec};
 
 use asr::{future::next_tick, game_engine::unity::mono::Module, Address, Process};
 
-use crate::{collections, scan::HotRanges, service};
+use crate::{collections, service, table::ReferenceTable};
 
 /// Refuse to walk an array longer than this. The game's container held 612;
 /// anything on a different scale means the field was misread rather than that
@@ -118,7 +118,7 @@ impl Registry {
         module: &Module,
         skip: Option<Address>,
         required: Address,
-        hot: &mut HotRanges,
+        table: Option<&ReferenceTable>,
         mut on_tick: impl FnMut(),
     ) -> Search {
         // Not a DI service itself, so no _eventBus: validated through the
@@ -154,16 +154,15 @@ impl Registry {
             return Search::inconclusive();
         };
 
-        // The known ranges first. Whether a container is the right one takes an
-        // async walk of its contents, so the two passes are driven from here
-        // rather than inside the scan: a restricted sweep that turns up
+        // The reference table first. Whether a container is the right one takes
+        // an async walk of its contents, so the two passes are driven from here
+        // rather than inside the search: a table search that turns up
         // candidates none of which hold the clock is not an answer, and has to
-        // fall through to the full one.
-        if !hot.is_empty() {
-            let found = class
-                .find_all_polling(process, MAX_CONTAINERS, hot, &mut on_tick)
-                .await;
-            hot.remember(&found.ranges);
+        // fall through to the sweep.
+        if let Some(found) = class
+            .from_table(process, Some(MAX_CONTAINERS), table, &mut on_tick)
+            .await
+        {
             let picked = Self::pick(
                 process,
                 &class,
@@ -183,9 +182,8 @@ impl Registry {
         }
 
         let found = class
-            .find_all_polling(process, MAX_CONTAINERS, &HotRanges::default(), &mut on_tick)
+            .sweep(process, Some(MAX_CONTAINERS), &mut on_tick)
             .await;
-        hot.remember(&found.ranges);
         let conclusive = found.conclusive;
         let registry = Self::pick(
             process,
