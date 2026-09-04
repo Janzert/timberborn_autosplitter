@@ -51,6 +51,27 @@ call, where the storage is live for as long as the pointer is used. It is a
 soundness fix rather than an API change, and worth upstreaming on its own
 account: nothing about it is Timberborn-specific.
 
+### What it meant for the shipped `.wasm`
+
+Almost certainly nothing, which is worth writing down so this is not
+remembered as a released bug.
+
+Checked rather than assumed, by disassembling the release wasm built from the
+commit before the fix. `scan_iter` is inlined into every caller there — LTO and
+`codegen-units = 1` — so its 4 KiB buffer is allocated in the frame that then
+drives the iterator, and there is no popped frame for the pointer to dangle
+into. Each of `scan_process_range`'s instantiations opens with a 4240-, 4224-
+or 4256-byte `__stack_pointer` adjustment, which is that buffer. The splitter
+never calls `scan_iter` itself.
+
+The crash needed a build where `scan_iter` is a real frame that gets popped,
+which is the unoptimised one the tests run.
+
+So this is a latent bug, not a live one — but latent by codegen accident rather
+than by anything guaranteeing it, and wasm has no guard page: the day inlining
+went the other way it would corrupt linear memory silently instead of
+segfaulting. That is the argument for fixing it rather than noting it.
+
 ## Where the submodule points
 
 `.gitmodules` points at the fork, <https://github.com/Janzert/asr>, and inside
