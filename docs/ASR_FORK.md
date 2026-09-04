@@ -192,7 +192,14 @@ git add vendor/asr && git commit -m "chore: bump vendored asr"
 
 ## Upstreaming
 
-Open as <https://github.com/LiveSplit/asr/pull/157>, from the
+Two pull requests, deliberately separate.
+
+The scanner's dangling buffer is <https://github.com/LiveSplit/asr/pull/158>,
+from `signature-scan-dangling-buffer`, with the regression test as its second
+commit. Its body notes the page-boundary bug and offers that fix as a follow-up;
+nothing has been sent for it.
+
+The accessors are <https://github.com/LiveSplit/asr/pull/157>, from the
 `mono-class-vtable` branch on the fork.
 
 It is framed generally rather than as a Timberborn special case: Unity games
@@ -212,11 +219,11 @@ to match rather than to match this repo.
 
 The scanner fix belongs in its own pull request rather than in that one: it is
 a soundness bug in code the accessors do not touch, and reviewing it alongside
-an API proposal would hold up whichever of the two is slower. It is prepared and
-pushed on the fork as `signature-scan-dangling-buffer`, based on
-`upstream/master` -- upstream's default branch is `master`, and its
-`signature.rs` is byte-identical to the pre-fix state, so the bug is live there.
-The PR has not been opened.
+an API proposal would hold up whichever of the two is slower. It is open as
+<https://github.com/LiveSplit/asr/pull/158>, from the
+`signature-scan-dangling-buffer` branch on the fork, based on `upstream/master`
+-- upstream's default branch is `master`, and its `signature.rs` was
+byte-identical to the pre-fix state, so the bug is live there.
 
 Upstream's `master` is green under its own CI commands -- `cargo test
 --all-features` (22 doctests), `cargo clippy --all-features` without
