@@ -176,6 +176,29 @@ step it is alive for, so swapping step *n* for *n+1* shows the splitter the same
 addresses holding their new values -- what actually happened, minus the time in
 between.
 
+More than one recording of a state is the useful case, not an awkward one: a
+run as Folktails and one as Iron Teeth are the same category down different
+code, since the splitter matches faction-suffixed template names. Steps are
+grouped by the scenario name they share, so two recordings cannot be spliced
+into one nonsense run, and the tests replay every recording rather than the
+first.
+
+### Freezing repeatedly may destabilise the game
+
+Each step stops the game for a second or three. After the second full run the
+game's display crashed shortly after the run finished. That is not proof --
+Proton and the game have their own reasons to fall over, and it happened after
+the recording had everything it needed -- but a graphics driver being held
+still twenty times in twenty minutes is a plausible cause and worth knowing
+before someone records a run they care about.
+
+If it recurs, the freeze is the thing to drop first: it exists to make each step
+a single instant, and a frozen and unfrozen capture of one state were measured
+to drive the splitter to identical conclusions. That measurement was on an idle
+save, so an unfrozen recording of active play is a real risk of tearing rather
+than a free win -- but a torn step is a wrong test, while a crashed game is a
+lost run.
+
 A recording with a gap in its steps is refused rather than replayed: a missing
 step would show the splitter a jump that never happened.
 
