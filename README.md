@@ -162,7 +162,9 @@ cargo test
 
 Runs against the host, with no game and no wasm involved: `test-harness/`
 provides a fake auto splitting runtime, so the splitter can be driven and
-inspected directly.
+inspected directly. Part of it builds a whole synthetic Mono process out of the
+committed layout facts in `fixtures/`, so those tests need no game and no
+capture -- see [fixtures/README.md](fixtures/README.md).
 
 Tests that need captured game memory are behind a feature, so `cargo test`
 neither compiles nor counts them:
@@ -186,6 +188,8 @@ ship; a missing one fails with the steps for making it. See
 | `test-harness/` | a fake auto splitting runtime, so the splitter can be tested without the game |
 | `tests/` | those tests |
 | `tb-record/` | records a run against the live game, so replaying it can test that splits fire |
+| `tb-fixture/` | writes a fixture from an install and a snapshot |
+| `fixtures/` | the game's layout as committed facts; see [fixtures/README.md](fixtures/README.md) |
 | `tb-ptrace-open/` | the one binary needing a capability, so no other one does |
 | `snapshots/` | captured game memory, never committed; see [snapshots/README.md](snapshots/README.md) |
 
@@ -201,7 +205,8 @@ tables parsed directly.
 
 That checks every class and field name `src/probe.rs` depends on against an
 install, which is the offline half of the version check — the fast answer to
-"did an update rename something", with the game closed. `dump <assembly.dll>`
+"did an update rename something", with the game closed. `facts` emits the same
+set as JSON, which is half of a fixture. `dump <assembly.dll>`
 lists every class and field in an assembly, with each field's declared type,
 which is how the split sources in [docs/DESIGN.md](docs/DESIGN.md) were found.
 
