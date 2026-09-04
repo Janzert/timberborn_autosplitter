@@ -21,6 +21,11 @@ That checks every name `src/probe.rs` depends on. Run it after switching Steam
 branches: a clean result means any `MISSING` the runtime probe reports is a real
 change rather than a typo in the probe.
 
+`facts` prints the same set as JSON -- names, declared types and static flags
+-- which is the half of a test fixture that lives in the assemblies. The other
+half is field offsets, which Mono assigns at class layout time and no assembly
+knows; `tb-fixture` merges the two. See [../fixtures/README.md](../fixtures/README.md).
+
 `./metadata.py dump <assembly.dll>` lists every class and field in an assembly,
 with each field's declared type, which is how the split sources in
 `docs/DESIGN.md` were found in the first place:

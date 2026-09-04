@@ -11,11 +11,20 @@ the offline half of the version check; `src/probe.rs` is the runtime half.
     # check every name src/probe.rs depends on against an install
     ./metadata.py check ~/.../Timberborn_Data/Managed
 
+    # the names, types and static flags a test fixture needs, as JSON
+    ./metadata.py facts ~/.../Timberborn_Data/Managed
+
 `check` is the one to run after switching Steam branches. A clean result means
 any MISSING the runtime probe reports is a real change, not a typo here.
 
+`facts` is half of a test fixture: everything about the splitter's subjects
+that an assembly knows. It cannot know field offsets -- Mono assigns those when
+it lays a class out, so they exist only in a running process -- and `tb-fixture`
+merges those in from a memory snapshot.
+
 Parses the ECMA-335 metadata tables directly -- no mono or ilspy needed.
 """
+import json
 import os
 import re
 import struct
@@ -297,6 +306,103 @@ def check(managed_dir, probe_rs):
     return 1 if problems else 0
 
 
+
+def _class_rows(managed_dir, assembly):
+    """Every (namespace, class, field, flags, type) row of one assembly."""
+    path = os.path.join(managed_dir, assembly + ".dll")
+    if not os.path.exists(path):
+        return None
+    try:
+        return parse(path)
+    except Exception:
+        return None
+
+
+def _subjects(probe_rs):
+    """Every (image, class, [fields]) the splitter depends on, deduplicated.
+
+    Two sources, because the splitter has two kinds of dependency on a name:
+    `SUBJECTS` in probe.rs is what it reads, and the `Locatable` sites are what
+    it validates an instance through. A class can appear in only the second --
+    GameInitializer does -- and a fixture missing it would build a world the
+    splitter cannot find its way around.
+    """
+    wanted = {}
+    for image, cls, fields in _probe_subjects(probe_rs):
+        wanted.setdefault((image, cls), [])
+        for field in fields:
+            if field not in wanted[(image, cls)]:
+                wanted[(image, cls)].append(field)
+    for _where, image, cls, field in _validator_sites(Path(probe_rs).parent):
+        entry = wanted.setdefault((image, cls), [])
+        if field not in entry:
+            entry.append(field)
+    return wanted
+
+
+def facts(managed_dir, probe_rs):
+    """The half of a fixture that lives in the assemblies: names and types.
+
+    Field *offsets* are deliberately absent. Mono assigns them when it lays a
+    class out, so they exist only in a running process and no amount of reading
+    the assemblies will produce them; `tb-fixture` merges them in from a
+    snapshot. See TEST_HARNESS_PLAN.md in the parent repository.
+    """
+    classes = []
+    problems = []
+    for (image, cls), fields in sorted(_subjects(probe_rs).items()):
+        rows = _class_rows(managed_dir, image)
+        if rows is None:
+            problems.append(f"{image}: assembly missing or unreadable")
+            continue
+
+        # Nested types carry the enclosing name; the splitter asks by the short
+        # one, the same way asr matches it.
+        declared = [row for row in rows if row[1].split(".")[-1] == cls]
+        if not declared:
+            problems.append(f"{image}/{cls}: no such class")
+            continue
+
+        by_name = {row[2]: row for row in declared}
+        out_fields = []
+        for field in fields:
+            backing = f"<{field}>k__BackingField"
+            row = by_name.get(field) or by_name.get(backing)
+            if row is None:
+                problems.append(f"{image}/{cls}: no field {field}")
+                continue
+            _ns, _cls, name, flags, field_type = row
+            entry = {"name": name, "type": field_type, "static": bool(flags & 0x0010)}
+            # An auto-property is stored under a mangled name and asked for by
+            # the plain one. The fixture writes the mangled name into memory, so
+            # a lookup goes through asr's backing-name path exactly as it does
+            # against the game.
+            if name != field:
+                entry["requested"] = field
+            out_fields.append(entry)
+
+        classes.append(
+            {
+                "image": image,
+                "namespace": declared[0][0],
+                "name": cls,
+                "fields": out_fields,
+            }
+        )
+
+    if problems:
+        for problem in problems:
+            print(f"  PROBLEM  {problem}", file=sys.stderr)
+        print(
+            f"{len(problems)} problem(s); the assemblies do not match src/probe.rs",
+            file=sys.stderr,
+        )
+        return 1
+
+    json.dump({"classes": classes}, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
 def dump(paths):
     for path in paths:
         try:
@@ -317,10 +423,11 @@ def dump(paths):
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "dump":
         dump(sys.argv[2:])
-    elif len(sys.argv) == 3 and sys.argv[1] == "check":
+    elif len(sys.argv) == 3 and sys.argv[1] in ("check", "facts"):
         here = os.path.dirname(os.path.abspath(__file__))
         probe_rs = os.path.join(here, "..", "src", "probe.rs")
-        sys.exit(check(sys.argv[2], probe_rs))
+        command = check if sys.argv[1] == "check" else facts
+        sys.exit(command(sys.argv[2], probe_rs))
     else:
         print(__doc__.strip(), file=sys.stderr)
         sys.exit(2)
