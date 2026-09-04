@@ -18,16 +18,20 @@ use alloc::{format, string::String, vec::Vec};
 use asr::{game_engine::unity::mono::Module, Process};
 
 /// A class we depend on, and the fields we read off it.
-struct Subject {
+pub struct Subject {
     /// Assembly name, as Mono knows it (no `.dll`).
-    image: &'static str,
-    class: &'static str,
-    fields: &'static [&'static str],
+    pub image: &'static str,
+    pub class: &'static str,
+    pub fields: &'static [&'static str],
     /// What breaks if this is not found.
-    used_for: &'static str,
+    pub used_for: &'static str,
 }
 
-const SUBJECTS: &[Subject] = &[
+/// Every name the design depends on.
+///
+/// Read at runtime by [`run`], offline by `devtools/metadata.py`, and by the
+/// offline suite, which checks that a fixture covers all of it.
+pub const SUBJECTS: &[Subject] = &[
     Subject {
         image: "Timberborn.TimeSystem",
         class: "DayNightCycle",

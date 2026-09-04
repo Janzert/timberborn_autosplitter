@@ -249,3 +249,42 @@ fn a_static_field_is_read_out_of_the_static_table() {
         );
     }
 }
+
+/// Every class and field `src/probe.rs` depends on is in every fixture.
+///
+/// The drift this catches is the likely one: a subject added to the probe and
+/// the fixtures never regenerated. Nothing else would notice — the synthetic
+/// world would simply not contain the class, and a test written against the
+/// new code would fail somewhere unrelated, or not be written at all.
+///
+/// One direction only. A fixture also carries the classes the splitter
+/// validates an instance through, which are found by reading the source rather
+/// than by asking the compiler; `metadata.py check` is what covers those.
+#[test]
+fn every_fixture_covers_everything_the_probe_checks() {
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for fixture in &fixtures {
+        for subject in timberborn_autosplitter::probe::SUBJECTS {
+            let class = fixture
+                .class(subject.image, subject.class)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "fixtures/{}.json has no {}/{}, which the probe needs for {}. \
+                         Regenerate it: `cargo fixture --managed <Managed>`.",
+                        fixture.game_version, subject.image, subject.class, subject.used_for
+                    )
+                });
+            for field in subject.fields {
+                assert!(
+                    class.field(field).is_some(),
+                    "fixtures/{}.json has {}/{} but not its {field}, which the probe \
+                     needs for {}. Regenerate it: `cargo fixture --managed <Managed>`.",
+                    fixture.game_version,
+                    subject.image,
+                    subject.class,
+                    subject.used_for
+                );
+            }
+        }
+    }
+}

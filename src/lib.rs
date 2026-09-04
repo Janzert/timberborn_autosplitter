@@ -15,7 +15,10 @@ extern crate alloc;
 static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
 mod collections;
-mod probe;
+// Public so the offline suite can check that a fixture covers every subject.
+// A subject added here and not regenerated into `fixtures/` would leave the
+// synthetic world silently missing the class the new code depends on.
+pub mod probe;
 mod scan;
 mod service;
 mod singletons;

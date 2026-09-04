@@ -110,6 +110,10 @@ const METADATA_BASE: u64 = 0x2000_0000;
 /// The managed heap, which is where a scenario's objects go.
 const HEAP_BASE: u64 = 0x4000_0000;
 
+/// The synthetic process's pid, when nothing says otherwise. Nothing reads it
+/// but the fake runtime, which only needs it to be unique within a world.
+const DEFAULT_PID: u64 = 4242;
+
 /// A block of memory being filled in, addressed as the process will see it.
 ///
 /// One `Vec` per region rather than one per structure: [`SparseMemory`] fails
@@ -198,6 +202,7 @@ pub struct Builder {
     heap: Region,
     classes: HashMap<(String, String), ClassLayout>,
     game_version: String,
+    pid: u64,
 }
 
 impl Builder {
@@ -261,7 +266,18 @@ impl Builder {
             heap: Region::new(HEAP_BASE),
             classes,
             game_version: fixture.game_version.clone(),
+            pid: DEFAULT_PID,
         }
+    }
+
+    /// Gives the synthetic process a particular pid.
+    ///
+    /// Only matters when a world holds more than one process -- comparing a
+    /// synthetic world against a captured one puts both in the same world, and
+    /// two processes sharing a pid would attach to whichever came first.
+    pub fn with_pid(mut self, pid: u64) -> Self {
+        self.pid = pid;
+        self
     }
 
     /// Where a class ended up, or `None` if the fixture never mentioned it.
@@ -362,7 +378,7 @@ impl Builder {
                     flags: flags::HEAP,
                 },
             ],
-            ..FakeProcess::new(4242, "Unity Main Thre")
+            ..FakeProcess::new(self.pid, "Unity Main Thre")
                 .with_module("UnityPlayer.dll", UNITY_BASE, unity.len() as u64)
                 .with_module("mono-2.0-bdwgc.dll", MONO_BASE, mono.len() as u64)
                 .with_memory(memory)

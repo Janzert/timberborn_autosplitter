@@ -91,13 +91,24 @@ on a parent, and asr's lookup walks the chain without saying where it stopped.
 A fixture records the flattened view — which is the view the splitter consumes
 — so the synthetic class hierarchy is one level deep.
 
-## What a fixture cannot tell you
+## Checking one against the game
 
-That it is *right*. A fixture and the builder can agree with each other
-perfectly while both being wrong about Timberborn — and by this project's own
-record, "we misunderstood the game" is the expensive kind of bug. That is what
-the snapshot suite exists for: it is the oracle, and the fixture is the
-deliverable.
+A fixture and the builder can agree with each other perfectly while both being
+wrong about Timberborn — and by this project's record, "we misunderstood the
+game" is the expensive kind of bug. So the capture is the oracle:
+
+```bash
+cargo snapshot-tests          # includes tests/fixture_vs_snapshot.rs
+```
+
+That puts the captured process and the synthetic one in the same world, attaches
+asr to each, and asks both every question the splitter ever asks Mono — the
+classes, every field offset, the namespaces, the vtables, the static tables. A
+disagreement means the fixture no longer describes the game.
+
+It needs a `run-finished` capture of the same build the fixture names, and says
+so if there is not one. Nothing in the default suite needs a capture; this is
+the one place the two suites meet.
 
 Generic instantiations are the current gap. `HashSet<string>` and
 `List<EntityComponent>` have their own field offsets, they are reached through
