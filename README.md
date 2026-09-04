@@ -162,9 +162,13 @@ cargo test
 
 Runs against the host, with no game and no wasm involved: `test-harness/`
 provides a fake auto splitting runtime, so the splitter can be driven and
-inspected directly. Part of it builds a whole synthetic Mono process out of the
-committed layout facts in `fixtures/`, so those tests need no game and no
-capture -- see [fixtures/README.md](fixtures/README.md).
+inspected directly.
+
+Most of it builds a whole synthetic Mono process out of the committed layout
+facts in `fixtures/` — up to and including a whole wonder run, the timer
+starting and all seven splits firing, in a twentieth of a second on a machine
+that has never had Timberborn installed. See
+[fixtures/README.md](fixtures/README.md).
 
 Tests that need captured game memory are behind a feature, so `cargo test`
 neither compiles nor counts them:

@@ -110,13 +110,35 @@ It needs a `run-finished` capture of the same build the fixture names, and says
 so if there is not one. Nothing in the default suite needs a capture; this is
 the one place the two suites meet.
 
-## The gap
+## The layouts with no name
 
-Generic instantiations. `HashSet<string>` and
-`List<EntityComponent>` have their own field offsets, they are reached through
-`Class::of_object` rather than by name, and no offline source produces them
-today — `src/collections.rs` carries the layout read out of a live game
-instead. A fixture does not yet cover them.
+`HashSet<string>` and `List<EntityComponent>` are *inflated generics*. Each
+instantiation is a class of its own with its own field offsets, none is in an
+image's class cache under a name a lookup could use, and asr cannot read the
+name of one at all — so neither half of the usual process can produce them.
+
+`tb-fixture` walks the captured heap to a real instance instead, the way the
+splitter does: sweep for the DI container, follow a singleton to the field
+wanted, and ask the object what class it is. A layout is then recorded under
+the **path walked to reach it**, which is the only identity available and also
+the only one a test needs — it asks for "the list the entity registry holds":
+
+```json
+"instances": [
+  {
+    "reached_by": "Timberborn.GameOver/GameOverChecker -> GameOverChecker._entityRegistry -> EntityRegistry._entitiesInInstantiationOrder",
+    "role": "list",
+    "fields": [ { "name": "_items", "offset": 16 }, { "name": "_size", "offset": 24 } ]
+  }
+]
+```
+
+A fixture can legitimately carry none of these. Mono fills an inflated
+generic's field table in lazily and may never do it at all — measured against a
+live game, `Class::of_object` resolved the entity list's class and then
+reported *none* of its fields while the object was plainly a list. A capture of
+such a session yields nothing here, and `tb-fixture` says which and why.
+`src/collections.rs` has a shape-checked fallback for exactly that case.
 
 ## Adding a build
 
