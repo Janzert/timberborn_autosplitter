@@ -27,7 +27,7 @@ use test_harness::{
         self,
         game::{reached_by, Entity, Live, Object, Scene},
     },
-    timer::TimerEvent,
+    timer::{TimerEvent, TimerState},
     World,
 };
 
@@ -263,6 +263,21 @@ type Step = Box<dyn Fn(&Run)>;
 /// Drives a run, doing each step in turn with ticks in between, and gives back
 /// the world.
 fn play(fixture: &fixture::Fixture, faction: &Faction) -> (World, SplitsAtStep) {
+    play_with(fixture, faction, |_, _| {})
+}
+
+/// The same run, with `meddle` called just before each step with that step's
+/// index and the world.
+///
+/// It is there for the one thing a run cannot express as a change in the
+/// game's memory: the runner reaching over and working the timer themselves.
+/// The splitter reads `timer::state()` back before every split it takes, and
+/// nothing else here ever puts it in a state the splitter did not cause.
+fn play_with(
+    fixture: &fixture::Fixture,
+    faction: &Faction,
+    mut meddle: impl FnMut(usize, &mut World),
+) -> (World, SplitsAtStep) {
     let (world, run) = wonder_run(fixture, faction);
 
     // What happens, in order. The splitter is given room between each.
@@ -321,6 +336,7 @@ fn play(fixture: &fixture::Fixture, faction: &Faction) -> (World, SplitsAtStep) 
         move |tick, world| {
             if tick >= next && step < steps.len() {
                 recorded.borrow_mut().push(world.timer.splits());
+                meddle(step, world);
                 steps[step](&run);
                 step += 1;
                 next = tick + SETTLE;
@@ -506,4 +522,100 @@ fn the_wonder_is_matched_for_the_faction_being_played() {
             world.log
         );
     });
+}
+
+/// A timer the runner started themselves is not started again.
+///
+/// Every split the splitter takes is gated on `timer::state()`, and until now
+/// nothing put the timer in a state the splitter did not cause. A runner who
+/// hits start by hand -- on the map screen, or because the last run's timer was
+/// never stopped -- is the ordinary way that happens.
+///
+/// What must not happen is a second start: `timer::start()` on an already
+/// running timer is how a real run loses its time. The rest of the category
+/// still splits, because the timer is running and that is the only thing the
+/// splits ask about.
+#[test]
+fn a_timer_the_runner_started_by_hand_is_not_started_again() {
+    /// Where `overlay()` -- the run start -- sits in the step list.
+    const RUN_START: usize = 1;
+
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for (fixture, faction) in fixtures
+        .iter()
+        .flat_map(|f| FACTIONS.iter().map(move |x| (f, x)))
+    {
+        let (world, _) = play_with(fixture, faction, |step, world| {
+            if step == RUN_START {
+                world.timer.state = TimerState::Running;
+            }
+        });
+        let events = controlling(&world);
+        assert!(
+            !events.contains(&&TimerEvent::Start),
+            "{}: the timer was already running and the splitter started it \
+             again, which restarts a real run. Events were {events:?}; log was \
+             {:#?}",
+            run_name(fixture, faction),
+            world.log
+        );
+        assert_eq!(
+            world.timer.splits(),
+            7,
+            "{}: the category should still split against a timer the runner \
+             started. Log was {:#?}",
+            run_name(fixture, faction),
+            world.log
+        );
+    }
+}
+
+/// A timer the runner stopped mid-run takes no more splits, and says so.
+///
+/// The splitter never calls `timer::reset()` -- deliberately, and there is no
+/// plan to add it -- so a stopped timer is always someone else's doing. It must
+/// not split into it, and it must not wedge: the run plays out to the
+/// Congratulations screen either way, and the splitter is expected to keep
+/// reporting rather than to go quiet.
+#[test]
+fn a_timer_the_runner_stopped_takes_no_more_splits() {
+    /// Where the third building is placed and finished. Two splits have fired
+    /// by then, which is what makes this a stop *mid-run* rather than a run
+    /// that never started.
+    const THIRD_BUILDING: usize = 4;
+
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for (fixture, faction) in fixtures
+        .iter()
+        .flat_map(|f| FACTIONS.iter().map(move |x| (f, x)))
+    {
+        let (world, _) = play_with(fixture, faction, |step, world| {
+            if step == THIRD_BUILDING {
+                world.timer.state = TimerState::NotRunning;
+            }
+        });
+        let events = controlling(&world);
+        assert_eq!(
+            events,
+            [&TimerEvent::Start, &TimerEvent::Split, &TimerEvent::Split,],
+            "{}: the timer was stopped after two splits, so the run should have \
+             taken no more. Log was {:#?}",
+            run_name(fixture, faction),
+            world.log
+        );
+        assert!(
+            world.logged("not splitting"),
+            "{}: the splitter split nothing and said nothing about it. A runner \
+             looking at a stalled timer has only the log to go on. Log was {:#?}",
+            run_name(fixture, faction),
+            world.log
+        );
+        assert!(
+            world.logged("Congratulations screen reached, but the timer is not running"),
+            "{}: the run reached its end and the splitter did not report it, so \
+             it stopped watching when the timer stopped. Log was {:#?}",
+            run_name(fixture, faction),
+            world.log
+        );
+    }
 }
