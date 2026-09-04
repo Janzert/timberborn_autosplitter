@@ -329,7 +329,7 @@ fn game_dir(pid: u32) -> Option<std::path::PathBuf> {
 ///
 /// Steam's manifest describes the *installed* copy, so it only applies when the
 /// process is running that copy. A saved version carries its own `version.json`
-/// beside the game directory, written by `steam_versions/tbver.py`.
+/// beside the game directory, written when the version was saved off.
 fn build_id(dir: &std::path::Path) -> String {
     if std::fs::canonicalize(dir).ok() == std::fs::canonicalize(install_dir()).ok() {
         return manifest_value("buildid").unwrap_or_else(|| "unknown".into());

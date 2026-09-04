@@ -184,6 +184,9 @@ against a capture class by class, which is what keeps a fixture honest. They
 need captures this repo does not ship; a missing one fails with the steps for
 making it. See [snapshots/README.md](snapshots/README.md).
 
+[docs/TESTING.md](docs/TESTING.md) covers how the two fit together, and — worth
+reading before trusting either — what they do not catch.
+
 ## Layout
 
 | Path | |
@@ -191,6 +194,7 @@ making it. See [snapshots/README.md](snapshots/README.md).
 | `src/` | the auto splitter |
 | `vendor/asr` | submodule; see [docs/ASR_FORK.md](docs/ASR_FORK.md) |
 | `devtools/` | offline development tooling — never shipped, never runs against the game |
+| `docs/TESTING.md` | how the two test suites fit together, and what they do not catch |
 | `test-harness/` | a fake auto splitting runtime, so the splitter can be tested without the game |
 | `tests/` | those tests |
 | `tb-record/` | records a run against the live game, so replaying it can test that splits fire |

@@ -346,7 +346,7 @@ def facts(managed_dir, probe_rs):
     Field *offsets* are deliberately absent. Mono assigns them when it lays a
     class out, so they exist only in a running process and no amount of reading
     the assemblies will produce them; `tb-fixture` merges them in from a
-    snapshot. See TEST_HARNESS_PLAN.md in the parent repository.
+    snapshot. See ../fixtures/README.md.
     """
     classes = []
     problems = []

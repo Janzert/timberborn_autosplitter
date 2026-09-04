@@ -150,7 +150,6 @@ fn run() -> Result<(), String> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            managed: args.managed.display().to_string(),
         },
         classes,
     };
@@ -202,8 +201,8 @@ fn snapshot_of(state: &str, version: &str) -> Result<PathBuf, String> {
     Err(format!(
         "no {state:?} snapshot of {version}, which is the installed build.\n       \
          There are captures of: {}.\n       \
-         Either capture one of this build, or switch the install to a version there \
-         is a capture of -- see steam_versions/ in the parent repository.",
+         Either capture one of this build, or point --managed at a copy of the \
+         assemblies of a build there is a capture of. See fixtures/README.md.",
         if versions.is_empty() {
             "nothing".to_owned()
         } else {

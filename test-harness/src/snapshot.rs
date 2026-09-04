@@ -7,7 +7,7 @@
 //! gigabytes apiece. Reads fall through to the base for anything not stored.
 //! It is the *oracle* rather than the deliverable: it shows what the game's
 //! memory actually looks like, which is what keeps a synthesized fixture from
-//! enshrining a misunderstanding. See TEST_HARNESS_PLAN.md in the parent repo.
+//! enshrining a misunderstanding. See docs/TESTING.md.
 //!
 //! Snapshots are never committed -- they are large, and they are a copy of the
 //! game's own data. `snapshots/` in this repo ignores everything but its own
@@ -265,8 +265,8 @@ pub fn find_all(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
 #[derive(Default, Clone)]
 pub struct Metadata {
     /// The game's own version, e.g. `1.1.2.4-52e959e-sw`. What identifies a
-    /// capture, and what `steam_versions` names its saves after, so the two
-    /// stores can be paired.
+    /// capture. The game's own name for the build, so a capture and a
+    /// saved-off copy of that install can be paired by it.
     pub game_version: String,
     /// Steam's build id, where it could be established. Provenance only:
     /// a version run outside Steam has none that Steam knows about.

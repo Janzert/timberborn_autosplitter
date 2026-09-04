@@ -7,7 +7,7 @@
 //! not part of the suite that gates a commit.
 //!
 //! Their real job is to be the oracle a synthesized fixture is checked against.
-//! See TEST_HARNESS_PLAN.md in the parent repository.
+//! See docs/TESTING.md.
 //!
 //! ```text
 //! cargo snapshot-tests

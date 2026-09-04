@@ -76,7 +76,7 @@ required-features = ["snapshot-tests"]
 # defeats some of the fat-LTO dead-code elimination in the cdylib. Accepted
 # deliberately: the alternative is splitting the logic into an inner crate with
 # a thin cdylib wrapper, and 14 KB on a once-downloaded file does not pay for
-# that. See TEST_HARNESS_PLAN.md in the parent repo.
+# that. See docs/TESTING.md.
 crate-type = ["cdylib", "rlib"]
 
 [profile.release]

@@ -7,7 +7,7 @@ the game's own data.
 They are the **oracle**, not the deliverable. A synthesized fixture is built
 from what we believe the game's layout to be, and cannot tell us that a belief
 is wrong; a snapshot can, by being what the game actually had in memory. See
-`TEST_HARNESS_PLAN.md` in the parent repository.
+[docs/TESTING.md](../docs/TESTING.md).
 
 ## Tests ask for a state, not for a file
 
@@ -245,13 +245,15 @@ for.
 
 ## Keep the assemblies too
 
-A snapshot is only half of what a build needs. The other half is
+A snapshot is only half of what a build needs. The other half is that build's
 `Timberborn_Data/Managed`, which is what `devtools/metadata.py` reads to
-generate fixture facts. It is 47 MB against the snapshot's gigabytes:
+generate fixture facts. Copy it somewhere before the build goes away -- it is
+47 MB against the snapshot's gigabytes, so there is no reason not to.
 
-```bash
-cd ../../steam_versions && ./tbver.py save --managed-only --branch <build-id>
-```
+Steam has no "keep this build" setting: it compares the installed build id
+against the branch's current one and updates on any mismatch. So an older
+build's assemblies are only obtainable while that build is installed, and a
+capture taken today is worth much less in six months without them.
 
 Snapshot plus assemblies is everything the harness will ever need for that
 version, with no game install at all.

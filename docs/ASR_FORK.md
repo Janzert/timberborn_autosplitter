@@ -66,8 +66,8 @@ git -C vendor/asr commit -am "expose whatever it is"
 git -C vendor/asr push origin class-vtable
 ```
 
-Then record the new revision in the parent repo — this is the pin, and it is
-easy to forget:
+Then record the new revision here — the gitlink is the pin, and it is easy to
+forget:
 
 ```bash
 git add vendor/asr && git commit -m "chore: bump vendored asr"

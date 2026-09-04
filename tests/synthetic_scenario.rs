@@ -7,7 +7,7 @@
 //!
 //! Both suites stay. This one can only ever be as right as the fixture, and
 //! the recording is what says whether the fixture is right; see
-//! `tests/fixture_vs_snapshot.rs` and TEST_HARNESS_PLAN.md.
+//! `tests/fixture_vs_snapshot.rs` and docs/TESTING.md.
 //!
 //! # The world changes, because a frozen one lies
 //!

@@ -3,8 +3,7 @@
   "game_version": "1.0.13.1-b769e88-sw",
   "build_id": 23107127,
   "sources": {
-    "snapshot": "1.0.13.1-b769e88-sw-run-finished",
-    "managed": "../steam_versions/1.0.13.1-b769e88-sw/Timberborn/Timberborn_Data/Managed"
+    "snapshot": "1.0.13.1-b769e88-sw-run-finished"
   },
   "classes": [
     {

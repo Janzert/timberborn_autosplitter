@@ -9,7 +9,7 @@
 //! What they do **not** establish is that the fixture matches the game. A
 //! builder and a fixture can agree with each other perfectly while both being
 //! wrong about Timberborn; that is what the snapshot suite is the oracle for,
-//! and what phase 5 of TEST_HARNESS_PLAN.md compares.
+//! and what `tests/fixture_vs_snapshot.rs` compares.
 //!
 //! These run in the default suite: a fixture is committed, so nothing here
 //! needs a game, a capture, or a machine that has ever run Timberborn.

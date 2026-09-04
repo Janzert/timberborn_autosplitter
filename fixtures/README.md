@@ -22,8 +22,7 @@ cargo test          # builds a world from every fixture here
   "game_version": "1.1.2.4-52e959e-sw",
   "build_id": 25096761,
   "sources": {
-    "snapshot": "1.1.2.4-52e959e-sw-run-complete-frozen",
-    "managed": ".../Timberborn_Data/Managed"
+    "snapshot": "1.1.2.4-52e959e-sw-run-complete-frozen"
   },
   "classes": [
     {
@@ -148,17 +147,18 @@ the suite builds a world from each, and a change that only works against the
 newest layout fails against the other. The two committed here already differ —
 `ComponentCache._name` moved from 0x68 to 0x60 between 1.0.13.1 and 1.1.2.4.
 
-An older build does not need reinstalling over the current one. A version saved
-by `steam_versions/tbver.py` has the same directory layout, so point `--managed`
-straight at it:
+An older build does not need reinstalling over the current one. `--managed`
+takes any copy of a `Timberborn_Data/Managed` directory, so a saved-off one
+works:
 
 ```bash
-cargo fixture --managed ../steam_versions/1.0.13.1-b769e88-sw/Timberborn/Timberborn_Data/Managed
+cargo fixture --managed /path/to/1.0.13.1/Timberborn_Data/Managed
 ```
 
 Both halves are offline, so nothing has to be running. What is needed is a
 `run-finished` capture of that same build, which has to have been taken while
-it *was* installed.
+it *was* installed -- and the assemblies, which likewise have to have been kept
+while it was. See [../snapshots/README.md](../snapshots/README.md).
 
 A fixture is **faction-independent**: Folktails and Iron Teeth differ in
 template-name strings in the game's data, not in classes or field offsets, so

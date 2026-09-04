@@ -7,8 +7,8 @@
 use std::{fs, path::Path};
 
 /// The game's own version, e.g. `1.1.2.4-52e959e-sw`, from PlayerSettings'
-/// bundleVersion in `globalgamemanagers`. The same string `steam_versions`
-/// names its saves after, so a snapshot and a saved install can be paired.
+/// bundleVersion in `globalgamemanagers`. The game's own name for the build,
+/// so a snapshot and a saved-off install can be paired by it.
 ///
 /// This is what identifies a capture. Steam's app manifest cannot: it reports
 /// whichever build is *installed*, and an old version run out of the version

@@ -106,12 +106,15 @@ impl InstanceFacts {
 }
 
 /// Where a fixture's two halves came from.
+///
+/// Only the capture is named. The assemblies' half is identified by
+/// `game_version` already, and the path they were read from is a local
+/// accident -- it says nothing to anyone else, and a committed file has no
+/// business carrying one machine's directory layout.
 #[derive(Clone, Debug, Default)]
 pub struct Sources {
     /// The snapshot the offsets were resolved against, by directory name.
     pub snapshot: String,
-    /// The `Managed` directory the names and types were read out of.
-    pub managed: String,
 }
 
 /// One class, and the fields of it the splitter depends on.
@@ -348,8 +351,6 @@ impl Fixture {
             sources: Sources {
                 snapshot: string(&sources, "snapshot", "the fixture's \"sources\"")
                     .unwrap_or_default(),
-                managed: string(&sources, "managed", "the fixture's \"sources\"")
-                    .unwrap_or_default(),
             },
             classes,
         })
@@ -371,13 +372,8 @@ impl Fixture {
         let _ = writeln!(out, "  \"sources\": {{");
         let _ = writeln!(
             out,
-            "    \"snapshot\": {},",
+            "    \"snapshot\": {}",
             Value::from(self.sources.snapshot.clone())
-        );
-        let _ = writeln!(
-            out,
-            "    \"managed\": {}",
-            Value::from(self.sources.managed.clone())
         );
         let _ = writeln!(out, "  }},");
 

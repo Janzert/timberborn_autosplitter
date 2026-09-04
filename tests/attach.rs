@@ -1,6 +1,6 @@
 //! The splitter's search loop, driven with no game to find.
 //!
-//! Phase 1 of TEST_HARNESS_PLAN.md: enough of a fake runtime to run the
+//! The first thing the harness had to do: enough of a fake runtime to run the
 //! splitter natively. Nothing here reads memory yet -- these cases are about
 //! whether it looks, what it says while looking, and what it declines to do.
 
