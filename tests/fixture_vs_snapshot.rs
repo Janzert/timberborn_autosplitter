@@ -44,20 +44,34 @@ const STATE: &str = "run-finished";
 /// stop well below this.
 const SYNTHETIC_PID: u64 = 1 << 40;
 
-/// Classes that a capture of a *wonder run* will not have constructed.
+/// Classes whose vtable may legitimately be missing from a capture.
 ///
-/// Mono fills a class's vtable in when the class is first instantiated, so
-/// this is a statement about what the captured session did rather than about
-/// the build. The map editor was never opened, so `MapEditorSceneParameters`
-/// has no vtable -- and the splitter's map-editor arm compares against exactly
-/// that vtable.
+/// Mono fills a class's vtable in when the class is first *instantiated*, so a
+/// missing one is a statement about what the captured session did rather than
+/// about the build. These are the scene-parameters classes, and a session only
+/// constructs one by loading that kind of scene. Measured across two captures
+/// of the same category:
 ///
-/// That arm is safe anyway, and for a reason worth writing down: the object
-/// being classified *is* a `MapEditorSceneParameters`, so by the time the
-/// comparison happens Mono has constructed the class and the vtable exists. It
-/// is missing here precisely because nothing in this capture ever loaded that
-/// scene.
-const UNCONSTRUCTED: &[&str] = &["Timberborn.MapEditorSceneLoading/MapEditorSceneParameters"];
+/// | capture | main menu | map editor |
+/// |---|---|---|
+/// | 1.0.13.1 run-finished | absent | absent |
+/// | 1.1.2.4 run-complete-frozen | present | absent |
+///
+/// So this cannot be a fixed expectation either way, which is why it is a
+/// permission rather than a prediction: everything *not* listed here must have
+/// a vtable, and a service without one could never be found by the heap sweep
+/// that is the splitter's only way to reach it.
+///
+/// **The splitter is safe against the absence, for a reason worth writing
+/// down.** It compares a scene's parameters object against these vtables to
+/// classify the scene — and the object it is holding *is* an instance of one
+/// of them, so by the time any comparison happens Mono has constructed that
+/// class and its vtable exists. A class is missing here precisely when no
+/// scene of its kind was ever loaded, which is when nothing asks.
+const MAY_BE_UNCONSTRUCTED: &[&str] = &[
+    "Timberborn.MainMenuSceneLoading/MainMenuSceneParameters",
+    "Timberborn.MapEditorSceneLoading/MapEditorSceneParameters",
+];
 
 /// One class, as either world answered for it.
 #[derive(Debug, PartialEq, Eq)]
@@ -209,8 +223,8 @@ fn every_field_is_at_the_same_offset_in_both() {
     });
 }
 
-/// Every class has a vtable in both worlds, bar the ones the capture never
-/// constructed.
+/// Every class has a vtable in the synthetic world, and in the capture too
+/// unless it is one no session need ever construct.
 ///
 /// A vtable is what makes a class identifiable on the heap: an object's first
 /// pointer is its class's, and the splitter has no static root to walk from, so
@@ -218,9 +232,9 @@ fn every_field_is_at_the_same_offset_in_both() {
 /// themselves are allocation results and cannot be compared -- what can is
 /// whether the relationship exists.
 ///
-/// The exceptions are listed in [`UNCONSTRUCTED`] with the reason, so a class
-/// that stops being constructed shows up as a new failure rather than
-/// disappearing into a tolerance.
+/// The exceptions are listed in [`MAY_BE_UNCONSTRUCTED`] with the reason, and
+/// listed narrowly: a *service* without a vtable is still a failure, because
+/// nothing could ever find it.
 #[test]
 fn every_class_has_a_vtable_in_both() {
     compare(|fixture, captured, synthetic| {
@@ -233,14 +247,12 @@ fn every_class_has_a_vtable_in_both() {
                 "{}: the builder gave {name} no vtable",
                 fixture.game_version
             );
-            assert_eq!(
-                captured.has_vtable,
-                !UNCONSTRUCTED.contains(&name.as_str()),
-                "{}: {name} has a vtable in the capture, or does not, and \
-                 UNCONSTRUCTED in this file says the opposite. A class the \
-                 splitter matches by vtable and that is never constructed can \
-                 never match, so this is worth understanding rather than \
-                 relisting.",
+            assert!(
+                captured.has_vtable || MAY_BE_UNCONSTRUCTED.contains(&name.as_str()),
+                "{}: {name} was never constructed in the captured session, so \
+                 nothing that sweeps the heap for it could have worked. Only \
+                 the scene-parameters classes may legitimately be missing; see \
+                 MAY_BE_UNCONSTRUCTED in this file.",
                 fixture.game_version
             );
         }
