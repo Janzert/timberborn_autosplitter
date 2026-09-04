@@ -240,8 +240,7 @@ step would show the splitter a jump that never happened.
 It is one frame, not a run.
 
 Asserting that a split *fires* needs before-and-after states, which a single
-capture cannot provide -- that is what the recorded read traces of phase 3 are
-for.
+capture cannot provide -- that is what a recording is for.
 
 ## Keep the assemblies too
 

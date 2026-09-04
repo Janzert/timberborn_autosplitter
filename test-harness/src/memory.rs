@@ -1,9 +1,10 @@
 //! The seam everything else hangs off: a process with readable memory.
 //!
-//! A [`Memory`] answers reads at addresses and nothing else. Phase 3 will add a
-//! backend that serves a snapshot of a real game; phase 4 one that serves a
-//! synthesized Mono heap. Both plug in here, and neither changes anything above
-//! this file.
+//! A [`Memory`] answers reads at addresses and nothing else. Two backends serve
+//! it: [`snapshot`](crate::snapshot), which replays a capture of a real game,
+//! and [`fixture`](crate::fixture), which synthesises a Mono heap from
+//! committed facts. Both plug in here, and neither changes anything above this
+//! file.
 
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
