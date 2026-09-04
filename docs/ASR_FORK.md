@@ -87,12 +87,36 @@ full 4 KiB -- true of every page but two, the first page of a range that does
 not start on a boundary and the last page of one that does not end on one.
 
 - A range ending part way into a page asks for more bytes than the page held and
-  **panics** in `copy_from_slice`. `mono::Module::attach` scans
-  `(mono_assembly_foreach, 0x100)`, so this fires whenever that symbol lands
-  within 256 bytes of a page boundary -- roughly one build layout in sixteen.
-  Nothing here has hit it, which is luck rather than design.
+  **panics** in `copy_from_slice`.
 - A range starting part way into a page carries bytes that were never read, and
   **silently misses** a signature across its first boundary.
+
+### Which of those anything actually reaches
+
+Checked, because the two are not equally real.
+
+Every scan asr itself performs is over either a module range or a memory range,
+except for a handful of the form `(some symbol, 0x100)` -- five of them in
+`mono::Module::attach`, two in il2cpp, and a few in the PS1 and PS2 retroarch
+backends.
+
+Module and memory ranges are page-aligned at both ends, so they reach neither
+bug. That is not an assumption: across a captured Timberborn process, all 272
+modules had a page-aligned base *and* a page-aligned size. It is also why asr
+has not been panicking everywhere.
+
+That leaves the `(symbol, 0x100)` scans, which are aligned at neither end.
+**Those reach the panic**, whenever the symbol lands within 256 bytes of a page
+boundary -- one page offset in sixteen. In the capture instrumented here the
+scan started at `0x6ffff93e5790`, page offset `0x790`, and would have needed to
+be above `0xf00`. So this project is clear by luck, and by a margin it does not
+control: a game update that moves `mono_assembly_foreach` moves the dice.
+
+**Nothing reaches the silent miss.** It needs a range that begins part way into
+a page and then runs a full page further, and asr never builds one -- its
+unaligned scans are 0x100 or 0x200 bytes long, which hits the panic first if it
+straddles anything. It is a defect in a public API rather than a live bug, and
+it is fixed here because it is the same three lines.
 
 Fixed on `class-vtable` by tracking how much the last page actually held. Two
 regression tests come with it, in `tests/`.
