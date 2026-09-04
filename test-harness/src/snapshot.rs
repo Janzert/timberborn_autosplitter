@@ -78,21 +78,29 @@ fn peek(dir: &Path) -> Option<Metadata> {
 /// was interrupted mid-capture, and replaying across the hole would show the
 /// splitter a jump that never happened.
 pub fn find_scenario(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
-    let mut steps: Vec<(u32, PathBuf)> = Vec::new();
-    let mut scenario: Option<String> = None;
+    Ok(find_scenarios(requirement_id)?.swap_remove(0).1)
+}
+
+/// Every recorded scenario satisfying the requirement, named, each in order.
+///
+/// More than one is the useful case rather than an awkward one: a run as
+/// Folktails and a run as Iron Teeth are the same category down different code,
+/// and the same assertions should hold for both. Grouped by the scenario name
+/// its steps share, so two recordings cannot be spliced into one nonsense run.
+pub fn find_scenarios(requirement_id: &str) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
+    let mut grouped: Vec<(String, Vec<(u32, PathBuf)>)> = Vec::new();
     for dir in find_all(requirement_id)? {
         let Some(metadata) = peek(&dir) else { continue };
         let (Some(name), Some(step)) = (metadata.scenario.clone(), metadata.step.clone()) else {
             continue;
         };
-        // First scenario found wins; mixing two recordings would be nonsense.
-        let chosen = scenario.get_or_insert(name.clone());
-        if *chosen == name {
-            steps.push((step.index, dir));
+        match grouped.iter_mut().find(|(existing, _)| *existing == name) {
+            Some((_, steps)) => steps.push((step.index, dir)),
+            None => grouped.push((name, vec![(step.index, dir)])),
         }
     }
 
-    if steps.is_empty() {
+    if grouped.is_empty() {
         let requirement = crate::requirement::get(requirement_id)
             .ok_or_else(|| format!("no such requirement {requirement_id:?}"))?;
         return Err(format!(
@@ -110,18 +118,24 @@ pub fn find_scenario(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
         ));
     }
 
-    steps.sort_unstable_by_key(|(index, _)| *index);
-    for (position, (index, dir)) in steps.iter().enumerate() {
-        if *index != position as u32 {
-            return Err(format!(
-                "the recording is missing step {position}: it jumps to {index} at {}. \
-                 Replaying across the gap would show the splitter a change that never \
-                 happened, so this is refused rather than patched over.",
-                dir.display()
-            ));
+    let mut scenarios = Vec::new();
+    for (name, mut steps) in grouped {
+        steps.sort_unstable_by_key(|(index, _)| *index);
+        for (position, (index, dir)) in steps.iter().enumerate() {
+            if *index != position as u32 {
+                return Err(format!(
+                    "the recording {name:?} is missing step {position}: it jumps to \
+                     {index} at {}. Replaying across the gap would show the splitter a \
+                     change that never happened, so this is refused rather than patched \
+                     over.",
+                    dir.display()
+                ));
+            }
         }
+        scenarios.push((name, steps.into_iter().map(|(_, dir)| dir).collect()));
     }
-    Ok(steps.into_iter().map(|(_, dir)| dir).collect())
+    scenarios.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(scenarios)
 }
 
 /// One capture of the state per distinct game version, preferring a frozen one.

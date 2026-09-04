@@ -38,6 +38,15 @@ impl Scenario {
         Self::open(&dirs)
     }
 
+    /// Every recorded scenario satisfying `requirement_id`, by name.
+    ///
+    /// Opened one at a time by the caller rather than all at once: each holds a
+    /// file handle per step, and there is no reason for two runs to be in
+    /// memory together.
+    pub fn all(requirement_id: &str) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
+        crate::snapshot::find_scenarios(requirement_id)
+    }
+
     pub fn open(dirs: &[PathBuf]) -> Result<Self, String> {
         let steps = dirs
             .iter()
