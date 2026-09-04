@@ -183,21 +183,16 @@ grouped by the scenario name they share, so two recordings cannot be spliced
 into one nonsense run, and the tests replay every recording rather than the
 first.
 
-### Freezing repeatedly may destabilise the game
+### What the freezing costs
 
-Each step stops the game for a second or three. After the second full run the
-game's display crashed shortly after the run finished. That is not proof --
-Proton and the game have their own reasons to fall over, and it happened after
-the recording had everything it needed -- but a graphics driver being held
-still twenty times in twenty minutes is a plausible cause and worth knowing
-before someone records a run they care about.
+Each step stops the game for a second or three, so a full run is twenty-odd
+brief freezes. That is noticeable while playing and is the price of each step
+being a single instant.
 
-If it recurs, the freeze is the thing to drop first: it exists to make each step
-a single instant, and a frozen and unfrozen capture of one state were measured
-to drive the splitter to identical conclusions. That measurement was on an idle
-save, so an unfrozen recording of active play is a real risk of tearing rather
-than a free win -- but a torn step is a wrong test, while a crashed game is a
-lost run.
+It was briefly suspected of crashing the game's display after a recorded run.
+It was not: this machine has a standing problem with that, unrelated to
+anything here. Recorded so the suspicion is not formed again from the same
+coincidence.
 
 A recording with a gap in its steps is refused rather than replayed: a missing
 step would show the splitter a jump that never happened.
