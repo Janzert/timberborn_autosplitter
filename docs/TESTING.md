@@ -29,15 +29,16 @@ refactoring at all. There is one seam, and it is underneath everything.
 
 ```bash
 cargo test              # the offline suite: no game, no capture, ~0.5s
-cargo snapshot-tests    # replays real captured memory: ~3 minutes
+cargo snapshot-tests    # replays real captured memory: ~2 minutes
 ```
 
 **The offline suite gates commits.** It builds a synthetic Mono process out of
 the layout facts in [`fixtures/`](../fixtures/README.md) — assemblies, images,
 class caches, classes, fields, vtables — and drives the real splitter against
-it. It covers a whole wonder run as both factions, the mid-run attach, and the
-edges of a session: the game starting after the splitter, closing under it,
-dying slowly, or being the second game of the evening. It runs on a machine that
+it. It covers a whole wonder run as both factions, the mid-run attach, the timer
+states a runner sets by hand rather than the splitter causing, and the edges of
+a session: the game starting after the splitter, closing under it, dying
+slowly, or being the second game of the evening. It runs on a machine that
 has never had Timberborn installed, which is why CI can run it.
 
 **The snapshot suite is the oracle**, not the deliverable. It replays real
@@ -67,6 +68,16 @@ building, `TributeToIngenuity` not being the Iron Teeth wonder, Mono's
 lazily-filled field tables. By this project's own record those are the expensive
 ones. That is the entire reason the snapshot suite exists and is checked
 against.
+
+**It caught one thing nobody was looking for.** Replaying a recording means
+reading through a chain of twenty delta captures, which puts the harness twenty
+stack frames deeper than a single capture does — deep enough to land on a buffer
+asr's signature scanner had left dangling on the stack after the function that
+declared it had returned. The scan then wrote 256 bytes of the game's code over
+whatever was there, which on a shallower chain was nothing and on this one was a
+return address. Fixed in the vendored fork; see [ASR_FORK.md](ASR_FORK.md).
+Worth recording because the harness found it by *being* an unusual caller, which
+is not something either suite was designed to do.
 
 **It does not catch anything about timing** — the 29s Windows heap scan, ~30µs
 reads through Wine, `MAP_BUDGET` stutter — **or the Proton prefix and
@@ -105,6 +116,13 @@ So they are not re-litigated.
 - **Tests ask for a *state*, never for a path.** A missing capture fails with
   the steps for producing it. Naming a file makes the suite unreproducible: the
   capture lives on one machine.
+- **The store keeps recordings, not separate captures of the instants in them.**
+  A `wonder-run` recording begins at the main menu and ends at the
+  Congratulations screen by its own definition, so its first and last steps are
+  captures of `main-menu` and `run-finished`, and the recorder marks them as
+  such. Keeping single captures of those states as well costs gigabytes apiece
+  for instants already held. The tests are unchanged: they ask for a state, and
+  a state is what they get.
 - **The offline suite gated commits from day one**, when it held three tests.
   Snapshot tests are development scaffolding with a machine-local dependency;
   they are not the product.
@@ -112,7 +130,7 @@ So they are not re-litigated.
 ## Risks that are still live
 
 - **A separate suite is a forgettable suite.** `cargo test` will not mention it.
-  It is now ~3 minutes, up from 54s, because three recordings are replayed
+  It is now ~2 minutes, up from 54s, because three recordings are replayed
   rather than two — long enough that nobody will run it absent-mindedly. Keep a
   line for it wherever notes carry between sessions, or it becomes stale code
   nobody has run against a current capture. Partly mitigated: a missing capture fails with the steps for
@@ -139,16 +157,13 @@ So they are not re-litigated.
 
 ## Open questions
 
-- **How much does a capture compress?** Three recordings and four single
-  captures come to ~47 GB uncompressed, which is what sets the budget for how
-  many builds and scenarios can be kept.
+- **How much does a capture compress?** A recording of a whole run is tens of
+  gigabytes uncompressed, which is what sets the budget for how many builds and
+  scenarios can be kept.
 - **Retiring the duplicated snapshot assertions.** The offline suite now covers
   what `snapshot_run.rs` and `snapshot_attach.rs` assert, and both the layouts
-  and the scenarios have agreed across a game build change — so pruning them is
-  available, and the suite's runtime is an argument for it. It is still a
-  deletion of the oracle's coverage, so it wants taking deliberately rather than
-  drifting into. `fixture_vs_snapshot.rs` should stay for as long as captures do.
-- **A timer state the splitter did not cause.** Every split is gated on
-  `timer::state() == Running` and the late-bind warning on `NotRunning`, and
-  nothing exercises the splitter reading a state a runner set by hand. Note this
-  is *not* reset behaviour: the splitter never calls `timer::reset()`.
+  and the scenarios have agreed across a game build change — so pruning them
+  remains available. It stays available rather than taken: those are the
+  oracle's reading of the run and the attach out of real memory. What the
+  runtime argument actually bought was dropping duplicate *captures*, which cost
+  gigabytes and held nothing the recordings do not.

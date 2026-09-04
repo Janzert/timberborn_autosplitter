@@ -35,6 +35,27 @@ The states are defined in `test-harness/src/requirement.rs`, which is also
 where a new one is added. `tb-dump` refuses a `--state` that is not listed
 there, so a typo cannot produce gigabytes that no test will ever look at.
 
+### A recording is of the states at its ends, too
+
+A `wonder-run` recording starts at the main menu and stops after the
+Congratulations screen, because that is what the state's own instructions say
+to do -- a recording begun anywhere else is not a recording of a wonder run,
+and would show the splitter a game already in progress. So its **first** step
+is a capture of `main-menu` and its **last** step is a capture of
+`run-finished`, and the recorder marks them as such: `begins_at` and `ends_at`
+in the catalogue, written into those two steps' manifests.
+
+That is worth having because the two are otherwise 5 GiB apiece of the same
+instants a recording already holds. Keeping a separate single capture of either
+is then a choice rather than a requirement, and a store of nothing but
+recordings still answers every test.
+
+The end is found by the splitter announcing the run over, not by "the last step
+recorded" -- a recording stopped early is a shorter scenario, not a finished
+run. Matching the splitter's own words is safe here in a way it would not be
+for choosing *what* to capture: a reworded message loses the mark, and a test
+wanting `run-finished` then fails with the instructions for producing one.
+
 ## Capturing one
 
 The game must already be running, and left in the state you are capturing.
@@ -184,11 +205,11 @@ prefix:
 ```
 snapshots/
   1.1.2.4-52e959e-sw-main-menu/            a single capture
-  1.1.2.4-52e959e-sw-run-complete-frozen/  a single capture
   1.1.2.4-52e959e-sw-wonder-run/           a recording
-    step00/
+    step00/                                  also of main-menu
     step01/
     ...
+    step19/                                  also of run-finished
   1.1.2.4-52e959e-sw-wonder-run-ironteeth/
     step00/
     ...

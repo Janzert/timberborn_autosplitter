@@ -17,6 +17,19 @@ pub struct Requirement {
     pub summary: &'static str,
     /// How to get the game there. Written for someone who has never done it.
     pub reproduce: &'static [&'static str],
+    /// For a recorded scenario: the single-instant state its **first** step is
+    /// also a capture of, because the recording's own contract says where it
+    /// has to be started from. A `wonder-run` recording begun anywhere but the
+    /// main menu is not a `wonder-run` recording -- the splitter has to be
+    /// watched from before the game exists -- so its step 0 is a main menu.
+    pub begins_at: Option<&'static str>,
+    /// For a recorded scenario: the single-instant state reached at its **last**
+    /// step, tagged by the recorder when it sees the run end.
+    ///
+    /// This is what lets the store keep recordings and nothing else. A whole
+    /// run captured split by split already contains the instants a single
+    /// capture would hold, so keeping both costs gigabytes for a duplicate.
+    pub ends_at: Option<&'static str>,
 }
 
 impl Requirement {
@@ -45,7 +58,12 @@ pub const CATALOGUE: &[Requirement] = &[
     Requirement {
         id: "main-menu",
         summary: "the main menu, with no save loaded",
-        reproduce: &["Start Timberborn and stop at the main menu; do not load or start a game."],
+        reproduce: &[
+            "Start Timberborn and stop at the main menu; do not load or start a game.",
+            "Recording a `wonder-run` also produces one: its first step is this state.",
+        ],
+        begins_at: None,
+        ends_at: None,
     },
     Requirement {
         id: "run-finished",
@@ -59,7 +77,10 @@ pub const CATALOGUE: &[Requirement] = &[
             "Wait out the countdown until the Congratulations screen appears.",
             "Developer mode is a legitimate way to get here quickly -- the splitter \
              reads the same state either way, and the day counter will simply be low.",
+            "Recording a `wonder-run` also produces one: its last step is this state.",
         ],
+        begins_at: None,
+        ends_at: None,
     },
     Requirement {
         id: "wonder-run",
@@ -75,6 +96,11 @@ pub const CATALOGUE: &[Requirement] = &[
              once the run is over.",
             "Developer mode is a legitimate way to get through the run quickly.",
         ],
+        // A recording is started at the menu and stopped after the run ends, so
+        // it holds both of the single instants the other two states name. That
+        // is why the store keeps recordings and not separate captures of them.
+        begins_at: Some("main-menu"),
+        ends_at: Some("run-finished"),
     },
 ];
 

@@ -48,6 +48,7 @@ use std::{
 use test_harness::{
     capture,
     live::{self, LiveMemory},
+    requirement,
     snapshot::{self, Metadata, Snapshot},
     timer::TimerEvent,
     World,
@@ -63,6 +64,18 @@ const NOISE: &[&str] = &["[scan]", "[entities]", "[collections]", "--- probe"];
 /// Refuse to record more than this many steps. A future splitter that logs more
 /// freely should stop a recording, not quietly fill the disk.
 const MAX_STEPS: u32 = 80;
+
+/// The splitter's own words for the run being over.
+///
+/// The step whose tick contains it is tagged with the recording's `ends_at`
+/// state, so a recording also serves as the single instant a `run-finished`
+/// capture used to hold and the store need not keep 5 GiB of duplicate.
+///
+/// Matching a phrase is safe *here*, where it would not be for choosing what to
+/// capture (see above). A reworded message loses the tag, and a test that wants
+/// `run-finished` then fails with the instructions for producing one -- loud,
+/// and about the right thing. A missed capture would be neither.
+const RUN_END: &str = "Run end: Congratulations screen.";
 
 /// Give up if the splitter has done nothing for this long. Recording is meant
 /// to be watched; an unattended one that silently records nothing is worse than
@@ -187,7 +200,7 @@ fn run() -> Result<(), String> {
 
     // The state before anything happened, so the first split has something to
     // be a change from.
-    recorder.take("begin")?;
+    recorder.take("begin", false)?;
 
     let world = World::new().with_process(process);
     test_harness::drive_with(
@@ -246,6 +259,8 @@ impl Recorder {
         // One capture a tick at most. What the splitter *did* names it in
         // preference to what it said, since a timer event is the thing a test
         // will assert on.
+        let run_ended = fresh.iter().any(|line| line.contains(RUN_END));
+
         if let Some(reason) = did.or(said) {
             self.last_activity = Instant::now();
             if self.step >= MAX_STEPS {
@@ -255,7 +270,7 @@ impl Recorder {
                 ));
                 return false;
             }
-            if let Err(message) = self.take(&reason) {
+            if let Err(message) = self.take(&reason, run_ended) {
                 self.error = Some(message);
                 return false;
             }
@@ -274,8 +289,33 @@ impl Recorder {
         true
     }
 
+    /// The states this step is a capture of.
+    ///
+    /// Always the recording's own state, and -- for the first and last steps --
+    /// the single instants the recording's contract puts at each end. A
+    /// `wonder-run` starts at the main menu and finishes at the Congratulations
+    /// screen, so it holds a `main-menu` and a `run-finished` capture within it,
+    /// and the store does not have to keep either separately.
+    fn also_satisfies(&self, run_ended: bool) -> Vec<String> {
+        let mut states = vec![self.state.clone()];
+        let Some(requirement) = requirement::get(&self.state) else {
+            return states;
+        };
+        if self.step == 0 {
+            states.extend(requirement.begins_at.map(str::to_owned));
+        }
+        if run_ended {
+            states.extend(requirement.ends_at.map(str::to_owned));
+        }
+        states
+    }
+
     /// Stops the game and captures it, as a delta against the step before.
-    fn take(&mut self, reason: &str) -> Result<(), String> {
+    ///
+    /// `run_ended` says the splitter announced the run over on this tick, which
+    /// is what tags the last step with the state a single capture used to be
+    /// kept for.
+    fn take(&mut self, reason: &str, run_ended: bool) -> Result<(), String> {
         // A recording is one directory with a step per subdirectory, so it
         // moves, is deleted, or is copied to another machine as a unit -- and
         // a store holding several recordings and a few single captures reads
@@ -313,7 +353,7 @@ impl Recorder {
             pid: self.pid,
             notes: self.notes.clone(),
             frozen: true,
-            satisfies: vec![self.state.clone()],
+            satisfies: self.also_satisfies(run_ended),
             scenario: Some(self.scenario.clone()),
             ..Default::default()
         };
