@@ -296,6 +296,51 @@ pub mod reached_by {
 }
 
 impl Scene {
+    /// Every service the splitter resolves on its way to a run.
+    ///
+    /// `initialization_state` is what `GameInitializer` starts at: a
+    /// pre-overlay value for a game that is still loading, `Finished` for one
+    /// already up. The splitter treats those completely differently, and
+    /// getting it wrong is how a scenario accidentally tests the mid-run
+    /// attach path while believing it is testing a run start.
+    pub fn core_services(&mut self, initialization_state: i32) -> CoreServices {
+        let clock = self.service("Timberborn.TimeSystem", "DayNightCycle");
+        self.set_i32(&clock, "DayNumber", 1);
+        // The day lengths the countdown diagnostic divides by. Plausible
+        // rather than measured: nothing splits on them, and a zero here makes
+        // the log report a completion day of 5.6e-47 instead of a number.
+        self.set_f32(&clock, "DayLengthInSeconds", 900.0);
+        self.set_f32(&clock, "DaytimeLengthInHours", 16.0);
+        self.set_f32(&clock, "NighttimeLengthInHours", 8.0);
+
+        let unlocking = self.service("Timberborn.ScienceSystem", "BuildingUnlockingService");
+        let countdown = self.service(
+            "Timberborn.GameWonderCompletion",
+            "WonderCompletionCountdownStarter",
+        );
+
+        // Reached through the container rather than by scanning, so these need
+        // no event bus for the splitter to recognise them.
+        let game_over = self.object("Timberborn.GameOver", "GameOverChecker");
+        self.register(&game_over);
+        let population = self.object("Timberborn.Population", "PopulationService");
+        self.register(&population);
+        let data = self.object("Timberborn.Population", "PopulationData");
+        self.set_ptr(&population, "GlobalPopulationData", data.address);
+
+        let initializer = self.service("Timberborn.GameStartup", "GameInitializer");
+        self.set_i32(&initializer, "_initializationState", initialization_state);
+
+        CoreServices {
+            clock,
+            unlocking,
+            countdown,
+            game_over,
+            population,
+            initializer,
+        }
+    }
+
     /// A `List<T>` of references, laid out as the fixture measured one.
     ///
     /// `reached_by` says *which* list: each instantiation is its own class
@@ -416,6 +461,29 @@ fn instance_offset_in(fixture: &Fixture, reached_by: &str, field: &str) -> u64 {
             .unwrap_or_else(|| panic!("{reached_by:?} has no {field}"))
             .offset,
     )
+}
+
+/// The services every loaded game has, as the splitter looks for them.
+///
+/// Not a menu of options: the splitter resolves all of these on its way to a
+/// run, so a world missing one is a world it spins in rather than a smaller
+/// world. Which is why they are built together.
+#[derive(Clone, Debug)]
+pub struct CoreServices {
+    /// `DayNightCycle`, the clock and the day counter.
+    pub clock: Object,
+    /// `BuildingUnlockingService`, whose set says whether the wonder is
+    /// unlocked. Its `_unlockedBuildings` is left null; a scenario that cares
+    /// gives it a set.
+    pub unlocking: Object,
+    /// `WonderCompletionCountdownStarter`, which holds the run end.
+    pub countdown: Object,
+    /// `GameOverChecker`, wanted only because it is the singleton that holds
+    /// the entity registry. Its `_entityRegistry` is left null.
+    pub game_over: Object,
+    pub population: Object,
+    /// `GameInitializer`, whose `_initializationState` is the run start.
+    pub initializer: Object,
 }
 
 /// One entity, in the two pieces a scenario touches.

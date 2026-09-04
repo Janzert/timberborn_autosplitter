@@ -31,31 +31,10 @@ const FINISHED: i32 = 5;
 fn game_in_progress(fixture: &fixture::Fixture, day: i32) -> World {
     let mut scene = Scene::new(fixture);
 
-    let clock = scene.service("Timberborn.TimeSystem", "DayNightCycle");
-    scene.set_i32(&clock, "DayNumber", day);
-
-    scene.service("Timberborn.ScienceSystem", "BuildingUnlockingService");
-    scene.service(
-        "Timberborn.GameWonderCompletion",
-        "WonderCompletionCountdownStarter",
-    );
-    // Not located by scanning: the splitter reaches these through the
-    // container, so they need no event bus to be recognised by.
-    let game_over = scene.object("Timberborn.GameOver", "GameOverChecker");
-    scene.register(&game_over);
-
-    let population = scene.object("Timberborn.Population", "PopulationService");
-    scene.register(&population);
-    let data = scene.object("Timberborn.Population", "PopulationData");
-    scene.set_i32(&data, "NumberOfAdults", 12);
-    scene.set_i32(&data, "NumberOfChildren", 3);
-    scene.set_ptr(&population, "GlobalPopulationData", data.address);
-
-    // The initializer the run start binds to. Already past the overlay, which
-    // is what "attached to a game in progress" means and why no timer should
-    // start from it.
-    let initializer = scene.service("Timberborn.GameStartup", "GameInitializer");
-    scene.set_i32(&initializer, "_initializationState", FINISHED);
+    // Already past the overlay, which is what "a game in progress" means and
+    // why no timer should start from it.
+    let services = scene.core_services(FINISHED);
+    scene.set_i32(&services.clock, "DayNumber", day);
 
     // Loaded, not loading: the splitter attaching to a game already running.
     let loader = scene.scene_loader(false, true);

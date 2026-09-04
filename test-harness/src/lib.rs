@@ -45,6 +45,7 @@ pub mod snapshot;
 pub mod timer;
 
 use memory::FakeProcess;
+
 use timer::Timer;
 
 /// Everything the fake runtime knows, and everything it recorded.
@@ -87,6 +88,46 @@ impl World {
     pub fn with_process(mut self, process: FakeProcess) -> Self {
         self.processes.push(process);
         self
+    }
+
+    /// A process appearing part-way through a session: the game started after
+    /// the splitter was already running.
+    ///
+    /// Appended rather than inserted, and processes are never removed, because
+    /// an attached handle is an index into this list. A process that has gone
+    /// is one whose [`open`](FakeProcess::open) is false: not attachable, which
+    /// is what the runtime reports, and still there for a handle that has not
+    /// noticed yet -- which is exactly the window the splitter's detach path
+    /// lives in.
+    pub fn add_process(&mut self, process: FakeProcess) {
+        self.processes.push(process);
+    }
+
+    /// A process by pid, for a scenario that has to change one mid-run.
+    pub fn process_by_pid(&mut self, pid: u64) -> Option<&mut FakeProcess> {
+        self.processes.iter_mut().find(|p| p.pid == pid)
+    }
+
+    /// Models the game exiting: no longer attachable, and every read fails.
+    ///
+    /// Both, because they are one event. A process that stopped answering
+    /// reads while still reporting itself open is a *different* state -- the
+    /// several seconds a dying process stays attachable under Wine -- and
+    /// deserves to be reached deliberately rather than by half-doing this one.
+    ///
+    /// # Panics
+    ///
+    /// If no process has that pid, which in a scenario means a typo rather
+    /// than a condition to handle.
+    pub fn close_process(&mut self, pid: u64) {
+        let process = self
+            .process_by_pid(pid)
+            .unwrap_or_else(|| panic!("no process with pid {pid}"));
+        process.open = false;
+        process.memory = Box::new(memory::EmptyMemory);
+        process.modules.clear();
+        process.ranges.clear();
+        process.tables = None;
     }
 
     /// Forces a setting, overriding the default the splitter declares.
@@ -158,6 +199,11 @@ pub fn drive<F: Future<Output = ()>>(world: World, future: F, ticks: usize) -> W
 /// Drives the splitter, calling `after_tick` between polls with the world as it
 /// stands. Returning false stops.
 ///
+/// The world is handed over mutably, because some of what a scenario has to
+/// model is not memory at all: the game process appearing after the splitter
+/// was already running, or exiting under it. Those are the paths at the edges,
+/// and they are the ones that have cost time before.
+///
 /// This is what a recorder watches through: the splitter's log and timer calls
 /// are the only outward sign of what it has decided, and a moment worth
 /// capturing is a moment it just did something. The hook runs while the world
@@ -167,7 +213,7 @@ pub fn drive_with<F: Future<Output = ()>>(
     world: World,
     future: F,
     ticks: usize,
-    mut after_tick: impl FnMut(usize, &World) -> bool,
+    mut after_tick: impl FnMut(usize, &mut World) -> bool,
 ) -> World {
     WORLD.with(|cell| *cell.borrow_mut() = Some(world));
     let _installed = Installed;
