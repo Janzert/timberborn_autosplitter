@@ -102,6 +102,23 @@ pub const CATALOGUE: &[Requirement] = &[
         begins_at: Some("main-menu"),
         ends_at: Some("run-finished"),
     },
+    Requirement {
+        id: "two-games",
+        summary: "two games started in one process, so the second scene load is on record",
+        reproduce: &[
+            "Start the game and stop at the main menu -- do not load a save yet.",
+            "Start `tb-record --state two-games` and leave it running.",
+            "Start a new game and wait for the overlay to come up. Nothing else \
+             needs building.",
+            "Quit to the main menu, then start a second new game and again wait \
+             for the overlay.",
+            "Stop the recorder with Ctrl-C once the second game is up.",
+            "Developer mode is fine; nothing here depends on what is built.",
+        ],
+        // No run is played, so nothing tags an end state.
+        begins_at: Some("main-menu"),
+        ends_at: None,
+    },
 ];
 
 /// Looks a requirement up by id.
