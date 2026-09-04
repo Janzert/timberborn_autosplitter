@@ -41,23 +41,56 @@ const FINISHED: i32 = 5;
 /// construction site.
 const BUILT: i32 = 1;
 
-/// The Folktails wonder, by template name. Not the similar-sounding Tribute to
-/// Ingenuity, which is a monument — a confusion that has already cost this
-/// project a debugging session, and one a synthetic world would happily
-/// reproduce if the name here were guessed rather than taken from the
-/// splitter's own list.
-const WONDER: &str = "EarthRecultivator.Folktails";
+/// One faction's template names.
+///
+/// The splitter matches faction-suffixed names, so the two factions are the
+/// same category down different code — and a synthetic run that only ever
+/// played one would leave half of that matching untested. The recorded suite
+/// replays both for the same reason.
+struct Faction {
+    name: &'static str,
+    /// The six buildings that drive the five building splits, in the order the
+    /// category builds them. The last two share one split, which fires when
+    /// both are up.
+    buildings: [&'static str; 6],
+    /// The wonder unlocked with science. Not the similar-sounding Tribute to
+    /// Ingenuity, which is a monument — a confusion that has already cost this
+    /// project a debugging session, and one a synthetic world would happily
+    /// reproduce if the name here were guessed.
+    wonder: &'static str,
+}
 
-/// The six buildings that drive the five building splits, in the order the
-/// category builds them. The last two share one split, which fires when both
-/// are up.
-const BUILDINGS: &[&str] = &[
-    "Forester.Folktails",
-    "GearWorkshop.Folktails",
-    "TappersShack.Folktails",
-    "Observatory.Folktails",
-    "Smelter.Folktails",
-    "WoodWorkshop.Folktails",
+/// Both of them. Every name here was checked against the game's own
+/// `Blueprints.zip`, which is where a typo would otherwise survive: a wrong
+/// template name in a *test* builds a world the game never has, and the
+/// splitter then correctly fails to split on it.
+const FACTIONS: &[Faction] = &[
+    Faction {
+        name: "Folktails",
+        buildings: [
+            "Forester.Folktails",
+            "GearWorkshop.Folktails",
+            "TappersShack.Folktails",
+            "Observatory.Folktails",
+            "Smelter.Folktails",
+            "WoodWorkshop.Folktails",
+        ],
+        wonder: "EarthRecultivator.Folktails",
+    },
+    Faction {
+        name: "Iron Teeth",
+        buildings: [
+            "Forester.IronTeeth",
+            "GearWorkshop.IronTeeth",
+            "TappersShack.IronTeeth",
+            // Lowercase c, which is the game's spelling and not the obvious
+            // one.
+            "Numbercruncher.IronTeeth",
+            "Smelter.IronTeeth",
+            "WoodWorkshop.IronTeeth",
+        ],
+        wonder: "EarthRepopulator.IronTeeth",
+    },
 ];
 
 /// Ticks between one thing happening and the next.
@@ -82,7 +115,7 @@ struct Run {
 }
 
 /// Builds the world a wonder run happens in, with nothing yet done in it.
-fn wonder_run(fixture: &fixture::Fixture) -> (World, Run) {
+fn wonder_run(fixture: &fixture::Fixture, faction: &Faction) -> (World, Run) {
     let mut scene = Scene::new(fixture);
 
     let clock = scene.service("Timberborn.TimeSystem", "DayNightCycle");
@@ -98,7 +131,7 @@ fn wonder_run(fixture: &fixture::Fixture) -> (World, Run) {
     // Every name the set will ever hold is placed now; `_count` and
     // `_lastIndex` start at zero, so as far as anything reading it is
     // concerned the set is empty until the run unlocks the wonder.
-    let unlocked = scene.hash_set(reached_by::UNLOCKED_SET, &[WONDER]);
+    let unlocked = scene.hash_set(reached_by::UNLOCKED_SET, &[faction.wonder]);
     scene.set_ptr(&unlocking, "_unlockedBuildings", unlocked);
     let unlocked_object = unlocked;
 
@@ -109,7 +142,8 @@ fn wonder_run(fixture: &fixture::Fixture) -> (World, Run) {
 
     // The entity registry, reached the way the splitter reaches it: through
     // the one singleton that holds it.
-    let placed: Vec<Entity> = BUILDINGS
+    let placed: Vec<Entity> = faction
+        .buildings
         .iter()
         .map(|template| scene.entity(template, 0))
         .collect();
@@ -228,8 +262,8 @@ type Step = Box<dyn Fn(&Run)>;
 
 /// Drives a run, doing each step in turn with ticks in between, and gives back
 /// the world.
-fn play(fixture: &fixture::Fixture) -> (World, SplitsAtStep) {
-    let (world, run) = wonder_run(fixture);
+fn play(fixture: &fixture::Fixture, faction: &Faction) -> (World, SplitsAtStep) {
+    let (world, run) = wonder_run(fixture, faction);
 
     // What happens, in order. The splitter is given room between each.
     let steps: Vec<Step> = vec![
@@ -297,13 +331,29 @@ fn play(fixture: &fixture::Fixture) -> (World, SplitsAtStep) {
     (world, splits)
 }
 
-/// Every committed fixture, played through.
-fn for_each_fixture(check: impl Fn(&str, &World)) {
+/// Every committed fixture, played through as both factions.
+///
+/// The assertions do not vary between them: one split label covers both
+/// factions' advanced science building, and the rest are the same buildings
+/// under different names. That the two runs are indistinguishable from the
+/// outside is exactly the claim — the splitter is faction-aware, not
+/// faction-specific.
+fn for_each_run(check: impl Fn(&str, &World)) {
     let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
     for fixture in &fixtures {
-        let (world, _) = play(fixture);
-        check(&fixture.game_version, &world);
+        for faction in FACTIONS {
+            let (world, _) = play(fixture, faction);
+            check(
+                &format!("{} as {}", fixture.game_version, faction.name),
+                &world,
+            );
+        }
     }
+}
+
+/// Which fixture and which faction, for a failure message.
+fn run_name(fixture: &fixture::Fixture, faction: &Faction) -> String {
+    format!("{} as {}", fixture.game_version, faction.name)
 }
 
 /// Everything the timer was told, in order, ignoring the variables the
@@ -324,7 +374,7 @@ fn controlling(world: &World) -> Vec<&TimerEvent> {
 /// possible behaviour.
 #[test]
 fn the_whole_category_fires() {
-    for_each_fixture(|version, world| {
+    for_each_run(|version, world| {
         let events = controlling(world);
         let expected = std::iter::once("Start")
             .chain(std::iter::repeat_n("Split", 7))
@@ -358,7 +408,7 @@ fn the_whole_category_fires() {
 /// that merely counted splits.
 #[test]
 fn the_run_start_is_bound_during_the_load() {
-    for_each_fixture(|version, world| {
+    for_each_run(|version, world| {
         assert!(
             world.logged("run start bound during the load"),
             "{version}: the run start was not bound during the load; log was {:#?}",
@@ -374,7 +424,7 @@ fn the_run_start_is_bound_during_the_load() {
 /// against a recording, so the two suites disagreeing is visible.
 #[test]
 fn the_splits_are_for_the_right_things_in_order() {
-    for_each_fixture(|version, world| {
+    for_each_run(|version, world| {
         let reasons: Vec<&str> = world
             .log
             .iter()
@@ -414,8 +464,11 @@ fn activating_the_wonder_does_not_split() {
     const COUNTDOWN_FINISHES: usize = 10;
 
     let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
-    for fixture in &fixtures {
-        let (world, splits) = play(fixture);
+    for (fixture, faction) in fixtures
+        .iter()
+        .flat_map(|f| FACTIONS.iter().map(move |x| (f, x)))
+    {
+        let (world, splits) = play(fixture, faction);
         let splits = splits.borrow();
         assert_eq!(
             splits.get(COUNTDOWN_FINISHES).copied(),
@@ -423,14 +476,34 @@ fn activating_the_wonder_does_not_split() {
             "{}: the run should stand at six splits when the countdown runs \
              out -- five buildings and the unlock -- with the run end still to \
              come. Steps were {splits:?}; log was {:#?}",
-            fixture.game_version,
+            run_name(fixture, faction),
             world.log
         );
         assert_eq!(
             world.timer.splits(),
             7,
             "{}: the run end did not split",
-            fixture.game_version
+            run_name(fixture, faction)
         );
     }
+}
+
+/// The wonder was recognised as *this faction's* wonder.
+///
+/// The splitter warns when a run ends without the unlock ever having been
+/// seen, because a wrong template name for a faction is otherwise silent — the
+/// unlock split simply never fires, and everything else looks fine. That
+/// warning firing here would mean the synthetic world and the splitter
+/// disagree about which faction is being played, which is precisely what
+/// running both factions is for.
+#[test]
+fn the_wonder_is_matched_for_the_faction_being_played() {
+    for_each_run(|version, world| {
+        assert!(
+            !world.logged("the wonder was never seen unlocked"),
+            "{version}: the run ended without the wonder ever being recognised; \
+             log was {:#?}",
+            world.log
+        );
+    });
 }
