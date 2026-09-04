@@ -145,4 +145,22 @@ such a session yields nothing here, and `tb-fixture` says which and why.
 Keep the old ones. Two fixtures a game update apart are what turn "the splitter
 resolves names at runtime, so it survives updates" from a claim into a test:
 the suite builds a world from each, and a change that only works against the
-newest layout fails against the other.
+newest layout fails against the other. The two committed here already differ —
+`ComponentCache._name` moved from 0x68 to 0x60 between 1.0.13.1 and 1.1.2.4.
+
+An older build does not need reinstalling over the current one. A version saved
+by `steam_versions/tbver.py` has the same directory layout, so point `--managed`
+straight at it:
+
+```bash
+cargo fixture --managed ../steam_versions/1.0.13.1-b769e88-sw/Timberborn/Timberborn_Data/Managed
+```
+
+Both halves are offline, so nothing has to be running. What is needed is a
+`run-finished` capture of that same build, which has to have been taken while
+it *was* installed.
+
+A fixture is **faction-independent**: Folktails and Iron Teeth differ in
+template-name strings in the game's data, not in classes or field offsets, so
+one capture serves both. The faction only appears in a scenario, which supplies
+the names itself.
