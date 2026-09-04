@@ -5,7 +5,7 @@
 //! synthesized Mono heap. Both plug in here, and neither changes anything above
 //! this file.
 
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 /// A process's address space.
 pub trait Memory {
@@ -60,6 +60,56 @@ impl SparseMemory {
     /// Places a little-endian pointer-sized value, the common case by far.
     pub fn put_u64(&mut self, address: u64, value: u64) -> &mut Self {
         self.put(address, value.to_le_bytes())
+    }
+
+    /// Overwrites bytes already placed.
+    ///
+    /// Distinct from [`put`](Self::put) on purpose: `put` is how a world is
+    /// built and refuses to overlap, and this is how one *changes* and refuses
+    /// to reach anywhere that was not built. A scenario that could silently
+    /// write into a gap would be testing the splitter against memory the game
+    /// never has.
+    ///
+    /// # Panics
+    ///
+    /// If the range is not wholly inside one placed block.
+    pub fn poke(&mut self, address: u64, bytes: &[u8]) {
+        let Some((&start, block)) = self.blocks.range_mut(..=address).next_back() else {
+            panic!("nothing is mapped at {address:#x}");
+        };
+        let offset = (address - start) as usize;
+        assert!(
+            offset + bytes.len() <= block.len(),
+            "a write of {} bytes at {address:#x} runs past the block at {start:#x}",
+            bytes.len()
+        );
+        block[offset..offset + bytes.len()].copy_from_slice(bytes);
+    }
+}
+
+/// An address space a test can keep writing to after the process exists.
+///
+/// A world built and then frozen can only ever model an instant, and the two
+/// bugs that cost recorded runs were both things that vary in a live game and
+/// had been frozen by a test. A scenario holds one of these and changes the
+/// world between ticks: a building finishes, a counter advances, a load ends.
+#[derive(Clone)]
+pub struct SharedMemory(Rc<RefCell<SparseMemory>>);
+
+impl SharedMemory {
+    pub fn new(memory: SparseMemory) -> Self {
+        Self(Rc::new(RefCell::new(memory)))
+    }
+
+    /// Overwrites bytes already placed. See [`SparseMemory::poke`].
+    pub fn poke(&self, address: u64, bytes: &[u8]) {
+        self.0.borrow_mut().poke(address, bytes);
+    }
+}
+
+impl Memory for SharedMemory {
+    fn read(&self, address: u64, buf: &mut [u8]) -> bool {
+        self.0.borrow().read(address, buf)
     }
 }
 

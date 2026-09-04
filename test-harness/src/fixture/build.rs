@@ -40,7 +40,7 @@
 use std::collections::HashMap;
 
 use super::{ClassFacts, Fixture};
-use crate::memory::{flags, FakeProcess, MemoryRange, SparseMemory};
+use crate::memory::{flags, FakeProcess, MemoryRange, SharedMemory, SparseMemory};
 
 /// `MonoAssembly`, as asr reads it.
 mod assembly {
@@ -203,6 +203,9 @@ pub struct Builder {
     metadata: Region,
     heap: Region,
     classes: HashMap<(String, String), ClassLayout>,
+    /// Layouts with no name to look them up by, keyed by the path the fixture
+    /// records reaching them through.
+    instances: HashMap<String, ClassLayout>,
     game_version: String,
     pid: u64,
 }
@@ -263,10 +266,37 @@ impl Builder {
             }
         }
 
+        // Deliberately *not* in any image's class cache. An inflated generic
+        // is not findable by name in the game either -- the splitter reaches
+        // one only through an object that is an instance of it -- so a class
+        // here reachable only through its vtable models the real situation
+        // rather than a convenient one.
+        let mut instances = HashMap::new();
+        for facts in &fixture.instances {
+            let layout = lay_out(
+                &mut metadata,
+                &mut interned,
+                // The name is a label, not a fact: asr cannot read an inflated
+                // generic's name, so no fixture can record one. It exists only
+                // because asr's field walk stops at a class called "Object"
+                // and so has to read some name to get past it.
+                &facts.role,
+                "",
+                &facts
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.as_str(), f.offset, false))
+                    .collect::<Vec<_>>(),
+                0,
+            );
+            instances.insert(facts.reached_by.clone(), layout);
+        }
+
         Self {
             metadata,
             heap: Region::new(HEAP_BASE),
             classes,
+            instances,
             game_version: fixture.game_version.clone(),
             pid: DEFAULT_PID,
         }
@@ -280,6 +310,31 @@ impl Builder {
     pub fn with_pid(mut self, pid: u64) -> Self {
         self.pid = pid;
         self
+    }
+
+    /// Where an instance layout ended up, by the path the fixture records.
+    pub fn instance_class(&self, reached_by: &str) -> Option<ClassLayout> {
+        self.instances.get(reached_by).copied()
+    }
+
+    /// Places a zeroed object of an instance layout, vtable set.
+    ///
+    /// # Panics
+    ///
+    /// Naming the path, if the fixture carries no layout for it. A capture
+    /// where Mono had not filled the generic's field table in yields none, and
+    /// a test that needs one cannot quietly do without.
+    pub fn new_instance(&mut self, reached_by: &str, extra: u64) -> u64 {
+        let layout = self.instances.get(reached_by).copied().unwrap_or_else(|| {
+            panic!(
+                "the fixture has no instance layout reached by {reached_by:?}. \
+                 Regenerate it against a capture where Mono had filled the \
+                 class's field table in: `cargo fixture`."
+            )
+        });
+        let address = self.heap.alloc(layout.instance_size + extra);
+        self.heap.write_u64(address + OBJECT_VTABLE, layout.vtable);
+        address
     }
 
     /// Where a class ended up, or `None` if the fixture never mentioned it.
@@ -341,6 +396,14 @@ impl Builder {
     /// handling comes from — so a synthetic world reaches the splitter down
     /// the same path a real one does.
     pub fn finish(self) -> FakeProcess {
+        self.finish_live().0
+    }
+
+    /// The process, and a handle that keeps writing to it.
+    ///
+    /// For a scenario: the world is built once and then changed between ticks,
+    /// which is the only way a still fixture can model a run happening.
+    pub fn finish_live(self) -> (FakeProcess, SharedMemory) {
         let unity = unity_player();
         let mono = mono_module(METADATA_BASE);
 
@@ -355,8 +418,10 @@ impl Builder {
         let mut heap = self.heap.bytes;
         heap.resize(heap_size as usize, 0);
         memory.put(HEAP_BASE, heap);
+        let memory = SharedMemory::new(memory);
+        let pid = self.pid;
 
-        FakeProcess {
+        let process = FakeProcess {
             path: Some(format!("/synthetic/{}/Timberborn.exe", self.game_version)),
             ranges: vec![
                 MemoryRange {
@@ -380,29 +445,57 @@ impl Builder {
                     flags: flags::HEAP,
                 },
             ],
-            ..FakeProcess::new(self.pid, "Unity Main Thre")
+            ..FakeProcess::new(pid, "Unity Main Thre")
                 .with_module("UnityPlayer.dll", UNITY_BASE, unity.len() as u64)
                 .with_module("mono-2.0-bdwgc.dll", MONO_BASE, mono.len() as u64)
                 // The game's own module. Nothing reads it as a PE -- it is how
                 // the splitter tells a Unity process reporting the generic
                 // "Unity Main Thre" apart from any other Unity game.
                 .with_module("Timberborn.exe", GAME_BASE, 0x1000)
-                .with_memory(memory)
-        }
+                .with_memory(memory.clone())
+        };
+        (process, memory)
     }
 }
 
-/// One class, its name strings, its field array and its vtable.
+/// One named class, as the fixture describes it.
 fn lay_out_class(
     metadata: &mut Region,
     interned: &mut HashMap<String, u64>,
     facts: &ClassFacts,
     image: u64,
 ) -> ClassLayout {
+    let fields: Vec<(&str, u32, bool)> = facts
+        .fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.offset, f.is_static))
+        .collect();
+    lay_out(
+        metadata,
+        interned,
+        &facts.name,
+        &facts.namespace,
+        &fields,
+        image,
+    )
+}
+
+/// One class, its name strings, its field array and its vtable.
+///
+/// `fields` is (name, offset, static). Shared by the named classes and by the
+/// instance layouts, which differ only in not being in a class cache.
+fn lay_out(
+    metadata: &mut Region,
+    interned: &mut HashMap<String, u64>,
+    class_name: &str,
+    class_namespace: &str,
+    fields_of: &[(&str, u32, bool)],
+    image: u64,
+) -> ClassLayout {
     let class = metadata.alloc(class::SIZE);
 
-    let name = metadata.cstr(&facts.name, interned);
-    let namespace = metadata.cstr(&facts.namespace, interned);
+    let name = metadata.cstr(class_name, interned);
+    let namespace = metadata.cstr(class_namespace, interned);
     metadata.write_u64(class + class::NAME, name);
     metadata.write_u64(class + class::NAMESPACE, namespace);
     metadata.write_u64(class + class::IMAGE, image);
@@ -411,15 +504,15 @@ fn lay_out_class(
     metadata.write_u64(class + class::PARENT, 0);
     metadata.write_u32(class + class::VTABLE_SIZE, VTABLE_SIZE);
 
-    metadata.write_u32(class + class::FIELD_COUNT, facts.fields.len() as u32);
-    if !facts.fields.is_empty() {
-        let fields = metadata.alloc(field::STRIDE * facts.fields.len() as u64);
+    metadata.write_u32(class + class::FIELD_COUNT, fields_of.len() as u32);
+    if !fields_of.is_empty() {
+        let fields = metadata.alloc(field::STRIDE * fields_of.len() as u64);
         metadata.write_u64(class + class::FIELDS, fields);
-        for (index, facts) in facts.fields.iter().enumerate() {
+        for (index, (field_name, offset, _)) in fields_of.iter().enumerate() {
             let entry = fields + field::STRIDE * index as u64;
-            let name = metadata.cstr(&facts.name, interned);
+            let name = metadata.cstr(field_name, interned);
             metadata.write_u64(entry + field::NAME, name);
-            metadata.write_u32(entry + field::OFFSET, facts.offset);
+            metadata.write_u32(entry + field::OFFSET, *offset);
         }
     }
 
@@ -431,8 +524,8 @@ fn lay_out_class(
     // The vtable, then its function slots, then the pointer to the static
     // table. Mono lays it out exactly this way, which is why asr can find a
     // static table by skipping `vtable_size` pointers.
-    let statics = facts.fields.iter().filter(|f| f.is_static);
-    let static_size = statics.map(|f| u64::from(f.offset) + 8).max();
+    let statics = fields_of.iter().filter(|(_, _, is_static)| *is_static);
+    let static_size = statics.map(|(_, offset, _)| u64::from(*offset) + 8).max();
     let vtable = metadata.alloc(VTABLE_FUNCTIONS + 8 * u64::from(VTABLE_SIZE) + 8);
     metadata.write_u64(runtime_info + 8, vtable);
     // A vtable begins with its class, which is what turns an object back into
@@ -448,11 +541,10 @@ fn lay_out_class(
         table
     });
 
-    let instance_size = facts
-        .fields
+    let instance_size = fields_of
         .iter()
-        .filter(|f| !f.is_static)
-        .map(|f| u64::from(f.offset) + 8)
+        .filter(|(_, _, is_static)| !*is_static)
+        .map(|(_, offset, _)| u64::from(*offset) + 8)
         .max()
         .unwrap_or(OBJECT_HEADER)
         .max(OBJECT_HEADER);

@@ -12,3 +12,4 @@ description = "Writes fixtures/<game version>.json: the splitter's layout facts,
 test-harness = { path = "../test-harness" }
 asr = { git = "https://github.com/LiveSplit/asr", features = ["alloc", "flags", "unity"] }
 serde_json = "1.0.151"
+bytemuck = "1.25.2"

@@ -24,7 +24,7 @@ use std::{
 
 use asr::{game_engine::unity::mono::Module, Process, ProcessId};
 use test_harness::{
-    fixture::{ClassFacts, FieldFacts, Fixture, Sources},
+    fixture::{ClassFacts, FieldFacts, Fixture, InstanceFacts, Sources},
     snapshot::Snapshot,
     World,
 };
@@ -120,7 +120,7 @@ fn run() -> Result<(), String> {
     println!("snapshot {}", dir.display());
 
     let names = facts(&args)?;
-    let offsets = offsets(&dir, &names)?;
+    let Resolved { offsets, instances } = resolve(&dir, &names)?;
     let snapshot = Snapshot::open(&dir).map_err(|e| format!("opening {}: {e}", dir.display()))?;
 
     let mut classes = Vec::new();
@@ -142,6 +142,7 @@ fn run() -> Result<(), String> {
     }
 
     let fixture = Fixture {
+        instances,
         game_version: snapshot.metadata.game_version.clone(),
         build_id: snapshot.metadata.build_id.parse().ok(),
         sources: Sources {
@@ -165,7 +166,7 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("writing {}: {e}", out.display()))?;
 
     println!(
-        "wrote    {} ({} classes, {} fields)",
+        "wrote    {} ({} classes, {} fields, {} instance layouts)",
         out.display(),
         fixture.classes.len(),
         fixture
@@ -173,6 +174,7 @@ fn run() -> Result<(), String> {
             .iter()
             .map(|c| c.fields.len())
             .sum::<usize>(),
+        fixture.instances.len(),
     );
     Ok(())
 }
@@ -272,21 +274,26 @@ fn with_placeholders(text: &str) -> String {
     value.to_string()
 }
 
+/// Everything the capture had to say.
+struct Resolved {
+    /// Field offsets, keyed by image, class and the name Mono holds.
+    offsets: std::collections::HashMap<(String, String, String), u32>,
+    /// The layouts that have no name to look them up by.
+    instances: Vec<InstanceFacts>,
+}
+
 /// The snapshot's half: what Mono actually laid each class out as.
 ///
 /// Resolved through asr rather than by reading the capture directly, so the
 /// offsets a fixture records are the ones the splitter would have got. A class
 /// whose fields cannot be resolved here is left out entirely, and the caller
 /// fails on it by name.
-#[allow(clippy::type_complexity)]
-fn offsets(
-    dir: &Path,
-    wanted: &[ClassFacts],
-) -> Result<std::collections::HashMap<(String, String, String), u32>, String> {
+fn resolve(dir: &Path, wanted: &[ClassFacts]) -> Result<Resolved, String> {
     let snapshot = Snapshot::open(dir).map_err(|e| format!("opening {}: {e}", dir.display()))?;
     let pid = snapshot.metadata.pid;
 
     let found = RefCell::new(std::collections::HashMap::new());
+    let instances = RefCell::new(Vec::new());
     let world = World::new().with_process(snapshot.process());
 
     // One poll: everything here is synchronous, and the fake runtime only
@@ -319,9 +326,382 @@ fn offsets(
                     }
                 }
             }
+            // Only after the named classes: the walk to an instance needs
+            // their offsets to follow a field at all.
+            *instances.borrow_mut() = instances::walk(&process, &module, &found.borrow());
         },
         1,
     );
 
-    Ok(found.into_inner())
+    Ok(Resolved {
+        offsets: found.into_inner(),
+        instances: instances.into_inner(),
+    })
+}
+
+/// The layouts that cannot be looked up by name.
+///
+/// `HashSet<string>` and `List<EntityComponent>` are *inflated generics*: each
+/// instantiation is a class of its own with its own field offsets, and none of
+/// them is in an image's class cache under a name anything could ask for. The
+/// only way to a one is through an object that is an instance of it, which is
+/// why the splitter reaches them with `Class::of_object` — and why this walks
+/// the captured heap to a real one rather than looking anything up.
+///
+/// The walk is the splitter's own path, without the budgets and the yielding a
+/// live game needs: sweep for the DI container, take the services out of it,
+/// and follow the field whose target is wanted.
+mod instances {
+    use asr::{
+        game_engine::unity::mono::{Class, Module},
+        Address, MemoryRangeFlags, Process,
+    };
+
+    use std::collections::HashMap;
+
+    use test_harness::fixture::{InstanceFacts, InstanceField};
+
+    /// Field offsets as the capture reported them, keyed by image, class and
+    /// field. The names half cannot be used here: its offsets are placeholders
+    /// until this same pass has filled them in.
+    pub type Offsets = HashMap<(String, String, String), u32>;
+
+    /// `MonoArray`: header, bounds, then the length and the elements.
+    const ARRAY_LENGTH: u64 = 0x18;
+    const ARRAY_DATA: u64 = 0x20;
+
+    /// Where to walk to, and what to record when we get there.
+    ///
+    /// `reached_by` is the identity: an inflated generic has no name asr can
+    /// read, so a layout is recorded by the field it belongs to rather than by
+    /// what it is called. That is also the only identity a test needs — it
+    /// asks for "the list the entity registry holds", not for `List<T>`.
+    struct Wanted {
+        /// Where the walk starts: a class that is in the DI container.
+        image: &'static str,
+        class: &'static str,
+        /// Fields to follow from there. Not everything wanted hangs directly
+        /// off a singleton -- the entity registry is held by
+        /// `GameOverChecker`, and a component cache is held by an entity that
+        /// is itself inside a list.
+        path: &'static [Step],
+        role: &'static str,
+        fields: &'static [&'static str],
+    }
+
+    enum Step {
+        /// Follow a named field of a named class.
+        Field(&'static str, &'static str, &'static str),
+        /// Take the first element of the list at this address, using the list
+        /// layout this same walk discovered.
+        FirstOfList,
+    }
+
+    const WANTED: &[Wanted] = &[
+        Wanted {
+            image: "Timberborn.GameOver",
+            class: "GameOverChecker",
+            path: &[
+                Step::Field("Timberborn.GameOver", "GameOverChecker", "_entityRegistry"),
+                Step::Field(
+                    "Timberborn.EntitySystem",
+                    "EntityRegistry",
+                    "_entitiesInInstantiationOrder",
+                ),
+            ],
+            role: "list",
+            fields: &["_items", "_size"],
+        },
+        Wanted {
+            image: "Timberborn.ScienceSystem",
+            class: "BuildingUnlockingService",
+            path: &[Step::Field(
+                "Timberborn.ScienceSystem",
+                "BuildingUnlockingService",
+                "_unlockedBuildings",
+            )],
+            role: "hash-set",
+            fields: &["_slots", "_count", "_lastIndex"],
+        },
+        Wanted {
+            image: "Timberborn.GameOver",
+            class: "GameOverChecker",
+            path: &[
+                Step::Field("Timberborn.GameOver", "GameOverChecker", "_entityRegistry"),
+                Step::Field(
+                    "Timberborn.EntitySystem",
+                    "EntityRegistry",
+                    "_entitiesInInstantiationOrder",
+                ),
+                Step::FirstOfList,
+                Step::Field(
+                    "Timberborn.BaseComponentSystem",
+                    "BaseComponent",
+                    "_componentCache",
+                ),
+                Step::Field(
+                    "Timberborn.BaseComponentSystem",
+                    "ComponentCache",
+                    "_components",
+                ),
+            ],
+            role: "component-list",
+            fields: &["_items", "_size"],
+        },
+    ];
+
+    /// Every layout that could be reached, and a line each about the rest.
+    ///
+    /// Missing ones are reported rather than fatal. Mono fills an inflated
+    /// generic's field table in lazily and may never do it at all — measured
+    /// against a live game, `Class::of_object` resolved the entity list's
+    /// class and then reported *none* of its fields, while the object was
+    /// plainly a list. A capture where that happened cannot yield these, and
+    /// that is a fact about the capture rather than an error.
+    pub fn walk(process: &Process, module: &Module, offsets: &Offsets) -> Vec<InstanceFacts> {
+        let Some(container) = find_container(process, module, offsets) else {
+            eprintln!(
+                "  note: no DI container found in the capture, so no collection \
+                 layouts were recorded"
+            );
+            return Vec::new();
+        };
+
+        let mut out: Vec<InstanceFacts> = Vec::new();
+        for wanted in WANTED {
+            let Some(start) = container
+                .iter()
+                .copied()
+                .find(|&object| is_a(process, module, object, wanted.image, wanted.class))
+            else {
+                eprintln!(
+                    "  note: {}/{} is not in the container, so {} was not recorded",
+                    wanted.image, wanted.class, wanted.role
+                );
+                continue;
+            };
+
+            let Some(target) = follow(process, offsets, &out, start, wanted) else {
+                continue;
+            };
+            let Some(class) = Class::of_object(process, module, target) else {
+                continue;
+            };
+
+            let mut fields = Vec::new();
+            for name in wanted.fields {
+                match class.get_field_offset(process, module, name) {
+                    Some(offset) => fields.push(InstanceField {
+                        name: (*name).to_owned(),
+                        offset,
+                    }),
+                    None => {
+                        eprintln!(
+                            "  note: the class reached by {} did not resolve {name}. Mono \
+                             fills an inflated generic's field table in lazily, and this \
+                             capture is of a session where it had not.",
+                            describe(wanted)
+                        );
+                        fields.clear();
+                        break;
+                    }
+                }
+            }
+            if fields.is_empty() {
+                continue;
+            }
+            out.push(InstanceFacts {
+                reached_by: describe(wanted),
+                role: wanted.role.to_owned(),
+                fields,
+            });
+        }
+        out
+    }
+
+    /// Walks a path of dereferences from a starting object.
+    fn follow(
+        process: &Process,
+        offsets: &Offsets,
+        found: &[InstanceFacts],
+        start: Address,
+        wanted: &Wanted,
+    ) -> Option<Address> {
+        let mut at = start;
+        for step in wanted.path {
+            at = match step {
+                Step::Field(image, class, field) => {
+                    let offset = offset_of(offsets, image, class, field)?;
+                    match read_pointer(process, at.add(offset)) {
+                        Some(next) => next,
+                        None => {
+                            eprintln!("  note: {image}/{class}.{field} is null in the capture");
+                            return None;
+                        }
+                    }
+                }
+                // Uses the list layout an earlier entry recorded, which is why
+                // WANTED is ordered: the entity list has to be measured before
+                // anything inside it can be reached.
+                Step::FirstOfList => {
+                    let list = found.iter().find(|i| i.role == "list")?;
+                    let items =
+                        read_pointer(process, at.add(u64::from(list.field("_items")?.offset)))?;
+                    let size = process
+                        .read::<i32>(at.add(u64::from(list.field("_size")?.offset)))
+                        .ok()?;
+                    if size <= 0 {
+                        eprintln!("  note: the entity list is empty in the capture");
+                        return None;
+                    }
+                    read_pointer(process, items.add(ARRAY_DATA))?
+                }
+            };
+        }
+        Some(at)
+    }
+
+    /// How a layout is identified: the path that was walked to reach it.
+    fn describe(wanted: &Wanted) -> String {
+        let mut parts = vec![format!("{}/{}", wanted.image, wanted.class)];
+        for step in wanted.path {
+            parts.push(match step {
+                Step::Field(_, class, field) => format!("{class}.{field}"),
+                Step::FirstOfList => "[0]".to_owned(),
+            });
+        }
+        parts.join(" -> ")
+    }
+
+    /// Every object the game scene's DI container holds.
+    ///
+    /// The container is found the way the splitter finds it -- sweep for a
+    /// `SingletonRepository`, follow it to the singleton array -- except that
+    /// the right one is picked by size rather than by which clock it holds. An
+    /// offline tool can afford to try them all and keep the fullest, and the
+    /// game scene's container held 612 against the menu's 103.
+    fn find_container(
+        process: &Process,
+        module: &Module,
+        offsets: &Offsets,
+    ) -> Option<Vec<Address>> {
+        let vtable = vtable_of(
+            process,
+            module,
+            "Timberborn.SingletonSystem",
+            "SingletonRepository",
+        )?;
+        let listener_offset = offset_of(
+            offsets,
+            "Timberborn.SingletonSystem",
+            "SingletonRepository",
+            "_singletonListener",
+        )?;
+        let singletons_offset = offset_of(
+            offsets,
+            "Timberborn.SingletonSystem",
+            "SingletonListener",
+            "_allSingletons",
+        )?;
+
+        let mut best: Vec<Address> = Vec::new();
+        for candidate in sweep(process, vtable) {
+            let Some(entries) = read_pointer(process, candidate.add(listener_offset))
+                .and_then(|listener| read_pointer(process, listener.add(singletons_offset)))
+                .and_then(|array| read_array(process, array))
+            else {
+                continue;
+            };
+            if entries.len() > best.len() {
+                best = entries;
+            }
+        }
+        (!best.is_empty()).then_some(best)
+    }
+
+    /// Whether an object is an instance of a named class.
+    fn is_a(process: &Process, module: &Module, object: Address, image: &str, class: &str) -> bool {
+        vtable_of(process, module, image, class)
+            .is_some_and(|vtable| read_pointer(process, object) == Some(vtable))
+    }
+
+    fn vtable_of(process: &Process, module: &Module, image: &str, class: &str) -> Option<Address> {
+        module
+            .get_image(process, image)?
+            .get_class(process, module, class)?
+            .get_vtable(process, module)
+    }
+
+    fn offset_of(offsets: &Offsets, image: &str, class: &str, field: &str) -> Option<u64> {
+        offsets
+            .get(&(image.to_owned(), class.to_owned(), field.to_owned()))
+            .map(|&offset| u64::from(offset))
+    }
+
+    fn read_pointer(process: &Process, at: Address) -> Option<Address> {
+        process
+            .read::<u64>(at)
+            .ok()
+            .map(Address::new)
+            .filter(|address| !address.is_null())
+    }
+
+    /// The non-null references a `MonoArray` of objects holds.
+    fn read_array(process: &Process, array: Address) -> Option<Vec<Address>> {
+        let length = process.read::<i64>(array.add(ARRAY_LENGTH)).ok()?;
+        // The same bound the splitter uses: a container on a different scale
+        // means the field was misread, not that the game grew.
+        if !(0..=8192).contains(&length) {
+            return None;
+        }
+        Some(
+            (0..length as u64)
+                .filter_map(|i| read_pointer(process, array.add(ARRAY_DATA + 8 * i)))
+                .collect(),
+        )
+    }
+
+    /// Every address in the capture holding `needle`.
+    ///
+    /// The splitter's scan, minus everything that exists for a live game: no
+    /// budget, no yielding, no page-level retry. This runs once, offline, and
+    /// a capture does not stop responding while it is read.
+    fn sweep(process: &Process, needle: Address) -> Vec<Address> {
+        const WORDS: usize = 8 * 1024;
+
+        let mut found = Vec::new();
+        let mut buf = vec![0u64; WORDS];
+        for range in process.memory_ranges() {
+            let wanted = MemoryRangeFlags::READ | MemoryRangeFlags::WRITE;
+            if !range
+                .flags()
+                .is_ok_and(|f| f.contains(wanted) && !f.contains(MemoryRangeFlags::EXECUTE))
+            {
+                continue;
+            }
+            let Ok((start, size)) = range.range() else {
+                continue;
+            };
+            let mut offset = 0;
+            while offset < size {
+                let words = WORDS.min(((size - offset) / 8) as usize);
+                if words == 0 {
+                    break;
+                }
+                let at = start.add(offset);
+                if process
+                    .read_into_buf(at, bytemuck::cast_slice_mut(&mut buf[..words]))
+                    .is_ok()
+                {
+                    for (index, &word) in buf[..words].iter().enumerate() {
+                        if word == needle.value() {
+                            found.push(at.add((index * 8) as u64));
+                        }
+                    }
+                }
+                offset += (words * 8) as u64;
+            }
+        }
+        found
+    }
 }

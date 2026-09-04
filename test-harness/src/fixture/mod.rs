@@ -64,6 +64,45 @@ pub struct Fixture {
     /// What the facts were read out of, for a reader asking "says who".
     pub sources: Sources,
     pub classes: Vec<ClassFacts>,
+    /// Layouts that have no name to look up: see [`InstanceFacts`].
+    pub instances: Vec<InstanceFacts>,
+}
+
+/// The layout of an object that cannot be reached by name.
+///
+/// `HashSet<string>` and `List<EntityComponent>` are inflated generics. Each
+/// instantiation is a class of its own with its own field offsets, none of
+/// them is in an image's class cache under any name a lookup could use, and
+/// asr cannot even read the name of one — so a layout here is identified by
+/// **the field it was reached through**, which is also the only identity a
+/// test needs: it asks for "the list the entity registry holds".
+///
+/// These come from walking a real instance in the capture, so they are as much
+/// a measurement as the offsets are. Mono fills an inflated generic's field
+/// table in lazily and may never do it at all, so a fixture can legitimately
+/// carry none of these; `src/collections.rs` has a shape-checked fallback for
+/// exactly that case.
+#[derive(Clone, Debug)]
+pub struct InstanceFacts {
+    /// `<image>/<class>.<field>` — where the walk went to find one.
+    pub reached_by: String,
+    /// What it is, for a builder that has to place one: `list`, `hash-set`.
+    pub role: String,
+    pub fields: Vec<InstanceField>,
+}
+
+/// One field of an [`InstanceFacts`] layout. No declared type: an inflated
+/// generic's is not readable through asr, and nothing needs it.
+#[derive(Clone, Debug)]
+pub struct InstanceField {
+    pub name: String,
+    pub offset: u32,
+}
+
+impl InstanceFacts {
+    pub fn field(&self, name: &str) -> Option<&InstanceField> {
+        self.fields.iter().find(|f| f.name == name)
+    }
 }
 
 /// Where a fixture's two halves came from.
@@ -129,6 +168,12 @@ impl Fixture {
         self.classes
             .iter()
             .find(|c| c.image == image && c.name == name)
+    }
+
+    /// The layout of whatever a field points at, for the fields whose target
+    /// has no name to look up.
+    pub fn instance(&self, reached_by: &str) -> Option<&InstanceFacts> {
+        self.instances.iter().find(|i| i.reached_by == reached_by)
     }
 
     /// Builds the synthetic world this fixture describes.
@@ -268,7 +313,36 @@ impl Fixture {
             });
         }
 
+        let mut instances = Vec::new();
+        for value in root
+            .get("instances")
+            .and_then(Value::as_array)
+            .unwrap_or(&Vec::new())
+        {
+            let reached_by = string(value, "reached_by", "an instance layout")?;
+            let whose = format!("instance layout {reached_by}");
+            let mut fields = Vec::new();
+            for value in field(value, "fields", &whose)?
+                .as_array()
+                .ok_or_else(|| format!("{whose}: \"fields\" is not an array"))?
+            {
+                fields.push(InstanceField {
+                    name: string(value, "name", &whose)?,
+                    offset: field(value, "offset", &whose)?
+                        .as_u64()
+                        .and_then(|v| u32::try_from(v).ok())
+                        .ok_or_else(|| format!("{whose}: \"offset\" is not a 32-bit number"))?,
+                });
+            }
+            instances.push(InstanceFacts {
+                role: string(value, "role", &whose)?,
+                reached_by,
+                fields,
+            });
+        }
+
         Ok(Self {
+            instances,
             game_version: string(&root, "game_version", "the fixture")?,
             build_id: root.get("build_id").and_then(Value::as_u64),
             sources: Sources {
@@ -342,6 +416,43 @@ impl Fixture {
                 let _ = writeln!(out, "      ]");
             }
             let comma = if i + 1 == self.classes.len() { "" } else { "," };
+            let _ = writeln!(out, "    }}{comma}");
+        }
+        let _ = writeln!(out, "  ],");
+
+        let _ = writeln!(out, "  \"instances\": [");
+        for (i, instance) in self.instances.iter().enumerate() {
+            let _ = writeln!(out, "    {{");
+            let _ = writeln!(
+                out,
+                "      \"reached_by\": {},",
+                Value::from(instance.reached_by.clone())
+            );
+            let _ = writeln!(
+                out,
+                "      \"role\": {},",
+                Value::from(instance.role.clone())
+            );
+            let _ = writeln!(out, "      \"fields\": [");
+            for (j, f) in instance.fields.iter().enumerate() {
+                let comma = if j + 1 == instance.fields.len() {
+                    ""
+                } else {
+                    ","
+                };
+                let _ = writeln!(
+                    out,
+                    "        {{ \"name\": {}, \"offset\": {} }}{comma}",
+                    Value::from(f.name.clone()),
+                    f.offset
+                );
+            }
+            let _ = writeln!(out, "      ]");
+            let comma = if i + 1 == self.instances.len() {
+                ""
+            } else {
+                ","
+            };
             let _ = writeln!(out, "    }}{comma}");
         }
         let _ = writeln!(out, "  ]");

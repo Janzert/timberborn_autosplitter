@@ -173,5 +173,32 @@
         { "name": "<NighttimeLengthInHours>k__BackingField", "requested": "NighttimeLengthInHours", "type": "float", "static": false, "offset": 84 }
       ]
     }
+  ],
+  "instances": [
+    {
+      "reached_by": "Timberborn.GameOver/GameOverChecker -> GameOverChecker._entityRegistry -> EntityRegistry._entitiesInInstantiationOrder",
+      "role": "list",
+      "fields": [
+        { "name": "_items", "offset": 16 },
+        { "name": "_size", "offset": 24 }
+      ]
+    },
+    {
+      "reached_by": "Timberborn.ScienceSystem/BuildingUnlockingService -> BuildingUnlockingService._unlockedBuildings",
+      "role": "hash-set",
+      "fields": [
+        { "name": "_slots", "offset": 24 },
+        { "name": "_count", "offset": 48 },
+        { "name": "_lastIndex", "offset": 52 }
+      ]
+    },
+    {
+      "reached_by": "Timberborn.GameOver/GameOverChecker -> GameOverChecker._entityRegistry -> EntityRegistry._entitiesInInstantiationOrder -> [0] -> BaseComponent._componentCache -> ComponentCache._components",
+      "role": "component-list",
+      "fields": [
+        { "name": "_items", "offset": 16 },
+        { "name": "_size", "offset": 24 }
+      ]
+    }
   ]
 }

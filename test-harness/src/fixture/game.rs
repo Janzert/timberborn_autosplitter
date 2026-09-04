@@ -30,7 +30,7 @@
 //! see `Scene::set_*`, which stay usable right up until [`Scene::finish`].
 
 use super::{Builder, Fixture};
-use crate::memory::FakeProcess;
+use crate::memory::{FakeProcess, SharedMemory};
 
 /// `MonoString`: object header, then the length, then UTF-16 characters.
 ///
@@ -221,40 +221,21 @@ impl Scene {
             .write_u32(object.address + offset, value as u32);
     }
 
+    /// Writes a 32-bit float field, by name — the clock's day lengths.
+    pub fn set_f32(&mut self, object: &Object, field: &str, value: f32) {
+        let offset = self.offset(object, field);
+        self.builder
+            .write(object.address + offset, &value.to_le_bytes());
+    }
+
     /// Writes a single byte, by name. A `bool` in the game is one.
     pub fn set_u8(&mut self, object: &Object, field: &str, value: u8) {
         let offset = self.offset(object, field);
         self.builder.write(object.address + offset, &[value]);
     }
 
-    /// Where a field sits, from the fixture.
-    ///
-    /// Panics naming the field. A test writing to a field the fixture does not
-    /// carry is asking for something no fixture can answer, and writing it to
-    /// offset zero instead would put it on top of the object's vtable pointer
-    /// — which would make the object stop being an instance of its class, some
-    /// distance from the line that caused it.
     fn offset(&self, object: &Object, field: &str) -> u64 {
-        let facts = self
-            .fixture
-            .class(&object.image, &object.class)
-            .unwrap_or_else(|| {
-                panic!("the fixture has no class {}/{}", object.image, object.class)
-            });
-        let field = facts.field(field).unwrap_or_else(|| {
-            panic!(
-                "the fixture has no {}/{}.{field}. Add it to SUBJECTS in \
-                 src/probe.rs and regenerate: `cargo fixture`.",
-                object.image, object.class
-            )
-        });
-        assert!(
-            !field.is_static,
-            "{}/{}.{} is a static field; it lives in the class's static table, \
-             not on an instance",
-            object.image, object.class, field.name
-        );
-        u64::from(field.offset)
+        offset_in(&self.fixture, object, field)
     }
 
     /// Builds the DI container over everything registered, and hands over the
@@ -264,7 +245,12 @@ impl Scene {
     /// array has to know its length. That is true of the game as well: it is
     /// an `ImmutableArray`, so registering another singleton replaces the array
     /// rather than growing it.
-    pub fn finish(mut self) -> FakeProcess {
+    pub fn finish(self) -> FakeProcess {
+        self.finish_live().0
+    }
+
+    /// The process, and a handle for changing it while the splitter runs.
+    pub fn finish_live(mut self) -> (FakeProcess, Live) {
         let singletons = std::mem::take(&mut self.singletons);
         let array = self.array(&singletons);
 
@@ -274,6 +260,222 @@ impl Scene {
         let repository = self.object("Timberborn.SingletonSystem", "SingletonRepository");
         self.set_ptr(&repository, "_singletonListener", listener.address);
 
-        self.builder.finish()
+        let (process, memory) = self.builder.finish_live();
+        (
+            process,
+            Live {
+                fixture: self.fixture,
+                memory,
+            },
+        )
+    }
+}
+
+/// `Slot<T>` in Mono's `HashSet<T>`: `int _hashCode`, `int _next`, then the
+/// reference, 8-aligned. A negative hash marks a free slot.
+const SLOT_SIZE: u64 = 16;
+const SLOT_VALUE: u64 = 8;
+
+/// The paths the fixture records the nameless layouts under.
+///
+/// Written out rather than passed in because they are what a fixture *is*
+/// keyed by: a test asking for "the list the entity registry holds" is asking
+/// for this exact string, and a typo would otherwise reach the panic in
+/// `new_instance` with nothing to compare against.
+pub mod reached_by {
+    /// `List<EntityComponent>`, the registry's instantiation-order list.
+    pub const ENTITY_LIST: &str = "Timberborn.GameOver/GameOverChecker -> \
+         GameOverChecker._entityRegistry -> EntityRegistry._entitiesInInstantiationOrder";
+    /// `HashSet<string>` of unlocked building names.
+    pub const UNLOCKED_SET: &str = "Timberborn.ScienceSystem/BuildingUnlockingService -> \
+         BuildingUnlockingService._unlockedBuildings";
+    /// `List<object>`, an entity's component cache.
+    pub const COMPONENT_LIST: &str = "Timberborn.GameOver/GameOverChecker -> \
+         GameOverChecker._entityRegistry -> EntityRegistry._entitiesInInstantiationOrder -> \
+         [0] -> BaseComponent._componentCache -> ComponentCache._components";
+}
+
+impl Scene {
+    /// A `List<T>` of references, laid out as the fixture measured one.
+    ///
+    /// `reached_by` says *which* list: each instantiation is its own class
+    /// with its own offsets, and the fixture identifies one by the path walked
+    /// to reach it rather than by a name, because asr cannot read the name of
+    /// an inflated generic at all.
+    pub fn list(&mut self, reached_by: &str, elements: &[u64]) -> u64 {
+        let items = self.array(elements);
+        let object = self.builder.new_instance(reached_by, 0);
+        self.write_instance_field(reached_by, object, "_items", items);
+        self.write_instance_i32(reached_by, object, "_size", elements.len() as i32);
+        object
+    }
+
+    /// A `HashSet<string>` holding `values`, every slot occupied.
+    ///
+    /// No free slots and no hashing: the splitter walks the used region and
+    /// compares strings, and never looks a value up by hash. Modelling the
+    /// buckets would be modelling Mono rather than what is read.
+    pub fn hash_set(&mut self, reached_by: &str, values: &[&str]) -> u64 {
+        let strings: Vec<u64> = values.iter().map(|value| self.string(value)).collect();
+        let slots = self
+            .builder
+            .alloc(ARRAY_DATA + SLOT_SIZE * strings.len() as u64);
+        self.builder
+            .write_u64(slots + ARRAY_LENGTH, strings.len() as u64);
+        for (index, &string) in strings.iter().enumerate() {
+            let slot = slots + ARRAY_DATA + SLOT_SIZE * index as u64;
+            // A non-negative hash marks the slot as occupied; the value itself
+            // is never hashed by anything that reads this.
+            self.builder.write_u32(slot, index as u32);
+            self.builder.write_u64(slot + SLOT_VALUE, string);
+        }
+
+        let object = self.builder.new_instance(reached_by, 0);
+        self.write_instance_field(reached_by, object, "_slots", slots);
+        self.write_instance_i32(reached_by, object, "_count", strings.len() as i32);
+        self.write_instance_i32(reached_by, object, "_lastIndex", strings.len() as i32);
+        object
+    }
+
+    /// One entity, as the splitter reads it: a `BaseComponent` whose component
+    /// cache names the template and lists the components.
+    ///
+    /// `finished` is the `BlockObjectState._state` the splitter tests to tell a
+    /// finished building from a construction site. The cache name is the live
+    /// form, `<template>.EntityComponent` — prefabs use the bare template name,
+    /// and the splitter accepts both, which is why this uses the one a running
+    /// game has.
+    pub fn entity(&mut self, template: &str, state: i32) -> Entity {
+        let block_state = self.object("Timberborn.BlockSystem", "BlockObjectState");
+        self.set_i32(&block_state, "_state", state);
+
+        let components = self.list(reached_by::COMPONENT_LIST, &[block_state.address]);
+
+        let cache = self.object("Timberborn.BaseComponentSystem", "ComponentCache");
+        let name = self.string(&format!("{template}.EntityComponent"));
+        self.set_ptr(&cache, "_name", name);
+        self.set_ptr(&cache, "_components", components);
+
+        let entity = self.object("Timberborn.BaseComponentSystem", "BaseComponent");
+        self.set_ptr(&entity, "_componentCache", cache.address);
+        Entity {
+            component: entity,
+            block_state,
+        }
+    }
+
+    fn write_instance_field(&mut self, reached_by: &str, object: u64, field: &str, value: u64) {
+        let offset = self.instance_offset(reached_by, field);
+        self.builder.write_u64(object + offset, value);
+    }
+
+    fn write_instance_i32(&mut self, reached_by: &str, object: u64, field: &str, value: i32) {
+        let offset = self.instance_offset(reached_by, field);
+        self.builder.write_u32(object + offset, value as u32);
+    }
+
+    fn instance_offset(&self, reached_by: &str, field: &str) -> u64 {
+        instance_offset_in(&self.fixture, reached_by, field)
+    }
+}
+
+/// Where a field sits, from the fixture.
+///
+/// Panics naming the field. A test writing to a field the fixture does not
+/// carry is asking for something no fixture can answer, and writing it to
+/// offset zero instead would land on the object's vtable pointer — which would
+/// make the object stop being an instance of its class, some distance from the
+/// line that caused it.
+fn offset_in(fixture: &Fixture, object: &Object, field: &str) -> u64 {
+    let facts = fixture
+        .class(&object.image, &object.class)
+        .unwrap_or_else(|| panic!("the fixture has no class {}/{}", object.image, object.class));
+    let field = facts.field(field).unwrap_or_else(|| {
+        panic!(
+            "the fixture has no {}/{}.{field}. Add it to SUBJECTS in \
+             src/probe.rs and regenerate: `cargo fixture`.",
+            object.image, object.class
+        )
+    });
+    assert!(
+        !field.is_static,
+        "{}/{}.{} is a static field; it lives in the class's static table, \
+         not on an instance",
+        object.image, object.class, field.name
+    );
+    u64::from(field.offset)
+}
+
+fn instance_offset_in(fixture: &Fixture, reached_by: &str, field: &str) -> u64 {
+    let facts = fixture
+        .instance(reached_by)
+        .unwrap_or_else(|| panic!("the fixture has no instance layout {reached_by:?}"));
+    u64::from(
+        facts
+            .field(field)
+            .unwrap_or_else(|| panic!("{reached_by:?} has no {field}"))
+            .offset,
+    )
+}
+
+/// One entity, in the two pieces a scenario touches.
+///
+/// The splitter reads a building's identity off its component cache and its
+/// completion off a `BlockObjectState` among its components, so finishing a
+/// building means writing to a different object than the one in the registry's
+/// list. Returning both is what stops a scenario writing "finished" onto the
+/// entity itself, which is a field that does not exist there.
+#[derive(Clone, Debug)]
+pub struct Entity {
+    /// What the entity registry's list holds.
+    pub component: Object,
+    /// Where `_state` says whether the building is finished.
+    pub block_state: Object,
+}
+
+/// A built world that a scenario keeps changing.
+///
+/// The same writes [`Scene`] does, against the process the splitter is already
+/// attached to. Only *changes* — nothing new can be placed, because a process's
+/// memory map is fixed once it exists, exactly as the game's regions are while
+/// a run is played. A scenario therefore builds everything the run will ever
+/// need and then reveals it: an entity list whose `_size` starts at zero and
+/// grows is how a building gets placed.
+pub struct Live {
+    fixture: Fixture,
+    memory: SharedMemory,
+}
+
+impl Live {
+    pub fn set_ptr(&self, object: &Object, field: &str, value: u64) {
+        let offset = self.offset(object, field);
+        self.memory
+            .poke(object.address + offset, &value.to_le_bytes());
+    }
+
+    pub fn set_i32(&self, object: &Object, field: &str, value: i32) {
+        let offset = self.offset(object, field);
+        self.memory
+            .poke(object.address + offset, &value.to_le_bytes());
+    }
+
+    pub fn set_u8(&self, object: &Object, field: &str, value: u8) {
+        let offset = self.offset(object, field);
+        self.memory.poke(object.address + offset, &[value]);
+    }
+
+    /// Sets a field of one of the nameless layouts — a list's `_size`, a set's
+    /// `_count`. Growing those is how a scenario makes something appear.
+    pub fn set_instance_i32(&self, reached_by: &str, object: u64, field: &str, value: i32) {
+        let offset = self.instance_offset(reached_by, field);
+        self.memory.poke(object + offset, &value.to_le_bytes());
+    }
+
+    fn offset(&self, object: &Object, field: &str) -> u64 {
+        offset_in(&self.fixture, object, field)
+    }
+
+    fn instance_offset(&self, reached_by: &str, field: &str) -> u64 {
+        instance_offset_in(&self.fixture, reached_by, field)
     }
 }
