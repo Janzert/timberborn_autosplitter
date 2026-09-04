@@ -174,9 +174,10 @@ cargo snapshot-tests
 ```
 
 Those replay real captures and recordings, including whole runs — the timer
-starting and every split firing, offline. They need captures this repo does not
-ship; a missing one fails with the steps for making it. See
-[snapshots/README.md](snapshots/README.md).
+starting and every split firing, offline — and compare the synthetic world
+against a capture class by class, which is what keeps a fixture honest. They
+need captures this repo does not ship; a missing one fails with the steps for
+making it. See [snapshots/README.md](snapshots/README.md).
 
 ## Layout
 

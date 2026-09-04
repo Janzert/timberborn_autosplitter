@@ -110,7 +110,9 @@ It needs a `run-finished` capture of the same build the fixture names, and says
 so if there is not one. Nothing in the default suite needs a capture; this is
 the one place the two suites meet.
 
-Generic instantiations are the current gap. `HashSet<string>` and
+## The gap
+
+Generic instantiations. `HashSet<string>` and
 `List<EntityComponent>` have their own field offsets, they are reached through
 `Class::of_object` rather than by name, and no offline source produces them
 today — `src/collections.rs` carries the layout read out of a live game
