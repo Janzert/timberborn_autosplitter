@@ -162,8 +162,18 @@ cargo test
 
 Runs against the host, with no game and no wasm involved: `test-harness/`
 provides a fake auto splitting runtime, so the splitter can be driven and
-inspected directly. Tests that need a captured snapshot of a real game are
-behind a feature and are not part of that run — see
+inspected directly.
+
+Tests that need captured game memory are behind a feature, so `cargo test`
+neither compiles nor counts them:
+
+```bash
+cargo snapshot-tests
+```
+
+Those replay real captures and recordings, including whole runs — the timer
+starting and every split firing, offline. They need captures this repo does not
+ship; a missing one fails with the steps for making it. See
 [snapshots/README.md](snapshots/README.md).
 
 ## Layout
@@ -175,6 +185,8 @@ behind a feature and are not part of that run — see
 | `devtools/` | offline development tooling — never shipped, never runs against the game |
 | `test-harness/` | a fake auto splitting runtime, so the splitter can be tested without the game |
 | `tests/` | those tests |
+| `tb-record/` | records a run against the live game, so replaying it can test that splits fire |
+| `tb-ptrace-open/` | the one binary needing a capability, so no other one does |
 | `snapshots/` | captured game memory, never committed; see [snapshots/README.md](snapshots/README.md) |
 
 ## devtools
