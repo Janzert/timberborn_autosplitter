@@ -105,6 +105,8 @@ const OBJECT_HEADER: u64 = 0x10;
 /// there, and only there.
 const UNITY_BASE: u64 = 0x1000_0000;
 const MONO_BASE: u64 = 0x1001_0000;
+/// The game's executable. Never parsed; only its presence is read.
+const GAME_BASE: u64 = 0x1002_0000;
 /// Mono's metadata: assemblies, images, classes, fields and their names.
 const METADATA_BASE: u64 = 0x2000_0000;
 /// The managed heap, which is where a scenario's objects go.
@@ -381,6 +383,10 @@ impl Builder {
             ..FakeProcess::new(self.pid, "Unity Main Thre")
                 .with_module("UnityPlayer.dll", UNITY_BASE, unity.len() as u64)
                 .with_module("mono-2.0-bdwgc.dll", MONO_BASE, mono.len() as u64)
+                // The game's own module. Nothing reads it as a PE -- it is how
+                // the splitter tells a Unity process reporting the generic
+                // "Unity Main Thre" apart from any other Unity game.
+                .with_module("Timberborn.exe", GAME_BASE, 0x1000)
                 .with_memory(memory)
         }
     }

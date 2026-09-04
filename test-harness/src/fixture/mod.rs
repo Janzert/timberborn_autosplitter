@@ -43,7 +43,9 @@ use std::{fmt::Write as _, fs, path::Path, path::PathBuf};
 use serde_json::{json, Value};
 
 mod build;
+pub mod game;
 pub use build::{Builder, ClassLayout};
+pub use game::Scene;
 
 /// The schema version of `fixtures/*.json`.
 ///

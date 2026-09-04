@@ -76,6 +76,7 @@
       "namespace": "Timberborn.GameStartup",
       "name": "GameInitializer",
       "fields": [
+        { "name": "_initializationState", "type": "InitializationState", "static": false, "offset": 56 },
         { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 48 }
       ]
     },
@@ -86,7 +87,8 @@
       "fields": [
         { "name": "<CountdownFinished>k__BackingField", "requested": "CountdownFinished", "type": "bool", "static": false, "offset": 48 },
         { "name": "_unlockDay", "type": "float", "static": false, "offset": 52 },
-        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 24 }
+        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 24 },
+        { "name": "UnlockOffsetInHours", "type": "float", "static": true, "offset": 0 }
       ]
     },
     {
@@ -165,7 +167,10 @@
       "name": "DayNightCycle",
       "fields": [
         { "name": "<DayNumber>k__BackingField", "requested": "DayNumber", "type": "int", "static": false, "offset": 72 },
-        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 16 }
+        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 16 },
+        { "name": "<DayLengthInSeconds>k__BackingField", "requested": "DayLengthInSeconds", "type": "float", "static": false, "offset": 76 },
+        { "name": "<DaytimeLengthInHours>k__BackingField", "requested": "DaytimeLengthInHours", "type": "float", "static": false, "offset": 80 },
+        { "name": "<NighttimeLengthInHours>k__BackingField", "requested": "NighttimeLengthInHours", "type": "float", "static": false, "offset": 84 }
       ]
     }
   ]

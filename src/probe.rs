@@ -35,8 +35,18 @@ pub const SUBJECTS: &[Subject] = &[
     Subject {
         image: "Timberborn.TimeSystem",
         class: "DayNightCycle",
-        fields: &["DayNumber", "_eventBus"],
-        used_for: "day counter, run start",
+        // The three lengths are diagnostic: they turn the countdown's in-game
+        // hours into real seconds for the log. Listed anyway -- the probe's
+        // question is "did an update rename something", and a probe that only
+        // covers the load-bearing reads answers less than it appears to.
+        fields: &[
+            "DayNumber",
+            "_eventBus",
+            "DayLengthInSeconds",
+            "DaytimeLengthInHours",
+            "NighttimeLengthInHours",
+        ],
+        used_for: "day counter, run start, countdown diagnostics",
     },
     Subject {
         image: "Timberborn.SingletonSystem",
@@ -53,8 +63,23 @@ pub const SUBJECTS: &[Subject] = &[
     Subject {
         image: "Timberborn.GameWonderCompletion",
         class: "WonderCompletionCountdownStarter",
-        fields: &["CountdownFinished", "_unlockDay", "_eventBus"],
+        // UnlockOffsetInHours is a static, and diagnostic only.
+        fields: &[
+            "CountdownFinished",
+            "_unlockDay",
+            "_eventBus",
+            "UnlockOffsetInHours",
+        ],
         used_for: "run end: the Congratulations screen",
+    },
+    Subject {
+        image: "Timberborn.GameStartup",
+        class: "GameInitializer",
+        // Load-bearing, and until now covered by neither half of the version
+        // check: the class was reached only through a `Locatable` site, which
+        // metadata.py checks for its validation field alone.
+        fields: &["_initializationState", "_eventBus"],
+        used_for: "run start: the pre-overlay initialization states",
     },
     Subject {
         image: "Timberborn.SingletonSystem",
