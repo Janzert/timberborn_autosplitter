@@ -57,15 +57,20 @@ Almost certainly nothing, which is worth writing down so this is not
 remembered as a released bug.
 
 Checked rather than assumed, by disassembling the release wasm built from the
-commit before the fix. `scan_iter` is inlined into every caller there — LTO and
-`codegen-units = 1` — so its 4 KiB buffer is allocated in the frame that then
-drives the iterator, and there is no popped frame for the pointer to dangle
-into. Each of `scan_process_range`'s instantiations opens with a 4240-, 4224-
-or 4256-byte `__stack_pointer` adjustment, which is that buffer. The splitter
-never calls `scan_iter` itself.
+commit before the fix. `scan_iter` is inlined into every caller there, so its
+4 KiB buffer is allocated in the frame that then drives the iterator, and there
+is no popped frame for the pointer to dangle into. Each of
+`scan_process_range`'s instantiations opens with a 4240-, 4224- or 4256-byte
+`__stack_pointer` adjustment, which is that buffer. The splitter never calls
+`scan_iter` itself.
 
-The crash needed a build where `scan_iter` is a real frame that gets popped,
-which is the unoptimised one the tests run.
+**What decides it is `opt-level`, not LTO** — measured against unmodified
+upstream with a standalone reproducer, sweeping both. `opt-level = 0`
+reproduces with LTO either way; 1, 2 and 3 do not, and
+`-C llvm-args=--inline-threshold=0` does not bring it back at 3. So the crash
+needed a build where `scan_iter` is a real frame that gets popped, which is the
+unoptimised one the tests run — and every debug build is exposed, not just this
+project's.
 
 So this is a latent bug, not a live one — but latent by codegen accident rather
 than by anything guaranteeing it, and wasm has no guard page: the day inlining
