@@ -65,8 +65,8 @@ is no popped frame for the pointer to dangle into. Each of
 `scan_iter` itself.
 
 **What decides it is `opt-level`, not LTO** — measured against unmodified
-upstream with a standalone reproducer, sweeping both. `opt-level = 0`
-reproduces with LTO either way; 1, 2 and 3 do not, and
+upstream, sweeping both. `opt-level = 0` reproduces with LTO either way; 1, 2
+and 3 do not, and
 `-C llvm-args=--inline-threshold=0` does not bring it back at 3. So the crash
 needed a build where `scan_iter` is a real frame that gets popped, which is the
 unoptimised one the tests run — and every debug build is exposed, not just this
@@ -160,7 +160,9 @@ CI runs.)
 
 That CI has a **Test (Host)** job, which today runs nothing but doctests --
 there is no `#[test]` anywhere in the crate. A `tests/` file added by the pull
-request is picked up by it with no CI change.
+request is picked up by it with no CI change, which is where the branch's second
+commit puts the regression test: `tests/signature_scan_buffer.rs`, which fails
+on unmodified upstream and passes with the fix.
 
 Upstream may prefer a higher-level API (e.g. `Image::find_instances(&class)`)
 over exposing the raw address. That is a nicer contribution but more surface to
