@@ -151,10 +151,16 @@ pushed on the fork as `signature-scan-dangling-buffer`, based on
 `signature.rs` is byte-identical to the pre-fix state, so the bug is live there.
 The PR has not been opened.
 
-Note for whoever opens it: upstream's `master` is currently red on its own --
-one `cargo fmt` diff in `mono/offsets.rs`, six clippy lints, and a broken
-doctest in `future/mod.rs`, all present with the branch stashed. CI on the PR
-will fail for reasons that predate it.
+Upstream's `master` is green under its own CI commands -- `cargo test
+--all-features` (22 doctests), `cargo clippy --all-features` without
+`-D warnings`, and a `cargo fmt` step that ends in `|| true`. A red check on
+the pull request would therefore mean something. (Plain `cargo test` and
+`cargo clippy -- -D warnings` do fail on pristine master, but neither is what
+CI runs.)
+
+That CI has a **Test (Host)** job, which today runs nothing but doctests --
+there is no `#[test]` anywhere in the crate. A `tests/` file added by the pull
+request is picked up by it with no CI change.
 
 Upstream may prefer a higher-level API (e.g. `Image::find_instances(&class)`)
 over exposing the raw address. That is a nicer contribution but more surface to
