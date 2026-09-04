@@ -107,10 +107,29 @@ has not been panicking everywhere.
 
 That leaves the `(symbol, 0x100)` scans, which are aligned at neither end.
 **Those reach the panic**, whenever the symbol lands within 256 bytes of a page
-boundary -- one page offset in sixteen. In the capture instrumented here the
-scan started at `0x6ffff93e5790`, page offset `0x790`, and would have needed to
-be above `0xf00`. So this project is clear by luck, and by a margin it does not
-control: a game update that moves `mono_assembly_foreach` moves the dice.
+boundary.
+
+It is worth being precise about what kind of risk that is, because "luck" is
+misleading. Module bases are page-aligned, so the symbol's offset *within* a
+page is `RVA & 0xfff` -- a property of the shipped `mono-2.0-bdwgc.dll` and
+nothing else. Measured here:
+
+| build | scan starts at | page offset |
+|---|---|---|
+| 1.0.13.1, Unity 6000.3 | `0x6ffffaa15390` | `0x390` |
+| 1.1.2.4, Unity 6000.5 | `0x6ffff93e5790` | `0x790` |
+
+Two separate launches of 1.1.2.4 -- different sessions, different pids -- gave
+not just the same page offset but the same absolute address, so nothing is being
+rebased between runs either.
+
+So the dice are rolled once per Unity release, not once per launch. Functions
+are 16-byte aligned, and 15 of the 256 aligned slots in a page put the scan
+across the boundary (`0xf00` exactly is safe -- the range ends on the boundary
+rather than crossing it), so about 6% of mono builds. A bad one would not be an
+intermittent fault: it would panic on attach for every asr splitter against
+every game built with that Unity version, every time. This project is two
+draws clear of it, and gets a fresh draw whenever Unity ships a new mono.
 
 **Nothing reaches the silent miss.** It needs a range that begins part way into
 a page and then runs a full page further, and asr never builds one -- its
