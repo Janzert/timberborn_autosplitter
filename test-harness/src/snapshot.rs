@@ -85,22 +85,25 @@ pub fn find_scenario(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
 ///
 /// More than one is the useful case rather than an awkward one: a run as
 /// Folktails and a run as Iron Teeth are the same category down different code,
-/// and the same assertions should hold for both. Grouped by the scenario name
-/// its steps share, so two recordings cannot be spliced into one nonsense run.
+/// and the same assertions should hold for both. So is the same run recorded
+/// against two game builds, which is what says the splitter survived an update.
+///
+/// # Grouped by build *and* label
+///
+/// A recording's label defaults to its state, so the obvious way to record the
+/// same category twice -- once per build, `tb-record --state wonder-run` each
+/// time -- produces two sets of steps sharing one label. Grouping by label
+/// alone would splice them into a single run that starts twice, jumps between
+/// builds mid-category, and replays memory from one game as though it were the
+/// next tick of another. The game version is part of a scenario's identity for
+/// the same reason it is part of a capture's.
 pub fn find_scenarios(requirement_id: &str) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
-    let mut grouped: Vec<(String, Vec<(u32, PathBuf)>)> = Vec::new();
-    for dir in find_all(requirement_id)? {
-        let Some(metadata) = peek(&dir) else { continue };
-        let (Some(name), Some(step)) = (metadata.scenario.clone(), metadata.step.clone()) else {
-            continue;
-        };
-        match grouped.iter_mut().find(|(existing, _)| *existing == name) {
-            Some((_, steps)) => steps.push((step.index, dir)),
-            None => grouped.push((name, vec![(step.index, dir)])),
-        }
-    }
+    let found = find_all(requirement_id)?
+        .into_iter()
+        .filter_map(|dir| Some((peek(&dir)?, dir)));
+    let scenarios = group_scenarios(found)?;
 
-    if grouped.is_empty() {
+    if scenarios.is_empty() {
         let requirement = crate::requirement::get(requirement_id)
             .ok_or_else(|| format!("no such requirement {requirement_id:?}"))?;
         return Err(format!(
@@ -116,6 +119,27 @@ pub fn find_scenarios(requirement_id: &str) -> Result<Vec<(String, Vec<PathBuf>)
                 .collect::<Vec<_>>()
                 .join("\n")
         ));
+    }
+    Ok(scenarios)
+}
+
+/// The grouping itself, over metadata rather than over a directory, so the
+/// rule it enforces can be tested without ten gigabytes of captures.
+fn group_scenarios(
+    found: impl IntoIterator<Item = (Metadata, PathBuf)>,
+) -> Result<Vec<(String, Vec<PathBuf>)>, String> {
+    let mut grouped: Vec<(String, Vec<(u32, PathBuf)>)> = Vec::new();
+    for (metadata, dir) in found {
+        let (Some(label), Some(step)) = (metadata.scenario.clone(), metadata.step.clone()) else {
+            continue;
+        };
+        // The version leads, so scenarios sort by build and a failure names
+        // which one it was.
+        let name = format!("{} {label}", metadata.game_version);
+        match grouped.iter_mut().find(|(existing, _)| *existing == name) {
+            Some((_, steps)) => steps.push((step.index, dir)),
+            None => grouped.push((name, vec![(step.index, dir)])),
+        }
     }
 
     let mut scenarios = Vec::new();
@@ -136,6 +160,41 @@ pub fn find_scenarios(requirement_id: &str) -> Result<Vec<(String, Vec<PathBuf>)
     }
     scenarios.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(scenarios)
+}
+
+/// Every capture in the store, single or part of a recording.
+///
+/// Two levels, and no deeper. A single capture is a directory in the store; a
+/// recording is a directory of them, one per step, so that it moves, is
+/// deleted, or is copied to another machine as a unit. Which a directory is
+/// does not need naming or guessing at: a capture is the one with a manifest
+/// in it.
+fn capture_dirs(store: &Path) -> Vec<PathBuf> {
+    fn children(dir: &Path) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect();
+        out.sort();
+        out
+    }
+
+    let mut captures = Vec::new();
+    for entry in children(store) {
+        if entry.join(MANIFEST).is_file() {
+            captures.push(entry);
+        } else {
+            captures.extend(
+                children(&entry)
+                    .into_iter()
+                    .filter(|d| d.join(MANIFEST).is_file()),
+            );
+        }
+    }
+    captures
 }
 
 /// One capture of the state per distinct game version, preferring a frozen one.
@@ -180,14 +239,7 @@ pub fn find_all(requirement_id: &str) -> Result<Vec<PathBuf>, String> {
     // must not short-circuit past the instructions below -- being told the
     // directory is missing is exactly as useless as being told a file is.
     let store = default_store();
-    let mut candidates: Vec<PathBuf> = std::fs::read_dir(&store)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect();
-    candidates.sort();
+    let candidates = capture_dirs(&store);
 
     let candidate_count = candidates.len();
     let found: Vec<PathBuf> = candidates
@@ -705,6 +757,175 @@ impl Memory for Snapshot {
             return false;
         }
         self.read_through(address, buf)
+    }
+}
+
+#[cfg(test)]
+mod store_layout_tests {
+    use super::*;
+
+    fn store(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tb-store-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn capture(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(MANIFEST), "version 2\n").unwrap();
+    }
+
+    /// A recording's steps are found inside it, and a single capture beside
+    /// it. Which is which needs no naming convention: a capture is the
+    /// directory with a manifest in it.
+    #[test]
+    fn finds_single_captures_and_a_recordings_steps() {
+        let store = store("nested");
+        capture(&store.join("1.1-main-menu"));
+        capture(&store.join("1.1-wonder-run/step00"));
+        capture(&store.join("1.1-wonder-run/step01"));
+
+        let found: Vec<String> = capture_dirs(&store)
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&store)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "1.1-main-menu",
+                "1.1-wonder-run/step00",
+                "1.1-wonder-run/step01"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&store);
+    }
+
+    /// A store written before recordings were nested still reads.
+    ///
+    /// The old layout put every step at the top level, so its steps are found
+    /// as single captures -- which is exactly what they are to everything
+    /// above this. Nobody has to migrate a store to keep using it, and a store
+    /// holding both layouts is fine.
+    #[test]
+    fn a_flat_store_still_reads() {
+        let store = store("flat");
+        capture(&store.join("1.1-main-menu"));
+        capture(&store.join("1.1-wonder-run-step00"));
+        capture(&store.join("1.1-wonder-run-step01"));
+
+        assert_eq!(capture_dirs(&store).len(), 3);
+        let _ = std::fs::remove_dir_all(&store);
+    }
+
+    /// A directory that is neither is ignored rather than guessed at.
+    #[test]
+    fn a_directory_with_no_manifest_anywhere_is_ignored() {
+        let store = store("junk");
+        capture(&store.join("1.1-main-menu"));
+        std::fs::create_dir_all(store.join("notes/drafts")).unwrap();
+
+        assert_eq!(capture_dirs(&store).len(), 1);
+        let _ = std::fs::remove_dir_all(&store);
+    }
+}
+
+#[cfg(test)]
+mod grouping_tests {
+    use super::*;
+
+    fn step(version: &str, label: &str, index: u32) -> (Metadata, PathBuf) {
+        (
+            Metadata {
+                game_version: version.into(),
+                scenario: Some(label.into()),
+                step: Some(Step {
+                    index,
+                    event: "start".into(),
+                }),
+                ..Default::default()
+            },
+            PathBuf::from(format!("{version}-{label}-step{index:02}")),
+        )
+    }
+
+    /// The same category recorded against two builds stays two runs.
+    ///
+    /// This is the case a second build walks straight into: a label defaults
+    /// to the state, so recording `--state wonder-run` on each build gives two
+    /// sets of steps sharing one label. Spliced together they would be a run
+    /// that starts twice and changes build mid-category.
+    #[test]
+    fn one_label_on_two_builds_is_two_scenarios() {
+        let found = vec![
+            step("1.0.13.1-b769e88-sw", "wonder-run", 0),
+            step("1.1.2.4-52e959e-sw", "wonder-run", 0),
+            step("1.0.13.1-b769e88-sw", "wonder-run", 1),
+            step("1.1.2.4-52e959e-sw", "wonder-run", 1),
+        ];
+        let scenarios = group_scenarios(found).unwrap();
+        assert_eq!(
+            scenarios
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "1.0.13.1-b769e88-sw wonder-run",
+                "1.1.2.4-52e959e-sw wonder-run"
+            ]
+        );
+        assert!(scenarios.iter().all(|(_, steps)| steps.len() == 2));
+    }
+
+    /// Two labels on one build are still two runs -- Folktails and Iron Teeth.
+    #[test]
+    fn two_labels_on_one_build_are_two_scenarios() {
+        let found = vec![
+            step("1.1.2.4-52e959e-sw", "wonder-run", 0),
+            step("1.1.2.4-52e959e-sw", "wonder-run-ironteeth", 0),
+        ];
+        assert_eq!(group_scenarios(found).unwrap().len(), 2);
+    }
+
+    /// A hole is refused rather than replayed across: a gap means a step was
+    /// deleted or a recording was interrupted, and the splitter would be shown
+    /// a change that never happened.
+    #[test]
+    fn a_missing_step_is_refused() {
+        let found = vec![
+            step("1.1.2.4-52e959e-sw", "wonder-run", 0),
+            step("1.1.2.4-52e959e-sw", "wonder-run", 2),
+        ];
+        let error = group_scenarios(found).unwrap_err();
+        assert!(error.contains("missing step 1"), "{error}");
+    }
+
+    /// Steps arriving out of order are put back in order rather than refused:
+    /// a directory listing has no reason to be sorted.
+    #[test]
+    fn steps_are_ordered_by_index_not_by_discovery() {
+        let found = vec![
+            step("1.1.2.4-52e959e-sw", "wonder-run", 2),
+            step("1.1.2.4-52e959e-sw", "wonder-run", 0),
+            step("1.1.2.4-52e959e-sw", "wonder-run", 1),
+        ];
+        let (_, steps) = group_scenarios(found).unwrap().swap_remove(0);
+        let names: Vec<String> = steps
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "1.1.2.4-52e959e-sw-wonder-run-step00",
+                "1.1.2.4-52e959e-sw-wonder-run-step01",
+                "1.1.2.4-52e959e-sw-wonder-run-step02"
+            ]
+        );
     }
 }
 

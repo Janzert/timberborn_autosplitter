@@ -18,6 +18,14 @@ time the splitter starts, splits or resets, the game is stopped and captured.
 Each step is a delta against the one before, so a run costs one full capture and
 a few hundred MiB a split.
 
+A recording is written to one directory with a step per subdirectory:
+
+    snapshots/<game version>-<label>/step00, step01, ...
+
+so it moves or is deleted as a unit. Recording the same category against two
+game builds needs no extra flags -- the version is part of the directory name
+and of how a test tells the two runs apart.
+
 Each step is written and closed as it is taken, so stopping early -- Ctrl-C, or
 closing the game -- leaves a shorter scenario rather than a broken one.
 

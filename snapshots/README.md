@@ -176,12 +176,50 @@ step it is alive for, so swapping step *n* for *n+1* shows the splitter the same
 addresses holding their new values -- what actually happened, minus the time in
 between.
 
-More than one recording of a state is the useful case, not an awkward one: a
-run as Folktails and one as Iron Teeth are the same category down different
-code, since the splitter matches faction-suffixed template names. Steps are
-grouped by the scenario name they share, so two recordings cannot be spliced
-into one nonsense run, and the tests replay every recording rather than the
-first.
+### One recording, one directory
+
+A recording is a directory of steps rather than sixty directories sharing a
+prefix:
+
+```
+snapshots/
+  1.1.2.4-52e959e-sw-main-menu/            a single capture
+  1.1.2.4-52e959e-sw-run-complete-frozen/  a single capture
+  1.1.2.4-52e959e-sw-wonder-run/           a recording
+    step00/
+    step01/
+    ...
+  1.1.2.4-52e959e-sw-wonder-run-ironteeth/
+    step00/
+    ...
+```
+
+So a recording moves, is deleted, or is copied to another machine as one thing,
+and a store holding a few of them still reads as a handful of entries. Which
+kind a directory is needs no naming convention and no guessing: a capture is the
+one with a `manifest.txt` in it, and the search looks one level down for the
+rest.
+
+A store written before this still reads. Its steps sit at the top level, where
+they are found as single captures -- which is what they are to everything above
+the search anyway. Nothing has to be migrated, and a store holding both layouts
+is fine.
+
+### More than one recording
+
+The useful case, not an awkward one, and for two reasons.
+
+A run as Folktails and one as Iron Teeth are the same category down different
+code, since the splitter matches faction-suffixed template names. And the same
+category recorded against two game builds is what says the splitter survived an
+update, which is the claim the whole design rests on.
+
+Steps are grouped by **game version and label together**, so neither can splice
+two recordings into one nonsense run. That grouping is not cosmetic: a label
+defaults to its state, so recording `--state wonder-run` on each of two builds
+gives two sets of steps sharing one label, and grouping by label alone would
+produce a "run" that starts twice and changes build half way through. The tests
+replay every recording rather than the first.
 
 ### What the freezing costs
 

@@ -276,8 +276,14 @@ impl Recorder {
 
     /// Stops the game and captures it, as a delta against the step before.
     fn take(&mut self, reason: &str) -> Result<(), String> {
-        let label = format!("{}-step{:02}", self.scenario, self.step);
-        let dir = snapshot::default_store().join(format!("{}-{label}", self.version));
+        // A recording is one directory with a step per subdirectory, so it
+        // moves, is deleted, or is copied to another machine as a unit -- and
+        // a store holding several recordings and a few single captures reads
+        // as a handful of entries rather than as sixty.
+        let label = format!("step{:02}", self.step);
+        let recording =
+            snapshot::default_store().join(format!("{}-{}", self.version, self.scenario));
+        let dir = recording.join(&label);
         if dir.exists() {
             return Err(format!(
                 "{} already exists; move the old recording aside or pass a \
@@ -285,6 +291,8 @@ impl Recorder {
                 dir.display()
             ));
         }
+        std::fs::create_dir_all(&recording)
+            .map_err(|e| format!("creating {}: {e}", recording.display()))?;
 
         let base = match &self.previous {
             Some(path) => Some(Snapshot::open(path).map_err(|e| format!("reopening base: {e}"))?),
