@@ -13,7 +13,7 @@ The exact revision is pinned by the submodule gitlink, so a clone with
 
 ## What the fork carries
 
-Two accessors the splitter needs, and one bug fix.
+Two accessors the splitter needs, and two bug fixes.
 
 ## The accessors, and why they are needed
 
@@ -77,6 +77,30 @@ than by anything guaranteeing it, and wasm has no guard page: the day inlining
 went the other way it would corrupt linear memory silently instead of
 segfaulting. That is the argument for fixing it rather than noting it.
 
+## The page tail carried across a boundary
+
+Found by reading the rest of `signature.rs` after the one above, and verified by
+running it. Scans go a page at a time, with the last N - 1 bytes of the previous
+page placed in front of the next so a signature lying across the boundary is
+still found. The offset that tail is taken from assumes the previous page was a
+full 4 KiB -- true of every page but two, the first page of a range that does
+not start on a boundary and the last page of one that does not end on one.
+
+- A range ending part way into a page asks for more bytes than the page held and
+  **panics** in `copy_from_slice`. `mono::Module::attach` scans
+  `(mono_assembly_foreach, 0x100)`, so this fires whenever that symbol lands
+  within 256 bytes of a page boundary -- roughly one build layout in sixteen.
+  Nothing here has hit it, which is luck rather than design.
+- A range starting part way into a page carries bytes that were never read, and
+  **silently misses** a signature across its first boundary.
+
+Fixed on `class-vtable` by tracking how much the last page actually held. Two
+regression tests come with it, in `tests/`.
+
+**This one is not on the pull request branch.** It is a different bug in code
+the dangling-buffer fix does not touch, and pairing them would hold up whichever
+review is slower. The pull request body offers it as a follow-up.
+
 ## Where the submodule points
 
 `.gitmodules` points at the fork, <https://github.com/Janzert/asr>, and inside
@@ -87,8 +111,8 @@ the submodule:
 | `origin` | the fork — fetch over https, push over ssh |
 | `upstream` | <https://github.com/LiveSplit/asr> — pull from it to stay current |
 
-The two accessors and the scanner fix live on the `class-vtable` branch, which
-is what the parent repo's gitlink points at. `mono-class-vtable` carries the
+The two accessors and both scanner fixes live on the `class-vtable` branch,
+which is what the parent repo's gitlink points at. `mono-class-vtable` carries the
 accessors shaped for upstream review -- retitled to the house style, with the
 dedup and the doc comments a reviewer asked for in advance.
 
