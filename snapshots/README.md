@@ -157,6 +157,17 @@ a few hundred MiB a split rather than 5 GiB apiece. Each is written and closed
 as it is taken, so stopping early -- Ctrl-C, or closing the game -- leaves a
 shorter scenario rather than a broken one.
 
+A moment is any tick in which the splitter said something that was not routine
+progress, as well as any tick in which it touched the timer. Timer events alone
+are not enough, and that cost a recorded run to learn: they are the splitter's
+*conclusions*, and its correctness depends on the states it passes through to
+reach them. The run start is only bound while the scene is still loading, and
+the timer only starts when `initializationState` reaches `ShowUI` having been
+watched from below. A recording that jumped from the main menu to "the overlay
+is up" showed a game already in progress, and the splitter correctly refused to
+start a timer -- reproducing, from a recording of a perfectly good run, a bug
+that never happened.
+
 Replay serves the steps in order, advancing between ticks, so the splitter sees
 the world change. That substitution is closer to honest than it sounds: every
 step is a capture of the same process, and Unity's Mono uses the Boehm
