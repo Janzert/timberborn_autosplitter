@@ -29,9 +29,11 @@ use std::{
 
 #[cfg(target_os = "linux")]
 pub mod capture;
+pub mod fixture;
 #[cfg(target_os = "linux")]
 pub mod freeze;
 pub mod imports;
+pub mod install;
 #[cfg(target_os = "linux")]
 pub mod live;
 pub mod memory;
