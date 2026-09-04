@@ -166,9 +166,10 @@ inspected directly.
 
 Most of it builds a whole synthetic Mono process out of the committed layout
 facts in `fixtures/` — up to and including a whole wonder run, the timer
-starting and all seven splits firing, in a twentieth of a second on a machine
-that has never had Timberborn installed. See
-[fixtures/README.md](fixtures/README.md).
+starting and all seven splits firing, and the awkward edges of a session: the
+game starting after the splitter, closing under it, or being the second game of
+the evening. All in a twentieth of a second, on a machine that has never had
+Timberborn installed. See [fixtures/README.md](fixtures/README.md).
 
 Tests that need captured game memory are behind a feature, so `cargo test`
 neither compiles nor counts them:
