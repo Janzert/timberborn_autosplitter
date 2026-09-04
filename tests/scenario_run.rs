@@ -297,7 +297,7 @@ fn the_second_game_costs_nothing_at_all() {
         .unwrap_or_else(|| panic!("{}: no second load in the log", run.name));
     let after: Vec<&String> = run.log[second_load..]
         .iter()
-        .filter(|line| line.contains("starting (full sweep)"))
+        .filter(|line| line.contains("starting (full sweep"))
         .collect();
     assert!(
         after.is_empty(),
@@ -315,7 +315,7 @@ fn the_first_game_sweeps_only_for_the_anchor_and_the_run_start() {
         .log
         .iter()
         .filter_map(|line| line.strip_prefix("[scan] "))
-        .filter(|line| line.contains("starting (full sweep)"))
+        .filter(|line| line.contains("starting (full sweep"))
         .filter_map(|line| line.split_once(' ').map(|(name, _)| name))
         .collect();
     assert_eq!(

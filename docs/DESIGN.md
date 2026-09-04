@@ -237,6 +237,11 @@ That matters concretely: the give-up-skipping rule counts *conclusive* empty
 searches, and would otherwise be talked into binding the previous game's
 container.
 
+Every sweep says in the log why it is happening -- no table yet, the table
+unreadable, or the table simply not having the object -- because a line that
+only records that a sweep happened leaves whoever reads it guessing, and the
+whole point of the change is that sweeps should be rare and accounted for.
+
 **The fallback is not decoration.** During the *first* scene load of a session
 the incoming `GameInitializer` is on the heap before the runtime has a reference
 to it: the table reports zero instances and the sweep finds it. That is once per

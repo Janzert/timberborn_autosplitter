@@ -221,13 +221,20 @@ impl Locatable {
         &self,
         process: &Process,
         limit: Option<usize>,
+        why: &str,
         on_tick: impl FnMut(),
     ) -> Found {
         let mut scan = scan::Scan::new(process, self.vtable).validating(self.validator);
         if let Some(n) = limit {
             scan = scan.limit(n);
         }
-        asr::print_message(&alloc::format!("[scan] {} starting (full sweep).", self.name));
+        // Why, not just that: a sweep is the expensive path, and a log that
+        // only says one happened leaves whoever reads it guessing whether the
+        // table was missing, unreadable, or simply did not have the object.
+        asr::print_message(&alloc::format!(
+            "[scan] {} starting (full sweep -- {why}).",
+            self.name
+        ));
         let scan = scan
             .run_polling(process, scan::DEFAULT_BUDGET, on_tick)
             .await;
@@ -303,12 +310,19 @@ impl Locatable {
         table: Option<&ReferenceTable>,
         settled: impl Fn(&Found) -> bool,
     ) -> Found {
-        if let Some(found) = self.from_table(process, limit, table, || {}).await {
-            if settled(&found) {
-                return found;
+        let why = match self.from_table(process, limit, table, || {}).await {
+            Some(found) if settled(&found) => return found,
+            Some(found) if found.instances.is_empty() => {
+                "the reference table has no instance of it".into()
             }
-        }
-        self.sweep(process, limit, || {}).await
+            Some(found) => alloc::format!(
+                "the reference table held {} instance(s), none of them acceptable",
+                found.instances.len()
+            ),
+            None if table.is_some() => "the reference table could not be read".into(),
+            None => "no reference table found yet".into(),
+        };
+        self.sweep(process, limit, &why, || {}).await
     }
 
     /// Finds one instance the caller is willing to accept.

@@ -159,10 +159,19 @@ impl Registry {
         // rather than inside the search: a table search that turns up
         // candidates none of which hold the clock is not an answer, and has to
         // fall through to the sweep.
+        let mut why = alloc::borrow::Cow::Borrowed("no reference table found yet");
         if let Some(found) = class
             .from_table(process, Some(MAX_CONTAINERS), table, &mut on_tick)
             .await
         {
+            why = alloc::borrow::Cow::Owned(if found.instances.is_empty() {
+                "the reference table has no container in it".into()
+            } else {
+                format!(
+                    "the reference table held {} container(s), none of them this game's",
+                    found.instances.len()
+                )
+            });
             let picked = Self::pick(
                 process,
                 &class,
@@ -181,8 +190,11 @@ impl Registry {
             }
         }
 
+        if table.is_some() && why.starts_with("no reference") {
+            why = alloc::borrow::Cow::Borrowed("the reference table could not be read");
+        }
         let found = class
-            .sweep(process, Some(MAX_CONTAINERS), &mut on_tick)
+            .sweep(process, Some(MAX_CONTAINERS), &why, &mut on_tick)
             .await;
         let conclusive = found.conclusive;
         let registry = Self::pick(
