@@ -1,0 +1,172 @@
+{
+  "format": 1,
+  "game_version": "1.1.2.4-52e959e-sw",
+  "build_id": 25096761,
+  "sources": {
+    "snapshot": "1.1.2.4-52e959e-sw-run-complete-frozen",
+    "managed": "/home/brian/.steam/steam/steamapps/common/Timberborn/Timberborn_Data/Managed"
+  },
+  "classes": [
+    {
+      "image": "Timberborn.AssetSystem",
+      "namespace": "Timberborn.AssetSystem",
+      "name": "AssetLoader",
+      "fields": []
+    },
+    {
+      "image": "Timberborn.BaseComponentSystem",
+      "namespace": "Timberborn.BaseComponentSystem",
+      "name": "BaseComponent",
+      "fields": [
+        { "name": "_componentCache", "type": "Timberborn.BaseComponentSystem.ComponentCache", "static": false, "offset": 16 }
+      ]
+    },
+    {
+      "image": "Timberborn.BaseComponentSystem",
+      "namespace": "Timberborn.BaseComponentSystem",
+      "name": "ComponentCache",
+      "fields": [
+        { "name": "_components", "type": "System.Collections.Generic.List<object>", "static": false, "offset": 72 },
+        { "name": "_name", "type": "string", "static": false, "offset": 96 }
+      ]
+    },
+    {
+      "image": "Timberborn.BlockSystem",
+      "namespace": "Timberborn.BlockSystem",
+      "name": "BlockObjectState",
+      "fields": [
+        { "name": "_state", "type": "State", "static": false, "offset": 48 }
+      ]
+    },
+    {
+      "image": "Timberborn.EntitySystem",
+      "namespace": "Timberborn.EntitySystem",
+      "name": "EntityRegistry",
+      "fields": [
+        { "name": "_entitiesInInstantiationOrder", "type": "System.Collections.Generic.List<Timberborn.EntitySystem.EntityComponent>", "static": false, "offset": 24 }
+      ]
+    },
+    {
+      "image": "Timberborn.ErrorReporting",
+      "namespace": "Timberborn.ErrorReporting",
+      "name": "WorldDataService",
+      "fields": [
+        { "name": "<SourceFileName>k__BackingField", "requested": "SourceFileName", "type": "string", "static": true, "offset": 0 }
+      ]
+    },
+    {
+      "image": "Timberborn.GameOver",
+      "namespace": "Timberborn.GameOver",
+      "name": "GameOverChecker",
+      "fields": [
+        { "name": "_entityRegistry", "type": "Timberborn.EntitySystem.EntityRegistry", "static": false, "offset": 32 }
+      ]
+    },
+    {
+      "image": "Timberborn.GameSceneLoading",
+      "namespace": "Timberborn.GameSceneLoading",
+      "name": "GameSceneParameters",
+      "fields": [
+        { "name": "<NewGameConfiguration>k__BackingField", "type": "Timberborn.NewGameConfigurationSystem.NewGameConfiguration", "static": false, "offset": 16 },
+        { "name": "<SaveReference>k__BackingField", "type": "Timberborn.GameSaveRepositorySystem.SaveReference", "static": false, "offset": 24 }
+      ]
+    },
+    {
+      "image": "Timberborn.GameStartup",
+      "namespace": "Timberborn.GameStartup",
+      "name": "GameInitializer",
+      "fields": [
+        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 48 }
+      ]
+    },
+    {
+      "image": "Timberborn.GameWonderCompletion",
+      "namespace": "Timberborn.GameWonderCompletion",
+      "name": "WonderCompletionCountdownStarter",
+      "fields": [
+        { "name": "<CountdownFinished>k__BackingField", "requested": "CountdownFinished", "type": "bool", "static": false, "offset": 48 },
+        { "name": "_unlockDay", "type": "float", "static": false, "offset": 52 },
+        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 24 }
+      ]
+    },
+    {
+      "image": "Timberborn.MainMenuSceneLoading",
+      "namespace": "Timberborn.MainMenuSceneLoading",
+      "name": "MainMenuSceneParameters",
+      "fields": []
+    },
+    {
+      "image": "Timberborn.MapEditorSceneLoading",
+      "namespace": "Timberborn.MapEditorSceneLoading",
+      "name": "MapEditorSceneParameters",
+      "fields": []
+    },
+    {
+      "image": "Timberborn.Population",
+      "namespace": "Timberborn.Population",
+      "name": "PopulationData",
+      "fields": [
+        { "name": "<NumberOfAdults>k__BackingField", "requested": "NumberOfAdults", "type": "int", "static": false, "offset": 16 },
+        { "name": "<NumberOfChildren>k__BackingField", "requested": "NumberOfChildren", "type": "int", "static": false, "offset": 20 }
+      ]
+    },
+    {
+      "image": "Timberborn.Population",
+      "namespace": "Timberborn.Population",
+      "name": "PopulationService",
+      "fields": [
+        { "name": "<GlobalPopulationData>k__BackingField", "requested": "GlobalPopulationData", "type": "Timberborn.Population.PopulationData", "static": false, "offset": 16 }
+      ]
+    },
+    {
+      "image": "Timberborn.SceneLoading",
+      "namespace": "Timberborn.SceneLoading",
+      "name": "SceneLoader",
+      "fields": [
+        { "name": "_isLoading", "type": "bool", "static": false, "offset": 56 },
+        { "name": "_assetLoader", "type": "Timberborn.AssetSystem.IAssetLoader", "static": false, "offset": 24 },
+        { "name": "_sceneParameters", "type": "Timberborn.SceneLoading.ISceneParameters", "static": false, "offset": 40 }
+      ]
+    },
+    {
+      "image": "Timberborn.ScienceSystem",
+      "namespace": "Timberborn.ScienceSystem",
+      "name": "BuildingUnlockingService",
+      "fields": [
+        { "name": "_unlockedBuildings", "type": "System.Collections.Generic.HashSet<string>", "static": false, "offset": 72 },
+        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 48 }
+      ]
+    },
+    {
+      "image": "Timberborn.SingletonSystem",
+      "namespace": "Timberborn.SingletonSystem",
+      "name": "EventBus",
+      "fields": []
+    },
+    {
+      "image": "Timberborn.SingletonSystem",
+      "namespace": "Timberborn.SingletonSystem",
+      "name": "SingletonListener",
+      "fields": [
+        { "name": "_allSingletons", "type": "System.Collections.Immutable.ImmutableArray<object>", "static": false, "offset": 32 }
+      ]
+    },
+    {
+      "image": "Timberborn.SingletonSystem",
+      "namespace": "Timberborn.SingletonSystem",
+      "name": "SingletonRepository",
+      "fields": [
+        { "name": "_singletonListener", "type": "Timberborn.SingletonSystem.SingletonListener", "static": false, "offset": 16 }
+      ]
+    },
+    {
+      "image": "Timberborn.TimeSystem",
+      "namespace": "Timberborn.TimeSystem",
+      "name": "DayNightCycle",
+      "fields": [
+        { "name": "<DayNumber>k__BackingField", "requested": "DayNumber", "type": "int", "static": false, "offset": 72 },
+        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 16 }
+      ]
+    }
+  ]
+}

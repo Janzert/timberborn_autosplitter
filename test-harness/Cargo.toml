@@ -9,6 +9,12 @@ description = "Test harness for the Timberborn auto splitter: fake memory and a 
 # dev-depends on this crate, so the arrow only points one way; a test owns both
 # and hands the splitter's future to `drive`.
 [dependencies]
+# For fixtures/*.json: the committed facts a synthetic world is built from.
+# Reading it by hand is a tokeniser and an escape table nobody should own, and
+# this crate is dev-only -- it is never built for wasm and never ships. The
+# schema itself is still hand-mapped in `fixture`, so a malformed fixture fails
+# with the field it stumbled on rather than a serde path.
+serde_json = "1.0.151"
 
 # Only for SIGSTOP/SIGCONT and the signal handlers that undo them; everything
 # else here is std. Dev-only, and never built for wasm.

@@ -1,0 +1,14 @@
+[package]
+name = "tb-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Writes fixtures/<game version>.json: the splitter's layout facts, merged from the assemblies and from a memory snapshot"
+
+# Its own crate because it needs asr, and the harness deliberately does not.
+# The harness fakes the runtime asr calls into; a tool that also *uses* asr
+# would make that circular to read, if not to compile.
+[dependencies]
+test-harness = { path = "../test-harness" }
+asr = { git = "https://github.com/LiveSplit/asr", features = ["alloc", "flags", "unity"] }
+serde_json = "1.0.151"

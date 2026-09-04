@@ -2,7 +2,7 @@
 # binary can be built by name. `cargo build` in this directory still builds only
 # this package, and so still only the wasm artifact.
 [workspace]
-members = ["test-harness", "tb-ptrace-open", "tb-record"]
+members = ["test-harness", "tb-fixture", "tb-ptrace-open", "tb-record"]
 
 [package]
 name = "timberborn_autosplitter"
@@ -35,6 +35,15 @@ asr = { path = "vendor/asr" }
 # never built for wasm and the shipped artifact cannot depend on it.
 [dev-dependencies]
 test-harness = { path = "test-harness" }
+# The synthetic-world tests ask asr directly whether it can attach to what the
+# builder wrote, rather than inferring it from the splitter's behaviour. That
+# question has to be put to asr itself, so asr is a dev-dependency as well as a
+# dependency; the `[patch]` above redirects both to the submodule.
+asr = { git = "https://github.com/LiveSplit/asr", features = [
+    "alloc",
+    "flags",
+    "unity",
+] }
 
 [features]
 # Tests that need a memory snapshot of a real game. Gated rather than skipped:
