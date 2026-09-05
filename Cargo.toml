@@ -6,7 +6,7 @@ members = ["test-harness", "tb-fixture", "tb-ptrace-open", "tb-record"]
 
 [package]
 name = "timberborn_autosplitter"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "LiveSplit auto splitter for Timberborn, reading the game's memory rather than running a mod"
 license = "MIT"

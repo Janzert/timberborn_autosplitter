@@ -3,16 +3,21 @@
 What changed between releases, from a runner's point of view. Dates are the
 release date.
 
-## Unreleased
+## 0.3 — 2026-09-05
+
+Mostly about what the splitter costs while you play. Starting a game used to
+mean a multi-second search of the whole process; it no longer does. Two bugs in
+the scanning code underneath it are also fixed, one of which could take the
+splitter down outright.
 
 ### Added
 
 - **A splits file for Iron Teeth**,
   [`examples/Timberborn-Wonder-IronTeeth.lss`](examples/Timberborn-Wonder-IronTeeth.lss),
-  alongside the Folktails one. Same seven segments; the faction specific two
-  carry the Numbercruncher and the Earth Repopulator, with that faction's
-  icons. Both are attached to the release, so pick the one for the faction you
-  run.
+  alongside the Folktails one — closing the one known gap listed against 0.2.
+  Same seven segments; the faction specific ones carry the Numbercruncher and
+  the Earth Repopulator, with that faction's icons. Both files are attached to
+  the release, so pick the one for the faction you run.
 
 ### Changed
 
@@ -34,6 +39,39 @@ release date.
   goes back to full rate the moment it attaches, so nothing about split timing
   changes; the only cost is up to a second more before it notices the game has
   started.
+
+### Fixed
+
+Both of these are in the scanning library the splitter is built on, fixed in
+the copy it vendors. Neither has been seen to bite a real run here, and neither
+would have announced itself if it had.
+
+- **A scan could crash the splitter outright, depending on where the game's
+  code happened to land.** Scans work a page at a time and carry the tail of
+  one page onto the front of the next, and the offset that tail came from was
+  wrong for a memory range that does not begin or end on a page boundary. One
+  case asks for more bytes than the page held and panics; the other quietly
+  reads bytes it never fetched, so a search can miss what it is looking for.
+  Which you get depends on the game build's layout — roughly one build in
+  sixteen for the panicking half — not on anything a runner does.
+
+- **Every scan read and wrote memory that was no longer in use.** The iterator
+  a scan returns held a buffer belonging to a function that had already
+  returned. Attaching to the game runs one of these, so it was on the path
+  every session took. It behaved for as long as that memory stayed unclaimed,
+  which is not a guarantee of anything.
+
+### Verified
+
+Game build 1.1.2.4 (Unity 6000.5), both platforms, in a single session each:
+
+- **Windows**, LiveSplit 1.8.37 — four scene loads, two new games plus an
+  end-of-run save with 16171 entities, then a fourth new game, with a trip
+  through the main menu between each.
+- **Linux** under Proton — six games in one process, including the same
+  end-of-run save.
+
+One memory search in each session, before any game existed, and none after.
 
 ## 0.2 — 2026-09-02
 
