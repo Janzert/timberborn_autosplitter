@@ -91,19 +91,30 @@ const WINDOW: u64 = 64 << 10;
 /// rest of the session.
 const MISSES_BEFORE_REFINDING: u32 = 3;
 
-/// Refuse to treat anything larger as a candidate table.
+/// How much of a range this module is ever willing to read.
 ///
-/// A bound on the worst case, and the margin is thinner than it looks. The
-/// table itself is 2 MiB on every build measured, but what is being bounded is
-/// the *mapped range*, which coalesces with its neighbours during a load: 28
-/// MiB on Linux and 48 MiB on Windows, both transient. A discovery that landed
-/// inside a spike bigger than this would skip the real table's range and find
-/// nothing, and 48 against 64 is not much room.
+/// One meaning, used in both places it is needed: deciding whether a candidate
+/// is a table, and reading the table's entries. It is deliberately *not* a rule
+/// about which ranges may be considered.
 ///
-/// It fails safe -- the next attempt, once the mapping has settled, finds it --
-/// and `header_words` abandons a heap section after sixty-five headers, so a
-/// generous bound costs little. Worth raising if a spike is ever seen near it.
-const MAX_TABLE_BYTES: u64 = 64 << 20;
+/// That distinction matters, because what gets measured is the mapped range
+/// rather than the table. The table is 2 MiB on every build seen, but its
+/// mapping coalesces with its neighbours during a load -- 28 MiB on Linux, 48
+/// on Windows, both transient. Rejecting oversized candidates outright, which
+/// this constant used to do, meant a discovery landing inside a spike would
+/// skip the real table's range and find nothing; 48 against 64 was not much
+/// room.
+///
+/// As a read bound it cannot do that. Reading only the first 64 MiB of a
+/// candidate is safe because the table starts at the base, so what gets cut off
+/// is the coalesced neighbours and never the entries. What it gives up is being
+/// able to rule out a very large range that is *not* a heap section by reading
+/// all of it -- and `header_words` already abandons a heap section after
+/// sixty-five headers, so the only case left is a large range holding a pointer
+/// to the anchor and no object headers at all, which in practice is the table.
+/// A wrong pick is not fatal either: it misses, and three misses have it
+/// dropped and found again.
+const MAX_RANGE_READ: u64 = 64 << 20;
 
 /// What a search through the table turned up.
 pub struct Search {
@@ -182,7 +193,7 @@ impl ReferenceTable {
 
         let mut candidates: Vec<(Address, u64)> = Vec::new();
         for &range in ranges {
-            if range.1 <= MAX_TABLE_BYTES && !candidates.contains(&range) {
+            if !candidates.contains(&range) {
                 candidates.push(range);
             }
         }
@@ -193,8 +204,19 @@ impl ReferenceTable {
             if base <= anchor && anchor < base.add(size) {
                 continue;
             }
-            let headers =
-                header_words(process, base, size, metadata, MAX_HEADER_WORDS, &mut on_tick).await;
+            // Bounded by how much we will read rather than by refusing to look:
+            // a range that has coalesced to hundreds of megabytes is still the
+            // table if the table sits at its base. See MAX_RANGE_READ.
+            let looked_at = size.min(MAX_RANGE_READ);
+            let headers = header_words(
+                process,
+                base,
+                looked_at,
+                metadata,
+                MAX_HEADER_WORDS,
+                &mut on_tick,
+            )
+            .await;
             if headers > MAX_HEADER_WORDS {
                 continue;
             }
@@ -240,11 +262,12 @@ impl ReferenceTable {
 
     /// How far the table currently extends, read fresh from the process.
     ///
-    /// Never cached: see the note on [`ReferenceTable`]. Capped so that a
-    /// misread range cannot turn a search into a sweep of something else.
+    /// Never cached: see the note on [`ReferenceTable`]. Capped at
+    /// [`MAX_RANGE_READ`] so that a range which has coalesced with its
+    /// neighbours cannot turn a search into a sweep of something else.
     fn extent(&self, process: &Process) -> Option<u64> {
-        let size = region_containing(process, self.base)
-            .map(|(_, size)| size.min(MAX_TABLE_BYTES))?;
+        let size =
+            region_containing(process, self.base).map(|(_, size)| size.min(MAX_RANGE_READ))?;
         if size != self.seen.get() {
             asr::print_message(&format!(
                 "[table] {} is now {} KiB, was {} KiB.",

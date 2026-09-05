@@ -340,7 +340,6 @@ impl Scan {
         }
         self
     }
-
 }
 
 /// Reads the vtable pointer of a managed object, i.e. its class identity.
