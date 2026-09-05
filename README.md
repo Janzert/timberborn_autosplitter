@@ -47,16 +47,19 @@ measured.
 ## Setup
 
 No build needed to try it — the release carries a prebuilt module, and
-[`examples/`](examples/) has a splits file and a layout to start from.
+[`examples/`](examples/) has a splits file per faction and a layout to start
+from.
 [`CHANGELOG.md`](CHANGELOG.md) says what changed if you are updating from an
 earlier one.
 
 1. From the [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest),
    download
    [`timberborn_autosplitter.wasm`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/timberborn_autosplitter.wasm),
-   and the two example files:
+   the splits file for the faction you run —
    [`Timberborn-Wonder-Folktails.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-Folktails.lss)
-   and
+   or
+   [`Timberborn-Wonder-IronTeeth.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-IronTeeth.lss)
+   — and
    [`Timberborn.lsl`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn.lsl).
 2. In LiveSplit, right-click → **Open Splits** → **From File...** and pick the
    `.lss`. Then right-click → **Open Layout** → **From File...** and pick the
@@ -82,10 +85,11 @@ The Auto Splitting Runtime component ships with LiveSplit itself — this was
 tested against 1.8.29 — so there is nothing else to install, and nothing is
 added to the game.
 
-The example splits are for a **Folktails** run: the segment names and icons
-are that faction's, so an Iron Teeth run wants its own file, with the
-Numbercruncher and the Earth Repopulator in place of the Observatory and the
-Earth Recultivator. The layout is faction-neutral either way.
+There is a splits file for each faction, because the segment names and icons
+are the faction's own: the Iron Teeth one has the Numbercruncher and the Earth
+Repopulator where the Folktails one has the Observatory and the Earth
+Recultivator. The other five segments are the same either way, as are the
+splitter and the layout — only the `.lss` differs.
 
 Order the seven splits to match the route **you** run rather than the order
 they are listed in: each fires when you achieve it, so a `.lss` ordered the

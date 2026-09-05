@@ -5,6 +5,15 @@ release date.
 
 ## Unreleased
 
+### Added
+
+- **A splits file for Iron Teeth**,
+  [`examples/Timberborn-Wonder-IronTeeth.lss`](examples/Timberborn-Wonder-IronTeeth.lss),
+  alongside the Folktails one. Same seven segments; the faction specific two
+  carry the Numbercruncher and the Earth Repopulator, with that faction's
+  icons. Both are attached to the release, so pick the one for the faction you
+  run.
+
 ### Changed
 
 - **Starting a game no longer costs a multi-second sweep of the game's

@@ -75,4 +75,5 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm \
             examples/Timberborn-Wonder-Folktails.lss \
+            examples/Timberborn-Wonder-IronTeeth.lss \
             examples/Timberborn.lsl --clobber
