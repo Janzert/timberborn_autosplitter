@@ -285,11 +285,16 @@ impl Locatable {
         if !search.readable {
             return None;
         }
-        asr::print_message(&alloc::format!(
-            "[table] {}: {} live instances.",
-            self.name,
-            search.instances.len()
-        ));
+        // Only when it found something. An empty result is either followed by
+        // a sweep, whose reason line carries the count, or by another attempt
+        // -- and the run-start bind makes a dozen of those per load.
+        if !search.instances.is_empty() {
+            asr::print_message(&alloc::format!(
+                "[table] {}: {} live instances.",
+                self.name,
+                search.instances.len()
+            ));
+        }
         Some(Found {
             instances: search.instances,
             conclusive: false,
@@ -331,17 +336,30 @@ impl Locatable {
     /// alongside the incoming one's, and neither address is known ahead of
     /// time, so excluding a known address has nothing to exclude. A predicate
     /// on the object's own state can still tell them apart.
+    /// `may_sweep` false asks only the reference table. For a caller that can
+    /// afford to be told "not yet" and ask again -- the run-start bind, which
+    /// has a whole scene load to work in and whose object reaches the heap
+    /// before the runtime holds a reference to it.
     pub async fn find_matching(
         &self,
         process: &Process,
         limit: usize,
         table: Option<&ReferenceTable>,
+        may_sweep: bool,
         accept: impl Fn(Address) -> bool,
     ) -> Found {
         let picked = |found: &Found| found.instances.iter().position(|&address| accept(address));
-        let found = self
-            .table_then_sweep(process, Some(limit), table, |f| picked(f).is_some())
-            .await;
+        let found = if may_sweep {
+            self.table_then_sweep(process, Some(limit), table, |f| picked(f).is_some())
+                .await
+        } else {
+            self.from_table(process, Some(limit), table, || {})
+                .await
+                .unwrap_or_else(|| Found {
+                    instances: Vec::new(),
+                    conclusive: false,
+                })
+        };
         match picked(&found) {
             Some(i) => Found {
                 instances: alloc::vec![found.instances[i]],

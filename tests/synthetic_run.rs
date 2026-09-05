@@ -176,7 +176,11 @@ fn sweeps_for_what_the_table_does_not_hold() {
         |version, world| {
             // The table was found and asked, and had nothing.
             require(world, version, "[table] found at");
-            require(world, version, "[table] SingletonRepository: 0 live instances");
+            require(
+                world,
+                version,
+                "full sweep -- the reference table has no container in it",
+            );
             // And the sweep behind it got there anyway.
             require(world, version, "[scan] SingletonRepository starting");
             require(world, version, "The game's singleton container is at");
@@ -251,6 +255,68 @@ fn gives_up_looking_for_a_table_rather_than_sweeping_forever() {
             world.logged("no reference table after three tries"),
             "{}: gave up without saying so; log was {:#?}",
             fixture.game_version,
+            world.log
+        );
+    }
+}
+
+/// The table's size is never remembered, because the real one grows in place.
+///
+/// Measured live: it doubled from 2 MiB to 4 MiB across two games of one
+/// session, and everything registered after that landed past the old end. A
+/// splitter holding the size it first saw goes on reading a range that no
+/// longer has anything current in it — and says nothing, because reading it
+/// still succeeds. Two games in, every search was sweeping 7 GiB, and the only
+/// clue was the fallback reasons in the log.
+///
+/// The world here is a scene load in progress, which is what opens a window
+/// wide enough to show it: the table is found while the load runs, the table
+/// grows during it, and the container is not looked for until the load ends.
+/// The container's entry sits past the old end, so before the growth the table
+/// genuinely cannot answer and afterwards it can.
+#[test]
+fn notices_the_reference_table_growing() {
+    /// `InitializationState.Waiting`: a game still coming up, which is what a
+    /// load in progress means.
+    const WAITING: i32 = 0;
+    const GROW_AT: usize = 40;
+    const LOAD_ENDS: usize = 120;
+
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for fixture in &fixtures {
+        let mut scene = fixture::game::Scene::new(fixture).reference_table_grows();
+        let services = scene.core_services(WAITING);
+        scene.set_i32(&services.clock, "DayNumber", 1);
+        let loader = scene.scene_loader(true, true);
+        scene.register(&loader);
+        let growth = scene.growth().expect("a growth switch");
+        let (process, live) = scene.finish_live();
+
+        let mut tick = 0usize;
+        let world = test_harness::drive_with(
+            World::new().with_process(process),
+            timberborn_autosplitter::main(),
+            TICKS,
+            |_, _| {
+                tick += 1;
+                if tick == GROW_AT {
+                    growth.set(true);
+                }
+                if tick == LOAD_ENDS {
+                    live.set_u8(&loader, "_isLoading", 0);
+                }
+                true
+            },
+        );
+
+        let version = &fixture.game_version;
+        require(&world, version, "[table] found at");
+        require(&world, version, "KiB, was ");
+        require(&world, version, "The game's singleton container is at");
+        assert!(
+            !world.logged("[scan] SingletonRepository starting"),
+            "{version}: swept for the container instead of re-reading the grown table; \
+             log was {:#?}",
             world.log
         );
     }

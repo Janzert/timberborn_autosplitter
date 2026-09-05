@@ -177,6 +177,26 @@ const AMBIGUOUS_RETRY_TICKS: u32 = detached_ticks(1);
 /// timescale anyway.
 const RESCAN_DELAY_TICKS: u32 = 120;
 
+/// How many times to ask the reference table for the incoming
+/// `GameInitializer` during a load before falling back to a sweep, and how
+/// often to ask.
+///
+/// The object reaches the heap before the runtime has a reference to it, so
+/// the first look during a load misses it. Measured on Linux across three
+/// games: it missed every time, and each miss cost a sweep of 1015, 4145 and
+/// 4582 MiB. Asking again is cheap -- a table search is tens of megabytes
+/// against thousands -- and a load lasts about ten seconds, so spending the
+/// first two or three of them asking costs nothing that matters.
+///
+/// The sweep is still behind it, and the budget is deliberately a fraction of
+/// the window: binding after the load has finished is always too late, so
+/// running out of table attempts has to leave time for the sweep to finish.
+const RUN_START_TABLE_TRIES: u32 = 12;
+
+/// Ticks between those attempts, ~0.2s. Each search reads tens of megabytes,
+/// so asking every tick would cost more than the sweep it is avoiding.
+const RUN_START_TABLE_RETRY_TICKS: u32 = 24;
+
 /// How many times to go looking for the reference table before settling for
 /// sweeps.
 ///
@@ -372,6 +392,10 @@ async fn run(process: &Process, settings: &mut Settings) {
         // sampled throughout, since on the rising edge they are still the
         // previous load's.
         let mut run_start = None;
+        // How long this load has run and how often the table has been asked
+        // for the initializer, which together pace the bind below.
+        let mut loading_ticks = 0u32;
+        let mut table_tries = 0u32;
         while scene.is_loading(process).unwrap_or(false) {
             // We are here for this one, whatever it turns out to be.
             scene.observed = true;
@@ -386,19 +410,29 @@ async fn run(process: &Process, settings: &mut Settings) {
             // exist yet on the first passes.
             if run_start.is_none() {
                 if let Scene::Game { new_game } = scene.loaded {
-                    run_start = RunStart::resolve_during_load(
-                        process,
-                        &module,
-                        event_bus_vtable,
-                        Some(new_game),
-                        // Inside this loop, so by definition watched.
-                        true,
-                        previous_run_start,
-                        table.as_ref(),
-                    )
-                    .await;
+                    // The initializer is on the heap before the runtime holds a
+                    // reference to it, so the first look misses. Ask the table
+                    // again a few times -- tens of megabytes apiece -- before
+                    // paying for a sweep of thousands.
+                    let may_sweep = table_tries >= RUN_START_TABLE_TRIES;
+                    if may_sweep || loading_ticks.is_multiple_of(RUN_START_TABLE_RETRY_TICKS) {
+                        table_tries += 1;
+                        run_start = RunStart::resolve_during_load(
+                            process,
+                            &module,
+                            event_bus_vtable,
+                            Some(new_game),
+                            // Inside this loop, so by definition watched.
+                            true,
+                            previous_run_start,
+                            table.as_ref(),
+                            may_sweep,
+                        )
+                        .await;
+                    }
                 }
             }
+            loading_ticks += 1;
             next_tick().await;
         }
 
@@ -1890,6 +1924,9 @@ impl RunStart {
             watched_load,
             skip,
             table,
+            // After the load there is nothing left to wait for, so a miss is a
+            // miss and the sweep is the only thing that can still answer.
+            true,
             false,
         )
         .await
@@ -1918,6 +1955,7 @@ impl RunStart {
         watched_load: bool,
         skip: Option<Address>,
         table: Option<&table::ReferenceTable>,
+        may_sweep: bool,
     ) -> Option<Self> {
         Self::bind(
             process,
@@ -1927,6 +1965,7 @@ impl RunStart {
             watched_load,
             skip,
             table,
+            may_sweep,
             true,
         )
         .await
@@ -1941,6 +1980,7 @@ impl RunStart {
         watched_load: bool,
         skip: Option<Address>,
         table: Option<&table::ReferenceTable>,
+        may_sweep: bool,
         require_pre_ui: bool,
     ) -> Option<Self> {
         let class = service::Locatable::new(
@@ -1952,7 +1992,7 @@ impl RunStart {
         )?;
         let offset = class.field(process, module, "_initializationState")?;
         let instance = class
-            .find_matching(process, 4, table, |address| {
+            .find_matching(process, 4, table, may_sweep, |address| {
                 if Some(address) == skip {
                     return false;
                 }

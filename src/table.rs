@@ -39,6 +39,8 @@
 //! depends on it: a table search never reports a conclusive absence, and the
 //! full sweep stays behind it.
 
+use core::cell::Cell;
+
 use alloc::{format, vec, vec::Vec};
 
 use asr::{future::next_tick, Address, MemoryRangeFlags, Process};
@@ -87,9 +89,22 @@ pub struct Search {
 }
 
 /// Where the runtime keeps its references to live managed objects.
+///
+/// Only the base is kept. **The table grows in place**, and caching the size it
+/// had when it was found is a bug that hides itself: measured live, it doubled
+/// from 2 MiB to 4 MiB across two games, every new entry landed past the old
+/// horizon, and searches went on succeeding at reading a range that no longer
+/// held anything current. Nothing failed -- the splitter simply swept for
+/// everything, for the rest of the session, having been told by its own cached
+/// bound that the table did not have what it wanted.
+///
+/// So the extent is re-read from the process on every search. It is the one
+/// number here that is not allowed to be remembered.
 pub struct ReferenceTable {
     base: Address,
-    size: u64,
+    /// The extent last reported, only so growth can be logged once rather than
+    /// on every search.
+    seen: Cell<u64>,
 }
 
 impl ReferenceTable {
@@ -143,7 +158,10 @@ impl ReferenceTable {
                 "[table] found at {base}, {} KiB, {headers} object headers in it.",
                 size >> 10,
             ));
-            return Some(Self { base, size });
+            return Some(Self {
+                base,
+                seen: Cell::new(size),
+            });
         }
         asr::print_message("[table] no candidate range was one; sweeps it is.");
         None
@@ -155,6 +173,25 @@ impl ReferenceTable {
     /// failed lookup for on every scene change.
     pub fn still_mapped(&self, process: &Process) -> bool {
         process.read::<u64>(self.base).is_ok()
+    }
+
+    /// How far the table currently extends, read fresh from the process.
+    ///
+    /// Never cached: see the note on [`ReferenceTable`]. Capped so that a
+    /// misread range cannot turn a search into a sweep of something else.
+    fn extent(&self, process: &Process) -> Option<u64> {
+        let size = region_containing(process, self.base)
+            .map(|(_, size)| size.min(MAX_TABLE_BYTES))?;
+        if size != self.seen.get() {
+            asr::print_message(&format!(
+                "[table] {} is now {} KiB, was {} KiB.",
+                self.base,
+                size >> 10,
+                self.seen.get() >> 10,
+            ));
+            self.seen.set(size);
+        }
+        Some(size)
     }
 
     /// Every live instance of the class with this vtable, up to `limit`.
@@ -172,7 +209,13 @@ impl ReferenceTable {
         mut on_tick: impl FnMut(),
     ) -> Search {
         let ranges = writable_ranges(process);
-        let Some(mut entries) = self.entries(process, &ranges, &mut on_tick).await else {
+        let Some(size) = self.extent(process) else {
+            return Search {
+                instances: Vec::new(),
+                readable: false,
+            };
+        };
+        let Some(mut entries) = self.entries(process, size, &ranges, &mut on_tick).await else {
             return Search {
                 instances: Vec::new(),
                 readable: false,
@@ -233,6 +276,7 @@ impl ReferenceTable {
     async fn entries(
         &self,
         process: &Process,
+        size: u64,
         ranges: &[(u64, u64)],
         on_tick: &mut impl FnMut(),
     ) -> Option<Vec<u64>> {
@@ -241,8 +285,8 @@ impl ReferenceTable {
         let mut read_any = false;
         let mut offset = 0u64;
         let mut used = 0u64;
-        while offset < self.size {
-            let words = (((self.size - offset) / 8) as usize).min(buf.len());
+        while offset < size {
+            let words = (((size - offset) / 8) as usize).min(buf.len());
             let at = self.base.add(offset);
             if process
                 .read_into_buf(at, bytemuck::cast_slice_mut(&mut buf[..words]))

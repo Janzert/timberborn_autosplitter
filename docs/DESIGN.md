@@ -236,6 +236,33 @@ menu, and the table is found there — at `0x230000000` on 1.0.13.1 and
 in a game: four or five candidate ranges at the menu against seven to ten once
 a game is up.
 
+#### It grows in place, so its size is never remembered
+
+The table doubled from 2 MiB to 4 MiB across two games of one session, in
+place: same base, a bigger mapping. Its own header records this -- an end
+pointer that moved from `base+0x1fffe0` to `base+0x3fffe0`, with the old value
+kept beside it and a counter going 1 to 2.
+
+Everything registered after the growth lands past the old end, so a splitter
+holding the size it first saw reads a range that no longer contains anything
+current. **And nothing fails.** The reads still succeed, the range is still
+mapped, so `still_mapped` is satisfied and the table is never looked for again;
+every search simply misses and falls back. Measured live: two games into a
+session the splitter was sweeping 7 GiB for both the container and the run
+start, having been told by its own cached bound that the table did not have
+them. The only clue was the fallback reasons in the log, which is the entire
+reason those exist.
+
+So [`ReferenceTable`] keeps the base and nothing else, and reads the extent
+back from the process on every search. It is the one number here that is not
+allowed to be remembered.
+
+`notices_the_reference_table_growing` in `tests/synthetic_run.rs` pins it. The
+world is a scene load in progress, because that is what opens a window wide
+enough to express the bug: the table is found while the load runs, grows during
+it, and the container is not looked for until the load ends. Re-introducing the
+cached size fails it.
+
 #### What it is not
 
 **It is not a superset of the heap.** A capture taken while a second game loaded

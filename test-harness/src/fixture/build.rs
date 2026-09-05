@@ -222,6 +222,9 @@ pub struct Builder {
     /// Whether to give the process a reference table at all. See
     /// [`Builder::without_reference_table`].
     reference_table: bool,
+    /// Set when the reference table's range is reported short until this is
+    /// flipped. See [`Builder::reference_table_grows`].
+    growing_reference_table: Option<std::rc::Rc<std::cell::Cell<bool>>>,
 }
 
 impl Builder {
@@ -311,6 +314,7 @@ impl Builder {
             heap: Region::new(HEAP_BASE),
             references: Vec::new(),
             reference_table: true,
+            growing_reference_table: None,
             classes,
             instances,
             game_version: fixture.game_version.clone(),
@@ -393,6 +397,27 @@ impl Builder {
         self
     }
 
+    /// Reports the reference table's range short to begin with, then at its
+    /// real size.
+    ///
+    /// The real one grows in place: measured live, it doubled from 2 MiB to
+    /// 4 MiB across two games of one session, and everything registered after
+    /// that landed past the old end. A splitter that remembers the size it
+    /// first saw goes on reading a range that no longer holds anything current
+    /// -- and says nothing, because reading it still succeeds. That is the bug
+    /// this models.
+    pub fn reference_table_grows(mut self) -> Self {
+        self.growing_reference_table = Some(Default::default());
+        self
+    }
+
+    /// The switch that makes it grow, for a test to flip mid-run. `None`
+    /// unless [`reference_table_grows`](Self::reference_table_grows) was asked
+    /// for.
+    pub fn growth(&self) -> Option<std::rc::Rc<std::cell::Cell<bool>>> {
+        self.growing_reference_table.clone()
+    }
+
     /// Drops an object's entry from the reference table, leaving the object
     /// itself on the heap.
     ///
@@ -472,13 +497,33 @@ impl Builder {
         let mut table_size = 0;
         if self.reference_table {
             let mut table = Vec::with_capacity(self.references.len() * 8);
-            for object in &self.references {
+            // When the table is to grow, the *last* entry is pushed past the
+            // first page, so that reporting the range short actually hides it
+            // -- which is what growth does to a splitter that remembered the
+            // old size. Only the last, because everything else has to stay
+            // visible: the anchor above all, or the table could never be found
+            // in the first place. `Scene` creates the DI container last, so
+            // the container is what ends up hidden, which is the object the
+            // live failure was about.
+            let hidden_from = match self.growing_reference_table.is_some() {
+                true => self.references.len().saturating_sub(1),
+                false => self.references.len(),
+            };
+            for (i, object) in self.references.iter().enumerate() {
+                if i == hidden_from {
+                    table.resize(0x1000, 0);
+                }
                 table.extend_from_slice(&object.to_le_bytes());
             }
             // Never empty: a zero-length range would make every read of it
             // fail, and the splitter would find no table rather than an empty
             // one.
-            table.resize(table.len().max(0x1000), 0);
+            let least = if self.growing_reference_table.is_some() {
+                0x2000
+            } else {
+                0x1000
+            };
+            table.resize(table.len().max(least), 0);
             table_size = table.len() as u64;
             memory.put(TABLE_BASE, table);
         }
@@ -515,9 +560,9 @@ impl Builder {
             });
         }
 
-        let process = FakeProcess {
+        let mut process = FakeProcess {
             path: Some(format!("/synthetic/{}/Timberborn.exe", self.game_version)),
-            ranges,
+            ranges: ranges.clone(),
             ..FakeProcess::new(pid, "Unity Main Thre")
                 .with_module("UnityPlayer.dll", UNITY_BASE, unity.len() as u64)
                 .with_module("mono-2.0-bdwgc.dll", MONO_BASE, mono.len() as u64)
@@ -527,6 +572,27 @@ impl Builder {
                 .with_module("Timberborn.exe", GAME_BASE, 0x1000)
                 .with_memory(memory.clone())
         };
+
+        if let (Some(grown), true) = (self.growing_reference_table.clone(), table_size > 0) {
+            let modules = process.modules.clone();
+            // The first page only, which holds the entries the anchor needs
+            // and not the container's.
+            let small = 0x1000;
+            process = process.with_tables(move || {
+                let size = if grown.get() { table_size } else { small };
+                let ranges = ranges
+                    .iter()
+                    .cloned()
+                    .map(|mut range| {
+                        if range.address == TABLE_BASE {
+                            range.size = size;
+                        }
+                        range
+                    })
+                    .collect();
+                (modules.clone(), ranges)
+            });
+        }
         (process, memory)
     }
 }

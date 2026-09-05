@@ -128,6 +128,19 @@ impl Scene {
         self
     }
 
+    /// Reports the reference table short at first and at full size later,
+    /// which is what the real one does. See
+    /// [`Builder::reference_table_grows`].
+    pub fn reference_table_grows(mut self) -> Self {
+        self.builder = self.builder.reference_table_grows();
+        self
+    }
+
+    /// The switch that grows it, for a test to flip mid-run.
+    pub fn growth(&self) -> Option<std::rc::Rc<std::cell::Cell<bool>>> {
+        self.builder.growth()
+    }
+
     /// Drops an object's entry from the reference table, leaving the object
     /// itself alone.
     pub fn forget(&mut self, object: &Object) {
