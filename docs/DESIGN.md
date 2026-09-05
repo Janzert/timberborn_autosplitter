@@ -328,6 +328,36 @@ Two consequences follow, and both are in the code:
   one that recurs, which makes it the right place to pay 6% for the chance of
   not sweeping next time.
 
+#### What a healthy session looks like
+
+Worth knowing before reading a log, because the failure mode is quiet. A
+session that is working shows **one** sweep, before any game exists, and
+nothing after it:
+
+```text
+[scan] SceneLoader starting (full sweep -- no reference table found yet).
+[table] looking for the runtime's reference table.
+[table] 28 references to 6b3fb4c0.
+[table] found at 1f0000000, 2048 KiB, 2 object headers in it.
+[table] GameInitializer: 1 live instances.
+[table] SingletonRepository: 3 live instances.
+```
+
+Three lines say something has gone wrong, and none of them stops the splitter
+working:
+
+- **`[table] no candidate range was one`** -- the discriminator rejected every
+  candidate. Every search will sweep.
+- **any `full sweep` after the first game** -- the reason on the end says which
+  case it is: no table yet, the table unreadable, or the table not holding the
+  object.
+- **`[table] no reference table after three tries`** -- the search bound giving
+  up, which should not happen if a table was ever found.
+
+A pair of `GameInitializer` lines a second or two apart during a load is not a
+problem; it is the retry doing its job, the first look finding only the
+outgoing game's initializer.
+
 #### What it costs to ship
 
 The artifact grows from 167 KB to 196 KB, a little under 17%. Most of it is the

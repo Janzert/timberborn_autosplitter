@@ -263,6 +263,20 @@ It is one frame, not a run.
 Asserting that a split *fires* needs before-and-after states, which a single
 capture cannot provide -- that is what a recording is for.
 
+## Three things learned recording one
+
+- **The recorder is Linux-only.** `live.rs` reads through `/proc/<pid>/mem` and
+  parses `/proc/<pid>/maps`, and `freeze.rs` stops the process with `ptrace`.
+  Nothing about the format is, and the tests that replay a recording run
+  anywhere.
+- **Saves are shared between game builds.** Timberborn keeps them outside the
+  install, so switching builds does not switch saves and any save that matters
+  is at risk while testing. Starting a new game avoids the question.
+- **The process name is not stable across engine versions.** Build 1.0.13.1
+  reports `Timberborn.exe` where 1.1.2.4 reports `Unity Main Thre`, which is
+  why `AMBIGUOUS_NAMES` exists. Both the splitter and the recorder handle
+  either, but a capture's manifest records what was seen.
+
 ## Keep the assemblies too
 
 A snapshot is only half of what a build needs. The other half is that build's

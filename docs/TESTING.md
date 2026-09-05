@@ -62,6 +62,24 @@ what pins the bound on how often the splitter goes looking — unbounded it swep
 eleven times in eleven seconds, and the test fails at anything but three. See
 [DESIGN.md](DESIGN.md) under *Reading fewer bytes*.
 
+### What CI runs, which is more than `cargo test`
+
+`.github/workflows/build.yml`, and it is worth running all of it before pushing
+rather than the two commands that come to mind. A merge went red on formatting
+once because a pre-merge review checked clippy and stopped there.
+
+```bash
+cargo wasm
+cargo clippy --release --target wasm32-unknown-unknown -- -D warnings
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+Two of those are stricter than their bare forms: `--workspace` reaches the
+harness and the tools, and `-D warnings` fails on lints a local `cargo clippy`
+merely prints. The snapshot suite is deliberately absent — CI has no captures.
+
 ## What this catches, and what it does not
 
 Worth being explicit, because a harness like this is easy to oversell.
@@ -178,6 +196,23 @@ So they are not re-litigated.
 
 ## Open questions
 
+- **A Windows capture, and what it would take.** The reference table is found
+  by a heuristic over the *shape* of the address space, and the two platforms do
+  not resemble each other — the table sits at `0x18a40000000` on Windows against
+  `0x1f0000000` and `0x230000000` under Proton. Every regression test for that
+  heuristic is Linux-shaped, and every runner is on Windows.
+
+  The narrow version is a port of `live.rs` and `freeze.rs` and one
+  `tb-dump --freeze --state main-menu`; `scenario.rs` and `tb-record` are not
+  needed for it. Both files get *smaller* there: `VirtualQueryEx` and
+  `ReadProcessMemory` for the reads, `NtSuspendProcess` instead of stopping a
+  hundred threads one at a time, no privilege helper, and none of the Wine
+  PE-header-page inference. The real work is the seam — `capture`, `scenario`
+  and `snapshot` are `cfg(linux)` only because they sit on `live`.
+
+  Weighed against it: the tooling for keeping several game builds side by side
+  is Linux-side, so a Windows store would be one build, and renames are caught
+  offline by fixtures on either platform.
 - **How much does a capture compress?** A recording of a whole run is tens of
   gigabytes uncompressed, which is what sets the budget for how many builds and
   scenarios can be kept.
