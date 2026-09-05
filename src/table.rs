@@ -21,10 +21,12 @@
 //!
 //! # Nothing here is a fixed address
 //!
-//! The table is at `0x1f0000000` on one build and `0x230000000` on another, so
-//! it is *found* rather than tabulated: sweep once for anything pointing at an
-//! object we have already located, and the table is among the ranges that come
-//! back. See [`ReferenceTable::find`].
+//! The table is at `0x1f0000000` on one game build, `0x230000000` on another,
+//! and `0x18a40000000` on Windows -- three addresses across two builds and two
+//! platforms, sharing not even a shape. So it is *found* rather than
+//! tabulated: sweep once for anything pointing at an object we have already
+//! located, and the table is among the ranges that come back. See
+//! [`ReferenceTable::find`].
 //!
 //! # What it is, and what it is not
 //!
@@ -91,9 +93,16 @@ const MISSES_BEFORE_REFINDING: u32 = 3;
 
 /// Refuse to treat anything larger as a candidate table.
 ///
-/// Only a bound on the worst case. The table is 2 MiB on both builds measured;
-/// this leaves room for it to grow by a factor of thirty-two before the
-/// splitter would quietly stop finding it and fall back to sweeping.
+/// A bound on the worst case, and the margin is thinner than it looks. The
+/// table itself is 2 MiB on every build measured, but what is being bounded is
+/// the *mapped range*, which coalesces with its neighbours during a load: 28
+/// MiB on Linux and 48 MiB on Windows, both transient. A discovery that landed
+/// inside a spike bigger than this would skip the real table's range and find
+/// nothing, and 48 against 64 is not much room.
+///
+/// It fails safe -- the next attempt, once the mapping has settled, finds it --
+/// and `header_words` abandons a heap section after sixty-five headers, so a
+/// generous bound costs little. Worth raising if a spike is ever seen near it.
 const MAX_TABLE_BYTES: u64 = 64 << 20;
 
 /// What a search through the table turned up.

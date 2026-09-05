@@ -180,8 +180,10 @@ so those never arise.
 
 #### It is found, never tabulated
 
-The table is at `0x1f0000000` on one build and `0x230000000` on another, so an
-address would be wrong on the next update — the same reason nothing else here is
+The table is at `0x1f0000000` on one game build, `0x230000000` on another, and
+`0x18a40000000` on Windows -- three addresses across two builds and two
+platforms, sharing not even a shape -- so a tabulated address would be wrong on
+the next update, and on the other platform today — the same reason nothing else here is
 a hardcoded offset. `ReferenceTable::find` in `src/table.rs` looks for it
 instead:
 
@@ -258,11 +260,16 @@ back from the process on every search. It is the one number here that is not
 allowed to be remembered.
 
 **What is read back is the mapped range, which is an upper bound and not the
-table.** Watched live across six games, the range containing the base flaps
-during every scene load -- 2048 KiB to 8192, to 14336, to 28672 -- and returns
-to 2048 within a second or two each time. That is neighbouring anonymous
-mappings coalescing and splitting as the runtime commits and releases memory,
-with the range enumeration reporting whatever abuts the base at that instant.
+table.** The range containing the base flaps during every scene load and
+returns to 2048 KiB within a second or two each time. That is neighbouring
+anonymous mappings coalescing and splitting as the runtime commits and releases
+memory, with the range enumeration reporting whatever abuts the base at that
+instant. It is not a small effect, and it is larger on Windows:
+
+| | high-water during a load |
+|---|---|
+| Linux, six games | 28672 KiB |
+| Windows, loading a 16171-entity save | **49152 KiB** -- a 24x swing |
 
 Reading too much is harmless: the extra words become candidate object pointers,
 and the vtable check and the validator reject them. It costs a few reads during
@@ -1366,29 +1373,35 @@ a 16k-entity save and six games in one process -- it stayed where it was found.
 
 #### Windows, with the reference table
 
-LiveSplit 1.8.37, game build 1.1.2.4, two games in one process. Timings are
-arrival stamps from tailing the trace log, which carries none of its own.
+LiveSplit 1.8.37, game build 1.1.2.4. Two new games, an end-of-run save with
+16171 entities, then a fourth new game, with a trip through the main menu
+between each. Timings are arrival stamps from tailing the trace log, which
+carries none of its own.
 
 | | |
 |---|---|
-| `SceneLoader` sweep, at the menu | 1.12s, 524 of 704 MiB |
-| Table discovery sweep | 2.66s |
-| `GameInitializer` through the table | same millisecond, both games |
-| `SingletonRepository` through the table | same millisecond, both games |
-| **Second game, bytes swept** | **0**, against a 7.5 GiB process |
+| Scene loads | 4 |
+| **Full sweeps** | **1** -- the anchor, on the menu at startup, 529 of 626 MiB |
+| Everything else | served from the table |
+| Process by the end | 7.4 GiB |
 
-3.78s in total, all of it 19s before the timer started, and two `[scan]` lines
-in the whole session — both the one expected startup sweep. No fallback reason
-was printed at any point, and the discriminator never failed to pick a range.
+The two startup costs, both now above `Waiting for the game to load...`: 1.65s
+for the anchor sweep and 2.16s for the table search, 3.81s together, on an idle
+menu with nothing pending. Before the ordering fix the same work landed 2.7s
+into the first load.
 
-Against the figures above it: the same session used to sweep 6151 MiB to find
-`SingletonRepository`, and would have swept ~5 GiB again for the second game.
+The sweep is also *cheaper* than it was -- 626 MiB against 704 -- because it is
+no longer racing a load that is already growing the process, and references to
+the anchor are down from 27 to 10 for the same reason. Both were predicted from
+the recordings, where the menu offers four or five candidate ranges against
+seven to ten in a game.
 
-The instance counts also confirm the table tracks the process rather than a
-snapshot taken once: `GameInitializer` went 1 → 2 and `SingletonRepository`
-3 → 4 across the second load, the previous game's objects still being alive.
-That is exactly what `previous_run_start` and `previous_registry` exist to
-skip, and it arrives through the table unchanged.
+No `[table] no candidate range was one`, no `no reference table after three
+tries`, and not one sweep with a reason after it.
+
+An earlier Windows session, before the fixes, is what the figures above it
+describe: it swept 6151 MiB to find `SingletonRepository` and would have swept
+~5 GiB again for the second game.
 
 ### Scanning and attaching, learned the hard way
 
