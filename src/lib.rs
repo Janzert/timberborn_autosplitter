@@ -1027,15 +1027,9 @@ async fn watch(
         }
 
         if let Some(b) = &mut buildings {
-            for label in b.poll(process) {
-                let enabled = match label {
-                    "Forester" => settings.forester,
-                    "Gear Workshop" => settings.gear_workshop,
-                    "Tapper's Shack" => settings.tappers_shack,
-                    "Observatory / Numbercruncher" => settings.advanced_science,
-                    _ => settings.smelter_woodworkshop,
-                };
-                if enabled && timer::state() == TimerState::Running {
+            for trigger in b.poll(process) {
+                let label = trigger.label();
+                if trigger.enabled(settings) && timer::state() == TimerState::Running {
                     asr::print_message(&format!("Split: {label} finished."));
                     timer::split();
                 } else {
@@ -1046,7 +1040,9 @@ async fn watch(
 
         if let Some(u) = &mut unlock {
             if u.poll(process, module) {
-                if settings.unlock_wonder && timer::state() == TimerState::Running {
+                if Trigger::WonderUnlocked.enabled(settings)
+                    && timer::state() == TimerState::Running
+                {
                     asr::print_message("Split: wonder unlocked.");
                     timer::split();
                 } else {
@@ -1071,7 +1067,9 @@ async fn watch(
                          probably wrong.",
                     );
                 }
-                if settings.congratulations_screen && timer::state() == TimerState::Running {
+                if Trigger::CongratulationsScreen.enabled(settings)
+                    && timer::state() == TimerState::Running
+                {
                     asr::print_message("Run end: Congratulations screen. Splitting.");
                     timer::split();
                 } else {
@@ -1088,9 +1086,62 @@ async fn watch(
     }
 }
 
+/// Everything the splitter can split on.
+///
+/// One variant per split, and `enabled` maps each to the setting that governs
+/// it. Both matches are exhaustive, so adding a trigger cannot compile until
+/// it has been given a label and a setting. What this replaced matched on the
+/// log label with a catch-all arm, where a new building split would silently
+/// have inherited the Smelter + Wood Workshop checkbox.
+///
+/// The detectors decide *that* something happened; this decides whether it is
+/// a split. Keeping those apart is what makes adding a trigger a local change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Trigger {
+    Forester,
+    GearWorkshop,
+    TappersShack,
+    /// The Observatory for Folktails, the Numbercruncher for Iron Teeth. One
+    /// split, because the factions are separate categories.
+    AdvancedScience,
+    /// Fires on whichever of the two is finished second.
+    SmelterWoodWorkshop,
+    WonderUnlocked,
+    CongratulationsScreen,
+}
+
+impl Trigger {
+    /// What the log calls it. The building splits print this beside
+    /// "finished", and both test suites match on the result.
+    fn label(self) -> &'static str {
+        match self {
+            Trigger::Forester => "Forester",
+            Trigger::GearWorkshop => "Gear Workshop",
+            Trigger::TappersShack => "Tapper's Shack",
+            Trigger::AdvancedScience => "Observatory / Numbercruncher",
+            Trigger::SmelterWoodWorkshop => "Smelter + Wood Workshop",
+            Trigger::WonderUnlocked => "wonder unlocked",
+            Trigger::CongratulationsScreen => "Congratulations screen",
+        }
+    }
+
+    /// Whether the runner has this split turned on.
+    fn enabled(self, settings: &Settings) -> bool {
+        match self {
+            Trigger::Forester => settings.forester,
+            Trigger::GearWorkshop => settings.gear_workshop,
+            Trigger::TappersShack => settings.tappers_shack,
+            Trigger::AdvancedScience => settings.advanced_science,
+            Trigger::SmelterWoodWorkshop => settings.smelter_woodworkshop,
+            Trigger::WonderUnlocked => settings.unlock_wonder,
+            Trigger::CongratulationsScreen => settings.congratulations_screen,
+        }
+    }
+}
+
 /// A building split: the first time any of `templates` is finished.
 struct BuildingSplit {
-    label: &'static str,
+    trigger: Trigger,
     templates: &'static [&'static str],
 }
 
@@ -1099,21 +1150,21 @@ struct BuildingSplit {
 /// differ.
 const BUILDING_SPLITS: &[BuildingSplit] = &[
     BuildingSplit {
-        label: "Forester",
+        trigger: Trigger::Forester,
         templates: &["Forester.Folktails", "Forester.IronTeeth"],
     },
     BuildingSplit {
-        label: "Gear Workshop",
+        trigger: Trigger::GearWorkshop,
         templates: &["GearWorkshop.Folktails", "GearWorkshop.IronTeeth"],
     },
     BuildingSplit {
-        label: "Tapper's Shack",
+        trigger: Trigger::TappersShack,
         templates: &["TappersShack.Folktails", "TappersShack.IronTeeth"],
     },
     // The two factions' advanced science buildings share one split: they are
     // separate categories, so only one of these can be built in a given run.
     BuildingSplit {
-        label: "Observatory / Numbercruncher",
+        trigger: Trigger::AdvancedScience,
         templates: &["Observatory.Folktails", "Numbercruncher.IronTeeth"],
     },
 ];
@@ -1483,7 +1534,7 @@ impl Buildings {
         let mut names = Vec::new();
         for (index, split) in BUILDING_SPLITS.iter().enumerate() {
             if self.finished[index] {
-                names.push(split.label);
+                names.push(split.trigger.label());
             }
         }
         if self.finished[Self::SMELTER_INDEX] {
@@ -1519,8 +1570,8 @@ impl Buildings {
         self.finished = alloc::vec![false; Self::TRACKED];
     }
 
-    /// Returns the labels that just completed.
-    fn poll(&mut self, process: &Process) -> Vec<&'static str> {
+    /// Returns the triggers that just fired.
+    fn poll(&mut self, process: &Process) -> Vec<Trigger> {
         let count = self.count(process);
 
         // A removal slid part of the tail down past the mark, so give back as
@@ -1546,7 +1597,7 @@ impl Buildings {
                 continue;
             }
             if let Some(split) = BUILDING_SPLITS.get(slot) {
-                fired.push(split.label);
+                fired.push(split.trigger);
             }
         }
 
@@ -1556,7 +1607,7 @@ impl Buildings {
             self.on_arrival[Self::SMELTER_INDEX] && self.on_arrival[Self::WOOD_WORKSHOP_INDEX];
         if both && !both_on_arrival && !self.combined_fired {
             self.combined_fired = true;
-            fired.push("Smelter + Wood Workshop");
+            fired.push(Trigger::SmelterWoodWorkshop);
         }
         fired
     }
