@@ -90,6 +90,14 @@ pub struct Stats {
 /// amount of work and returns, so the caller can yield between slices.
 pub struct Scan {
     needle: u64,
+    /// A second value to notice in passing.
+    ///
+    /// A sweep already reads every byte, so looking for one more value costs a
+    /// comparison per word against reads that dominate by orders of magnitude.
+    /// It is how the reference table gets found without a pass of its own: give
+    /// a sweep the address of something already located, and the ranges holding
+    /// pointers to it come back for nothing.
+    anchor: Option<u64>,
     validator: Option<Validator>,
     limit: Option<usize>,
     ranges: Vec<(Address, u64)>,
@@ -101,6 +109,8 @@ pub struct Scan {
     /// The base of the range each entry in `found` came from. Same length as
     /// `found`, and what [`crate::table`] picks its candidate ranges out of.
     pub found_ranges: Vec<(Address, u64)>,
+    /// Ranges a pointer to `anchor` was seen in, deduplicated.
+    pub anchor_ranges: Vec<(Address, u64)>,
     /// Matches that failed validation. Kept for diagnostics.
     pub rejected: Vec<Address>,
     pub stats: Stats,
@@ -136,6 +146,8 @@ impl Scan {
 
         Self {
             needle: vtable.value(),
+            anchor: None,
+            anchor_ranges: Vec::new(),
             validator: None,
             limit: None,
             ranges,
@@ -157,6 +169,15 @@ impl Scan {
     /// all, which would otherwise look like a clean negative.
     pub fn is_conclusive(&self) -> bool {
         self.stats.bytes_total > 0 && self.stats.bytes_unreadable == 0
+    }
+
+    /// Also note which ranges hold a pointer to `anchor`, in the same pass.
+    ///
+    /// For finding the reference table off the back of a sweep that was
+    /// happening anyway, rather than paying for one of its own.
+    pub fn also_finding(mut self, anchor: Address) -> Self {
+        self.anchor = Some(anchor.value());
+        self
     }
 
     /// Check each match, sorting them into `found` and `rejected`.
@@ -236,6 +257,23 @@ impl Scan {
     /// Compares the first `words` of the buffer against the needle, recording
     /// matches. Returns `true` if the scan should stop.
     fn examine(&mut self, process: &Process, start: Address, words: usize) -> bool {
+        // A separate pass rather than a second test inside the one below, so
+        // that a scan with no anchor is untouched -- measured, folding the two
+        // together cost 55% of the comparison loop, which is around 5% of a
+        // sweep under Proton, and it would have been paid by every sweep
+        // whether it wanted an anchor or not. As a second pass it is paid only
+        // when asked for, and over a chunk that is still in cache from the read
+        // that filled it.
+        if let Some(anchor) = self.anchor {
+            if self.buf[..words].contains(&anchor) {
+                if let Some(range) = self.ranges.get(self.range_index).copied() {
+                    if !self.anchor_ranges.contains(&range) {
+                        self.anchor_ranges.push(range);
+                    }
+                }
+            }
+        }
+
         for i in 0..words {
             if self.buf[i] != self.needle {
                 continue;

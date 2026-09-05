@@ -543,6 +543,10 @@ async fn run(process: &Process, settings: &mut Settings) {
             previous_registry,
             clock.vtable(),
             table.as_ref(),
+            // With no table, this sweep is the cheapest chance there is to
+            // find one: it reads every byte regardless, and the ranges holding
+            // a pointer to the scene loader come back with it.
+            table.is_none().then_some(scene.instance),
             || {
                 if let Some(start) = run_start.as_mut() {
                     if start.poll(process) {
@@ -552,6 +556,20 @@ async fn run(process: &Process, settings: &mut Settings) {
             },
         )
         .await;
+        // A sweep that was going to happen anyway has just handed us the
+        // candidates, so identifying the table costs no pass of its own.
+        if table.is_none() && !found.table_candidates.is_empty() {
+            table = table::ReferenceTable::identify(
+                process,
+                scene.instance,
+                &found.table_candidates,
+                || {},
+            )
+            .await;
+            if table.is_some() {
+                table_attempts = 0;
+            }
+        }
         let Some(mut registry) = found.registry else {
             asr::print_message(if found.conclusive {
                 "No singleton container with a clock in it -- no game loaded. Waiting."

@@ -28,6 +28,10 @@ pub struct Found {
     /// search through the reference table, which can only say "not among the
     /// objects the runtime is holding a reference to".
     pub conclusive: bool,
+    /// Ranges holding a pointer to the anchor a sweep was asked to notice in
+    /// passing, for identifying the reference table off the back of a sweep
+    /// that was happening anyway. Empty unless one was asked for.
+    pub table_candidates: Vec<(Address, u64)>,
 }
 
 impl Found {
@@ -222,11 +226,17 @@ impl Locatable {
         process: &Process,
         limit: Option<usize>,
         why: &str,
+        anchor: Option<Address>,
         on_tick: impl FnMut(),
     ) -> Found {
         let mut scan = scan::Scan::new(process, self.vtable).validating(self.validator);
         if let Some(n) = limit {
             scan = scan.limit(n);
+        }
+        // Only when there is no table to lose: it costs a few percent of the
+        // sweep, and buys the chance of not needing the next one.
+        if let Some(anchor) = anchor {
+            scan = scan.also_finding(anchor);
         }
         // Why, not just that: a sweep is the expensive path, and a log that
         // only says one happened leaves whoever reads it guessing whether the
@@ -257,6 +267,7 @@ impl Locatable {
         Found {
             instances: scan.found,
             conclusive,
+            table_candidates: scan.anchor_ranges,
         }
     }
 
@@ -298,6 +309,7 @@ impl Locatable {
         Some(Found {
             instances: search.instances,
             conclusive: false,
+            table_candidates: Vec::new(),
         })
     }
 
@@ -332,7 +344,10 @@ impl Locatable {
             None if table.is_some() => "the reference table could not be read".into(),
             None => "no reference table found yet".into(),
         };
-        let swept = self.sweep(process, limit, &why, || {}).await;
+        // No anchor: this path only runs when there is a table already, and a
+        // sweep behind a table that exists is not the moment to go looking for
+        // another one.
+        let swept = self.sweep(process, limit, &why, None, || {}).await;
         // The table said no and the heap said yes. That pairing is the only
         // thing that tells a table which has gone wrong from a question that
         // simply has no answer -- a sweep finding nothing either says nothing
@@ -373,16 +388,19 @@ impl Locatable {
                 .unwrap_or_else(|| Found {
                     instances: Vec::new(),
                     conclusive: false,
+                    table_candidates: Vec::new(),
                 })
         };
         match picked(&found) {
             Some(i) => Found {
                 instances: alloc::vec![found.instances[i]],
                 conclusive: found.conclusive,
+                table_candidates: found.table_candidates,
             },
             None => Found {
                 instances: Vec::new(),
                 conclusive: found.conclusive,
+                table_candidates: found.table_candidates,
             },
         }
     }

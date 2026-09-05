@@ -142,25 +142,41 @@ impl ReferenceTable {
         anchor: Address,
         mut on_tick: impl FnMut(),
     ) -> Option<Self> {
-        let vtable = scan::vtable_of(process, anchor)?;
-        let metadata = region_containing(process, vtable)?;
-
         asr::print_message("[table] looking for the runtime's reference table.");
         let holders = scan::Scan::new(process, anchor)
             .run_polling(process, scan::DEFAULT_BUDGET, &mut on_tick)
             .await;
 
+        asr::print_message(&format!(
+            "[table] {} references to {anchor}.",
+            holders.found.len(),
+        ));
+        Self::identify(process, anchor, &holders.found_ranges, on_tick).await
+    }
+
+    /// Picks the table out of ranges already known to hold a pointer to
+    /// `anchor`.
+    ///
+    /// Split from [`find`](Self::find) so that a sweep happening for another
+    /// reason can supply the ranges -- see [`crate::scan::Scan::also_finding`].
+    /// A sweep that was going to happen anyway is a free chance to find the
+    /// table, which matters most when there is no table precisely because
+    /// everything is having to sweep.
+    pub async fn identify(
+        process: &Process,
+        anchor: Address,
+        ranges: &[(Address, u64)],
+        mut on_tick: impl FnMut(),
+    ) -> Option<Self> {
+        let vtable = scan::vtable_of(process, anchor)?;
+        let metadata = region_containing(process, vtable)?;
+
         let mut candidates: Vec<(Address, u64)> = Vec::new();
-        for &range in &holders.found_ranges {
+        for &range in ranges {
             if range.1 <= MAX_TABLE_BYTES && !candidates.contains(&range) {
                 candidates.push(range);
             }
         }
-        asr::print_message(&format!(
-            "[table] {} references to {anchor}, in {} candidate ranges.",
-            holders.found.len(),
-            candidates.len(),
-        ));
 
         for (base, size) in candidates {
             // The range the anchor itself sits in is a heap section by

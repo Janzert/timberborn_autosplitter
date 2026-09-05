@@ -263,6 +263,33 @@ enough to express the bug: the table is found while the load runs, grows during
 it, and the container is not looked for until the load ends. Re-introducing the
 cached size fails it.
 
+#### A sweep with no table looks for one on its way past
+
+When there is no table, the next sweep is asked to notice references to the
+scene loader as it goes. A sweep already reads every byte, so the ranges that
+could be the table come back with it and identifying one costs no pass of its
+own -- which matters most exactly when there is no table, because then
+everything is having to sweep anyway.
+
+It is not free, and the measurement is worth keeping. Folding a second
+comparison into the scanner's inner loop cost 55% of the comparison loop
+(23.6 GiB/s to 15.3 GiB/s over 512 MiB). Doing it as a separate pass over the
+64 KiB chunk, which is still in cache from the read that filled it, costs about
+40% of the comparison work -- but against reads of ~2 GiB/s under Proton that
+is around 6% of a sweep, and against ~240 MiB/s on Windows well under 1%.
+
+Two consequences follow, and both are in the code:
+
+- **A scan with no anchor is untouched.** The anchor pass is a separate loop
+  behind an `if let`, not a second test inside the hot one, so a sweep that did
+  not ask for this pays nothing. Folding them together would have charged every
+  sweep 6% whether it wanted an anchor or not.
+- **Only the container's sweep asks.** The run-start bind sweeps inside the
+  load window, which is the one place latency is the whole point, so it is left
+  alone. The container's sweep happens after the load has finished and is the
+  one that recurs, which makes it the right place to pay 6% for the chance of
+  not sweeping next time.
+
 #### And if it stops answering, it is found again
 
 Growth is the case we caught. The one we cannot rule out is the table being
@@ -279,11 +306,20 @@ that succeeded counts, and any search the table answers clears the count. The
 menu is where the re-finding happens because it costs a sweep and there is no
 run to disturb.
 
-The counting policy has unit tests in `src/table.rs`. Its wiring -- which
-searches report a hit and which a miss -- is verified by the log at runtime
-rather than offline: a synthetic world cannot easily produce a run of genuine
-misses, because the splitter's own skip-the-instance-just-left rules assume a
-process with several containers in it and a fixture has one.
+The counting policy has unit tests in `src/table.rs`. Two things around it are
+verified by the log at runtime rather than offline, and it is worth being
+straight about which:
+
+- **Which searches report a hit and which a miss.** A synthetic world cannot
+  easily produce a run of genuine misses, because the splitter's own
+  skip-the-instance-just-left rules assume a process with several containers in
+  it and a fixture has one.
+- **The sweep finding a table on its way past.** Producing that offline needs a
+  world where the table exists but cannot be discovered at first and can be
+  later, which is a third knob on the fixture for one path.
+
+Both fail safe: if either never fires, the splitter sweeps, which is what it
+did before any of this.
 
 #### What it is not
 

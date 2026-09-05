@@ -71,6 +71,10 @@ const MAX_CONTAINERS: usize = 256;
 /// The outcome of looking for the container.
 pub struct Search {
     pub registry: Option<Registry>,
+    /// Ranges holding a pointer to the anchor, when the sweep was asked to
+    /// notice one in passing. The caller identifies the table from these; see
+    /// [`crate::table::ReferenceTable::identify`].
+    pub table_candidates: Vec<(Address, u64)>,
     /// Whether an empty result actually means "not there". A scan proves
     /// absence only if it read everything it set out to read, and memory goes
     /// transiently unreadable during a scene teardown -- which is exactly when
@@ -84,6 +88,7 @@ impl Search {
     fn inconclusive() -> Self {
         Self {
             registry: None,
+            table_candidates: Vec::new(),
             conclusive: false,
         }
     }
@@ -119,6 +124,10 @@ impl Registry {
         skip: Option<Address>,
         required: Address,
         table: Option<&ReferenceTable>,
+        // Something already located, for the sweep to notice references to on
+        // its way past. Only worth passing when there is no table: it costs a
+        // few percent of the sweep and saves a whole one.
+        anchor: Option<Address>,
         mut on_tick: impl FnMut(),
     ) -> Search {
         // Not a DI service itself, so no _eventBus: validated through the
@@ -188,6 +197,7 @@ impl Registry {
                 }
                 return Search {
                     registry: picked,
+                    table_candidates: Vec::new(),
                     conclusive: found.conclusive,
                 };
             }
@@ -197,7 +207,7 @@ impl Registry {
             why = alloc::borrow::Cow::Borrowed("the reference table could not be read");
         }
         let found = class
-            .sweep(process, Some(MAX_CONTAINERS), &why, &mut on_tick)
+            .sweep(process, Some(MAX_CONTAINERS), &why, anchor, &mut on_tick)
             .await;
         let conclusive = found.conclusive;
         let registry = Self::pick(
@@ -217,6 +227,7 @@ impl Registry {
         }
         Search {
             registry,
+            table_candidates: found.table_candidates,
             conclusive,
         }
     }
