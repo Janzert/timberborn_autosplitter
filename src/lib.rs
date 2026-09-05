@@ -501,10 +501,21 @@ async fn run(process: &Process, settings: &mut Settings) {
         // only finds a dead one -- which is what "no longer skipping it" then
         // latched onto, binding the previous game's services on the menu.
         if matches!(scene.loaded, Scene::MainMenu | Scene::MapEditor) {
-            // Another go at the table if an earlier attempt came up empty.
+            // Another go at the table if an earlier attempt came up empty, or
+            // if the one we have has stopped answering. The menu is where that
+            // work belongs: re-finding costs a sweep, and here there is no run
+            // to disturb.
+            //
             // Bounded, because each try is a sweep and this branch is on a
             // one-second loop -- see TABLE_SEARCH_ATTEMPTS.
-            if table.is_none() {
+            if table.as_ref().is_none_or(|t| t.is_stale()) {
+                if table.is_some() {
+                    asr::print_message(
+                        "[table] it has stopped answering; the runtime is using another. \
+                         Looking again.",
+                    );
+                    table_attempts = 0;
+                }
                 table = find_table(process, scene.instance, &mut table_attempts).await;
             }
             for _ in 0..RESCAN_DELAY_TICKS {

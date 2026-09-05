@@ -316,7 +316,12 @@ impl Locatable {
         settled: impl Fn(&Found) -> bool,
     ) -> Found {
         let why = match self.from_table(process, limit, table, || {}).await {
-            Some(found) if settled(&found) => return found,
+            Some(found) if settled(&found) => {
+                if let Some(table) = table {
+                    table.answered();
+                }
+                return found;
+            }
             Some(found) if found.instances.is_empty() => {
                 "the reference table has no instance of it".into()
             }
@@ -327,7 +332,17 @@ impl Locatable {
             None if table.is_some() => "the reference table could not be read".into(),
             None => "no reference table found yet".into(),
         };
-        self.sweep(process, limit, &why, || {}).await
+        let swept = self.sweep(process, limit, &why, || {}).await;
+        // The table said no and the heap said yes. That pairing is the only
+        // thing that tells a table which has gone wrong from a question that
+        // simply has no answer -- a sweep finding nothing either says nothing
+        // about the table, so it is left alone rather than counted.
+        if let Some(table) = table {
+            if settled(&swept) {
+                table.was_missing();
+            }
+        }
+        swept
     }
 
     /// Finds one instance the caller is willing to accept.

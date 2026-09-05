@@ -263,6 +263,28 @@ enough to express the bug: the table is found while the load runs, grows during
 it, and the container is not looked for until the load ends. Re-introducing the
 cached size fails it.
 
+#### And if it stops answering, it is found again
+
+Growth is the case we caught. The one we cannot rule out is the table being
+*replaced* rather than grown -- and it would look identical from here, because
+the old memory stays mapped and stays readable. So rather than trusting that
+growth is the only thing that happens, the table is judged by whether it still
+answers: `MISSES_BEFORE_REFINDING` consecutive searches that the sweep behind it
+had to answer, and it is thrown away and looked for again on the next visit to
+the main menu.
+
+The pairing matters. A search the table missed *and the sweep also missed* says
+nothing about the table -- the object simply was not there -- so only a sweep
+that succeeded counts, and any search the table answers clears the count. The
+menu is where the re-finding happens because it costs a sweep and there is no
+run to disturb.
+
+The counting policy has unit tests in `src/table.rs`. Its wiring -- which
+searches report a hit and which a miss -- is verified by the log at runtime
+rather than offline: a synthetic world cannot easily produce a run of genuine
+misses, because the splitter's own skip-the-instance-just-left rules assume a
+process with several containers in it and a fixture has one.
+
 #### What it is not
 
 **It is not a superset of the heap.** A capture taken while a second game loaded

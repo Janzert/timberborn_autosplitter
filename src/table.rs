@@ -73,6 +73,22 @@ const MAX_HEADER_WORDS: u32 = 64;
 /// against ~18,000 individual pages.
 const WINDOW: u64 = 64 << 10;
 
+/// How many times the sweep behind the table may answer a question the table
+/// could not before the table is given up on and looked for again.
+///
+/// One miss is ordinary: the object may not be registered yet, which the
+/// run-start bind waits out, or it may be one of the live-but-unheld ones a
+/// capture showed. A run of them means the table is no longer the one the
+/// runtime is using, and **nothing else will ever notice** -- reading it still
+/// succeeds, so it stays plausible for as long as its memory is mapped. That
+/// is how a table which had merely grown went on being read for a whole
+/// session while every search swept 7 GiB behind it.
+///
+/// Three, because the cost of being wrong is asymmetric: re-finding is one
+/// sweep on the main menu, and not re-finding is every search sweeping for the
+/// rest of the session.
+const MISSES_BEFORE_REFINDING: u32 = 3;
+
 /// Refuse to treat anything larger as a candidate table.
 ///
 /// Only a bound on the worst case. The table is 2 MiB on both builds measured;
@@ -105,6 +121,9 @@ pub struct ReferenceTable {
     /// The extent last reported, only so growth can be logged once rather than
     /// on every search.
     seen: Cell<u64>,
+    /// Consecutive searches the sweep behind it has had to answer. See
+    /// [`MISSES_BEFORE_REFINDING`].
+    misses: Cell<u32>,
 }
 
 impl ReferenceTable {
@@ -161,6 +180,7 @@ impl ReferenceTable {
             return Some(Self {
                 base,
                 seen: Cell::new(size),
+                misses: Cell::new(0),
             });
         }
         asr::print_message("[table] no candidate range was one; sweeps it is.");
@@ -173,6 +193,24 @@ impl ReferenceTable {
     /// failed lookup for on every scene change.
     pub fn still_mapped(&self, process: &Process) -> bool {
         process.read::<u64>(self.base).is_ok()
+    }
+
+    /// The table answered a question. Whatever it missed before, it is the
+    /// right table.
+    pub fn answered(&self) {
+        self.misses.set(0);
+    }
+
+    /// The table could not answer and a sweep could, which is the only
+    /// evidence that distinguishes a table that has gone wrong from a question
+    /// with no answer.
+    pub fn was_missing(&self) {
+        self.misses.set(self.misses.get() + 1);
+    }
+
+    /// Whether it has missed often enough to be worth finding again.
+    pub fn is_stale(&self) -> bool {
+        self.misses.get() >= MISSES_BEFORE_REFINDING
     }
 
     /// How far the table currently extends, read fresh from the process.
@@ -409,5 +447,60 @@ fn mapped(ranges: &[(u64, u64)], value: u64) -> bool {
             let (base, size) = ranges[i - 1];
             value < base + size
         }
+    }
+}
+
+#[cfg(test)]
+mod staleness {
+    use super::*;
+
+    fn table() -> ReferenceTable {
+        ReferenceTable {
+            base: Address::new(0x1000),
+            seen: Cell::new(0x200000),
+            misses: Cell::new(0),
+        }
+    }
+
+    #[test]
+    fn a_fresh_table_is_not_stale() {
+        assert!(!table().is_stale());
+    }
+
+    #[test]
+    fn one_miss_is_not_enough() {
+        let table = table();
+        table.was_missing();
+        assert!(
+            !table.is_stale(),
+            "a single miss is ordinary -- an object not registered yet, or one \
+             of the live-but-unheld ones a capture showed"
+        );
+    }
+
+    #[test]
+    fn a_run_of_misses_is() {
+        let table = table();
+        for _ in 0..MISSES_BEFORE_REFINDING {
+            table.was_missing();
+        }
+        assert!(table.is_stale());
+    }
+
+    #[test]
+    fn answering_clears_the_count() {
+        let table = table();
+        for _ in 0..MISSES_BEFORE_REFINDING - 1 {
+            table.was_missing();
+        }
+        table.answered();
+        for _ in 0..MISSES_BEFORE_REFINDING - 1 {
+            table.was_missing();
+        }
+        assert!(
+            !table.is_stale(),
+            "misses have to be consecutive: a table that keeps answering is the \
+             right table, whatever it missed in between"
+        );
     }
 }

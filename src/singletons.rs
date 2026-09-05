@@ -183,6 +183,9 @@ impl Registry {
             )
             .await;
             if picked.is_some() {
+                if let Some(table) = table {
+                    table.answered();
+                }
                 return Search {
                     registry: picked,
                     conclusive: found.conclusive,
@@ -207,6 +210,11 @@ impl Registry {
             all_singletons_offset,
         )
         .await;
+        // The sweep answered what the table could not, which is what a table
+        // that has stopped being the runtime's looks like from here.
+        if let (Some(table), true) = (table, registry.is_some()) {
+            table.was_missing();
+        }
         Search {
             registry,
             conclusive,
