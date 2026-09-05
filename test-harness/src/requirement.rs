@@ -41,11 +41,23 @@ impl Requirement {
             .map(|step| format!("  - {step}"))
             .collect::<Vec<_>>()
             .join("\n");
+        // A recorded scenario is made by `tb-record` while the game is played,
+        // and its own steps say so, so it gets no trailing capture line.
+        // Telling someone to `tb-dump` one would have them produce a single
+        // instant that no scenario test can use -- and the message said exactly
+        // that until a second recording state made it worth noticing.
+        let capture = match self.begins_at {
+            Some(_) => String::new(),
+            None => format!(
+                "\n  - then, with the game left in that state:\n      \
+                 tb-dump --freeze --state {} --notes '<what you did>'",
+                self.id
+            ),
+        };
         format!(
-            "No snapshot satisfies {:?} ({}).\n\nTo make one:\n{}\n  - then, with the \
-             game left in that state:\n      tb-dump --freeze --state {} --notes '<what you did>'\n\n\
+            "No snapshot satisfies {:?} ({}).\n\nTo make one:\n{steps}{capture}\n\n\
              See snapshots/README.md.",
-            self.id, self.summary, steps, self.id
+            self.id, self.summary
         )
     }
 }
