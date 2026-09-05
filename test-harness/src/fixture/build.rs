@@ -219,6 +219,9 @@ pub struct Builder {
     /// Every object placed on the heap, in the order it was placed, as the
     /// runtime's reference table would hold them. See [`Builder::forget`].
     references: Vec<u64>,
+    /// Whether to give the process a reference table at all. See
+    /// [`Builder::without_reference_table`].
+    reference_table: bool,
 }
 
 impl Builder {
@@ -307,6 +310,7 @@ impl Builder {
             metadata,
             heap: Region::new(HEAP_BASE),
             references: Vec::new(),
+            reference_table: true,
             classes,
             instances,
             game_version: fixture.game_version.clone(),
@@ -375,6 +379,18 @@ impl Builder {
         self.heap.write_u64(address + OBJECT_VTABLE, layout.vtable);
         self.references.push(address);
         address
+    }
+
+    /// Builds a process with no reference table in it at all.
+    ///
+    /// Models a game or engine version where the splitter cannot find one --
+    /// the discriminator failing, or the runtime not keeping such a table. The
+    /// splitter is then back to sweeping for everything, which is what it did
+    /// before the table existed, so this is how "correct but slow" stays a
+    /// tested path rather than a claim.
+    pub fn without_reference_table(mut self) -> Self {
+        self.reference_table = false;
+        self
     }
 
     /// Drops an object's entry from the reference table, leaving the object
@@ -453,47 +469,55 @@ impl Builder {
         // The reference table: one entry per object placed, and nothing else.
         // Holding no object headers is what tells it from a heap section, so
         // it must contain pointers and only pointers -- see `src/table.rs`.
-        let mut table = Vec::with_capacity(self.references.len() * 8);
-        for object in &self.references {
-            table.extend_from_slice(&object.to_le_bytes());
+        let mut table_size = 0;
+        if self.reference_table {
+            let mut table = Vec::with_capacity(self.references.len() * 8);
+            for object in &self.references {
+                table.extend_from_slice(&object.to_le_bytes());
+            }
+            // Never empty: a zero-length range would make every read of it
+            // fail, and the splitter would find no table rather than an empty
+            // one.
+            table.resize(table.len().max(0x1000), 0);
+            table_size = table.len() as u64;
+            memory.put(TABLE_BASE, table);
         }
-        // Never empty: a zero-length range would make every read of it fail,
-        // and the splitter would find no table rather than an empty one.
-        table.resize(table.len().max(0x1000), 0);
-        let table_size = table.len() as u64;
-        memory.put(TABLE_BASE, table);
         let memory = SharedMemory::new(memory);
         let pid = self.pid;
 
+        let mut ranges = vec![
+            MemoryRange {
+                address: UNITY_BASE,
+                size: unity.len() as u64,
+                flags: flags::READ | flags::EXECUTE | flags::PATH,
+            },
+            MemoryRange {
+                address: MONO_BASE,
+                size: mono.len() as u64,
+                flags: flags::READ | flags::EXECUTE | flags::PATH,
+            },
+            MemoryRange {
+                address: METADATA_BASE,
+                size: metadata_size,
+                flags: flags::HEAP,
+            },
+            MemoryRange {
+                address: HEAP_BASE,
+                size: heap_size,
+                flags: flags::HEAP,
+            },
+        ];
+        if table_size > 0 {
+            ranges.push(MemoryRange {
+                address: TABLE_BASE,
+                size: table_size,
+                flags: flags::HEAP,
+            });
+        }
+
         let process = FakeProcess {
             path: Some(format!("/synthetic/{}/Timberborn.exe", self.game_version)),
-            ranges: vec![
-                MemoryRange {
-                    address: UNITY_BASE,
-                    size: unity.len() as u64,
-                    flags: flags::READ | flags::EXECUTE | flags::PATH,
-                },
-                MemoryRange {
-                    address: MONO_BASE,
-                    size: mono.len() as u64,
-                    flags: flags::READ | flags::EXECUTE | flags::PATH,
-                },
-                MemoryRange {
-                    address: METADATA_BASE,
-                    size: metadata_size,
-                    flags: flags::HEAP,
-                },
-                MemoryRange {
-                    address: HEAP_BASE,
-                    size: heap_size,
-                    flags: flags::HEAP,
-                },
-                MemoryRange {
-                    address: TABLE_BASE,
-                    size: table_size,
-                    flags: flags::HEAP,
-                },
-            ],
+            ranges,
             ..FakeProcess::new(pid, "Unity Main Thre")
                 .with_module("UnityPlayer.dll", UNITY_BASE, unity.len() as u64)
                 .with_module("mono-2.0-bdwgc.dll", MONO_BASE, mono.len() as u64)

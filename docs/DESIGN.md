@@ -262,6 +262,16 @@ unreadable, or the table simply not having the object -- because a line that
 only records that a sweep happened leaves whoever reads it guessing, and the
 whole point of the change is that sweeps should be rare and accounted for.
 
+**Looking for the table is itself a sweep, so looking is bounded.**
+`TABLE_SEARCH_ATTEMPTS` is 3. The retry lives in the main loop's menu branch,
+which turns over about once a second, and unbounded that is a full sweep a
+second for as long as a runner sits on the menu -- measured at eleven of them
+in eleven seconds, which on Windows would be eleven half-minute sweeps. Three
+attempts still absorb a transient failure, since memory goes briefly unreadable
+during a scene teardown. The count resets when the scene loader is re-resolved,
+because that means the process changed underneath us. Giving up is announced,
+and leaves the splitter doing exactly what it did before the table existed.
+
 **The fallback is not decoration.** During the *first* scene load of a session
 the incoming `GameInitializer` can be on the heap before the runtime has a
 reference to it: the table reports zero instances and the sweep finds it. That

@@ -183,3 +183,75 @@ fn sweeps_for_what_the_table_does_not_hold() {
         },
     );
 }
+
+/// With no reference table at all, everything still works — by sweeping.
+///
+/// A game or engine version where the table cannot be found is not a failure,
+/// it is the behaviour this splitter had before the table existed. What would
+/// be a failure is not noticing, so the fallback says why it is sweeping.
+#[test]
+fn works_with_no_reference_table_at_all() {
+    for_each_fixture(
+        |fixture| {
+            let mut scene = fixture::game::Scene::new(fixture).without_reference_table();
+            let services = scene.core_services(FINISHED);
+            scene.set_i32(&services.clock, "DayNumber", 5);
+            let loader = scene.scene_loader(false, true);
+            scene.register(&loader);
+            World::new().with_process(scene.finish())
+        },
+        |version, world| {
+            require(world, version, "no candidate range was one");
+            require(world, version, "full sweep -- no reference table found yet");
+            require(world, version, "The game's singleton container is at");
+            require(world, version, "DayNumber = 5");
+        },
+    );
+}
+
+/// Looking for the table is itself a sweep, so a version where it cannot be
+/// found must not go on looking on the menu's one-second loop.
+///
+/// This is the pathological case: sitting on the main menu with no table
+/// findable. Unbounded, it is a full sweep every second — a second apiece on
+/// Linux and half a minute on Windows — for as long as the runner sits there.
+#[test]
+fn gives_up_looking_for_a_table_rather_than_sweeping_forever() {
+    // Long enough for several turns of the menu loop, which waits ~120 ticks
+    // between passes.
+    const MENU_TICKS: usize = 1200;
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for fixture in &fixtures {
+        let mut scene = fixture::game::Scene::new(fixture).without_reference_table();
+        // The clock has to exist or the splitter waits for a game and never
+        // reaches the menu branch at all — which is itself why the menu branch
+        // is only reachable once a game has been loaded at some point.
+        let services = scene.core_services(FINISHED);
+        scene.set_i32(&services.clock, "DayNumber", 1);
+        let loader = scene.scene_loader_for(
+            false,
+            "Timberborn.MainMenuSceneLoading",
+            "MainMenuSceneParameters",
+        );
+        scene.register(&loader);
+        let world = World::new().with_process(scene.finish());
+        let world = test_harness::drive(world, timberborn_autosplitter::main(), MENU_TICKS);
+
+        let looked = world
+            .log
+            .iter()
+            .filter(|line| line.contains("[table] looking for"))
+            .count();
+        assert_eq!(
+            looked, 3,
+            "{}: looked for the table {looked} times in {MENU_TICKS} ticks; log was {:#?}",
+            fixture.game_version, world.log
+        );
+        assert!(
+            world.logged("no reference table after three tries"),
+            "{}: gave up without saying so; log was {:#?}",
+            fixture.game_version,
+            world.log
+        );
+    }
+}

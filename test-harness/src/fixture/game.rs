@@ -120,6 +120,14 @@ impl Scene {
         self
     }
 
+    /// Builds a process with no reference table at all, so every search the
+    /// splitter makes falls back to sweeping. See
+    /// [`Builder::without_reference_table`].
+    pub fn without_reference_table(mut self) -> Self {
+        self.builder = self.builder.without_reference_table();
+        self
+    }
+
     /// Drops an object's entry from the reference table, leaving the object
     /// itself alone.
     pub fn forget(&mut self, object: &Object) {

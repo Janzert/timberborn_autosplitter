@@ -53,10 +53,14 @@ perfectly while both being wrong about Timberborn.
 
 The synthetic world models the runtime's reference table as well as the heap —
 every object placed gets an entry, in a range of its own holding pointers and
-nothing else. `Scene::container_unreferenced` leaves the DI container out of it
-while leaving the object on the heap, which is the one discrepancy a capture
-actually showed and the reason the sweep behind the table is tested rather than
-assumed. See [DESIGN.md](DESIGN.md) under *Reading fewer bytes*.
+nothing else. Two knobs make the fallback testable rather than merely claimed:
+`Scene::container_unreferenced` leaves the DI container out of the table while
+leaving the object on the heap, which is the one discrepancy a capture actually
+showed, and `Scene::without_reference_table` builds a process with no table at
+all, which is the game version the discriminator cannot handle. The second is
+what pins the bound on how often the splitter goes looking — unbounded it swept
+eleven times in eleven seconds, and the test fails at anything but three. See
+[DESIGN.md](DESIGN.md) under *Reading fewer bytes*.
 
 ## What this catches, and what it does not
 

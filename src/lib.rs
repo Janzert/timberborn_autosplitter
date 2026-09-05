@@ -177,6 +177,19 @@ const AMBIGUOUS_RETRY_TICKS: u32 = detached_ticks(1);
 /// timescale anyway.
 const RESCAN_DELAY_TICKS: u32 = 120;
 
+/// How many times to go looking for the reference table before settling for
+/// sweeps.
+///
+/// Finding it costs a full sweep of its own, so a failed search is not free and
+/// must not be retried on the menu's polling interval -- that would be a
+/// multi-second sweep every second, and on Windows a 29s one, for as long as
+/// the runner sat on the menu. Three covers a transient failure, since memory
+/// goes briefly unreadable during a scene teardown, without turning a game
+/// version the discriminator cannot handle into a spin. The count resets when
+/// the scene loader is re-resolved, because that means the process changed
+/// underneath us and the old answer was about a different world.
+const TABLE_SEARCH_ATTEMPTS: u32 = 3;
+
 /// How many conclusive empty scans it takes to give up skipping the instance
 /// just left.
 ///
@@ -315,7 +328,8 @@ async fn run(process: &Process, settings: &mut Settings) {
     };
     // The scene loader is the anchor: it exists at the main menu and outlives
     // every scene, so it is present whenever this runs.
-    table = table::ReferenceTable::find(process, scene.instance, || {}).await;
+    let mut table_attempts = 0;
+    table = find_table(process, scene.instance, &mut table_attempts).await;
 
     // Everything below hangs off this: it is the shared validation target, and
     // it only exists once the game has constructed an EventBus. The clock is
@@ -453,11 +467,11 @@ async fn run(process: &Process, settings: &mut Settings) {
         // only finds a dead one -- which is what "no longer skipping it" then
         // latched onto, binding the previous game's services on the menu.
         if matches!(scene.loaded, Scene::MainMenu | Scene::MapEditor) {
-            // The table is found here if an earlier attempt could not: the
-            // anchor has to exist and be located before there is anything to
-            // look for references to.
+            // Another go at the table if an earlier attempt came up empty.
+            // Bounded, because each try is a sweep and this branch is on a
+            // one-second loop -- see TABLE_SEARCH_ATTEMPTS.
             if table.is_none() {
-                table = table::ReferenceTable::find(process, scene.instance, || {}).await;
+                table = find_table(process, scene.instance, &mut table_attempts).await;
             }
             for _ in 0..RESCAN_DELAY_TICKS {
                 next_tick().await;
@@ -573,13 +587,39 @@ async fn run(process: &Process, settings: &mut Settings) {
             };
             // A table found against the old anchor is worth re-checking against
             // the new one: if the loader really was replaced, everything else
-            // about the process may have moved too.
+            // about the process may have moved too. A fresh anchor also earns a
+            // fresh set of attempts.
             if !table.as_ref().is_some_and(|t| t.still_mapped(process)) {
-                table = table::ReferenceTable::find(process, scene.instance, || {}).await;
+                table_attempts = 0;
+                table = find_table(process, scene.instance, &mut table_attempts).await;
             }
         }
         asr::print_message("A scene is loading. Everything will be resolved again.");
     }
+}
+
+/// Looks for the reference table, giving up after [`TABLE_SEARCH_ATTEMPTS`].
+///
+/// Giving up is not a failure: every search then sweeps, which is what the
+/// splitter did before the table existed. It is worth saying out loud, though,
+/// because the difference is a second against half a minute on Windows.
+async fn find_table(
+    process: &Process,
+    anchor: Address,
+    attempts: &mut u32,
+) -> Option<table::ReferenceTable> {
+    if *attempts >= TABLE_SEARCH_ATTEMPTS {
+        return None;
+    }
+    *attempts += 1;
+    let found = table::ReferenceTable::find(process, anchor, || {}).await;
+    if found.is_none() && *attempts >= TABLE_SEARCH_ATTEMPTS {
+        asr::print_message(
+            "[table] no reference table after three tries. Every search will sweep from \
+             here, which is what this did before the table existed -- correct, but slow.",
+        );
+    }
+    found
 }
 
 /// Whether a scene is being loaded.
