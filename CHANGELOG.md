@@ -13,11 +13,12 @@ release date.
   Windows, and getting slower with every game started in one session, because
   the process keeps growing. It now finds Unity's own table of live objects
   once, at the main menu, and reads that instead: 20–70 MiB rather than 4–5 GiB,
-  and it does not grow. Measured on Windows with two games in one process: the
-  second game swept **nothing at all**, against a 7.5 GiB process, and the
-  whole of the splitter's startup work finished 19 seconds before the timer
-  started. If the table cannot be found or does not hold what is wanted, the
-  old search still runs, so nothing depends on it working.
+  and it does not grow. Measured on Windows across four scene loads, including
+  an end-of-run save with 16171 things in it: **one** search of memory in the
+  whole session, on the main menu before any game existed, and none after. On
+  Linux, six games and the same single search. If the table cannot be found or
+  does not hold what is wanted, the old search still runs, so nothing depends
+  on it working.
 
 - **The splitter now idles at one tick a second while no game is running**,
   instead of polling 120 times a second for as long as LiveSplit is open. It

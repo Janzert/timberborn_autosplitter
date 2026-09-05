@@ -170,7 +170,7 @@ impl Registry {
         // fall through to the sweep.
         let mut why = alloc::borrow::Cow::Borrowed("no reference table found yet");
         if let Some(found) = class
-            .from_table(process, Some(MAX_CONTAINERS), table, &mut on_tick)
+            .search_table(process, Some(MAX_CONTAINERS), table, &mut on_tick)
             .await
         {
             why = alloc::borrow::Cow::Owned(if found.instances.is_empty() {

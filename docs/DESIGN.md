@@ -328,6 +328,17 @@ Two consequences follow, and both are in the code:
   one that recurs, which makes it the right place to pay 6% for the chance of
   not sweeping next time.
 
+#### What it costs to ship
+
+The artifact grows from 167 KB to 196 KB, a little under 17%. Most of it is the
+sorting and grouping in `instances` -- entries have to be sorted for the page
+grouping to work at all, and that pulls in sort machinery a splitter otherwise
+never uses.
+
+Recorded rather than defended: it is a once-downloaded file, and the thing it
+buys is not having to read four gigabytes every time a runner starts a game.
+Worth revisiting only if the file ever has to shrink.
+
 #### And if it stops answering, it is found again
 
 Growth is the case we caught. The one we cannot rule out is the table being

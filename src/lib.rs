@@ -193,8 +193,11 @@ const RESCAN_DELAY_TICKS: u32 = 120;
 /// running out of table attempts has to leave time for the sweep to finish.
 const RUN_START_TABLE_TRIES: u32 = 12;
 
-/// Ticks between those attempts, ~0.2s. Each search reads tens of megabytes,
-/// so asking every tick would cost more than the sweep it is avoiding.
+/// Passes of the load loop between those attempts. A pass that attempts
+/// nothing is one tick, so this is ~0.2s of waiting plus whatever the attempt
+/// itself costs -- twelve of them come to something over three seconds, against
+/// loads measured at ten to thirty. Asking every tick would cost more than the
+/// sweep it is avoiding, since each search reads tens of megabytes.
 const RUN_START_TABLE_RETRY_TICKS: u32 = 24;
 
 /// How many times to go looking for the reference table before settling for
@@ -392,9 +395,12 @@ async fn run(process: &Process, settings: &mut Settings) {
         // sampled throughout, since on the rising edge they are still the
         // previous load's.
         let mut run_start = None;
-        // How long this load has run and how often the table has been asked
-        // for the initializer, which together pace the bind below.
-        let mut loading_ticks = 0u32;
+        // Passes of this loop, and how often the table has been asked for the
+        // initializer, which together pace the bind below. Passes rather than
+        // ticks: a pass that does not attempt anything is exactly one tick, and
+        // one that does is that tick plus the search, so the spacing below is a
+        // floor on the interval rather than the interval itself.
+        let mut passes = 0u32;
         let mut table_tries = 0u32;
         while scene.is_loading(process).unwrap_or(false) {
             // We are here for this one, whatever it turns out to be.
@@ -415,7 +421,7 @@ async fn run(process: &Process, settings: &mut Settings) {
                     // again a few times -- tens of megabytes apiece -- before
                     // paying for a sweep of thousands.
                     let may_sweep = table_tries >= RUN_START_TABLE_TRIES;
-                    if may_sweep || loading_ticks.is_multiple_of(RUN_START_TABLE_RETRY_TICKS) {
+                    if may_sweep || passes.is_multiple_of(RUN_START_TABLE_RETRY_TICKS) {
                         table_tries += 1;
                         run_start = RunStart::resolve_during_load(
                             process,
@@ -432,7 +438,7 @@ async fn run(process: &Process, settings: &mut Settings) {
                     }
                 }
             }
-            loading_ticks += 1;
+            passes += 1;
             next_tick().await;
         }
 
@@ -1976,6 +1982,7 @@ impl RunStart {
     /// avoid, and it was observed binding to the previous game's address on a
     /// second run. `skip` is that address, and skipping it is what makes the
     /// state test safe.
+    #[allow(clippy::too_many_arguments)] // Everything a bind has to weigh up.
     async fn resolve_during_load(
         process: &Process,
         module: &Module,

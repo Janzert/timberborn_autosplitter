@@ -276,7 +276,7 @@ impl Locatable {
     /// `None` when there is no table or it could not be read, which is not an
     /// answer about the game and leaves the caller to sweep. An empty result
     /// *is* an answer, just never a conclusive one -- see [`ReferenceTable`].
-    pub async fn from_table(
+    pub async fn search_table(
         &self,
         process: &Process,
         limit: Option<usize>,
@@ -327,7 +327,7 @@ impl Locatable {
         table: Option<&ReferenceTable>,
         settled: impl Fn(&Found) -> bool,
     ) -> Found {
-        let why = match self.from_table(process, limit, table, || {}).await {
+        let why = match self.search_table(process, limit, table, || {}).await {
             Some(found) if settled(&found) => {
                 if let Some(table) = table {
                     table.answered();
@@ -383,7 +383,7 @@ impl Locatable {
             self.table_then_sweep(process, Some(limit), table, |f| picked(f).is_some())
                 .await
         } else {
-            self.from_table(process, Some(limit), table, || {})
+            self.search_table(process, Some(limit), table, || {})
                 .await
                 .unwrap_or_else(|| Found {
                     instances: Vec::new(),
