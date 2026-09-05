@@ -223,6 +223,64 @@ fn reports_which_runs_are_being_replayed() {
     assert!(!names.is_empty());
 }
 
+/// Both sweeps happen before a game exists, which is the point of doing them
+/// in that order.
+///
+/// A recording begins at the main menu, so a sweep that appears before the
+/// first game scene loaded is one a runner paid for while the process was at
+/// its smallest. Getting this wrong is invisible from the outside and was:
+/// resolving the clock first blocked on a vtable Mono does not fill in until a
+/// game scene is built, which pushed both sweeps into the first load. Only a
+/// live run showed it, and this is what stops it coming back.
+#[test]
+fn both_sweeps_land_before_the_first_game() {
+    for run in replayed() {
+        let found_table = run
+            .log
+            .iter()
+            .position(|line| line.contains("[table] found at"))
+            .unwrap_or_else(|| panic!("{}: no table was found; log was {:#?}", run.name, run.log));
+        let first_game = run
+            .log
+            .iter()
+            .position(|line| line.contains("A game scene loaded"))
+            .unwrap_or_else(|| panic!("{}: no game ever loaded", run.name));
+        assert!(
+            found_table < first_game,
+            "{}: the table was not found until after a game had loaded; log was {:#?}",
+            run.name,
+            run.log
+        );
+        // Tighter than "before the game loaded": before anything
+        // timing-critical. The run start is bound inside the load window, and
+        // the table has to be there already or that bind pays for a sweep.
+        let bound_run_start = run
+            .log
+            .iter()
+            .position(|line| line.contains("Watching run start at"))
+            .unwrap_or(usize::MAX);
+        assert!(
+            found_table < bound_run_start,
+            "{}: the table was not found until the run start had been bound; log was {:#?}",
+            run.name,
+            run.log
+        );
+        // And the anchor's is the first sweep there is. The run start's may
+        // follow it inside the load -- see `the_first_game_sweeps_only_for_...`
+        // -- but nothing may precede it.
+        let first_sweep = run
+            .log
+            .iter()
+            .find(|line| line.contains("starting (full sweep"))
+            .unwrap_or_else(|| panic!("{}: nothing swept at all", run.name));
+        assert!(
+            first_sweep.contains("SceneLoader"),
+            "{}: the first sweep was not the anchor's: {first_sweep:?}",
+            run.name
+        );
+    }
+}
+
 /// Two games in one process, which is what a runner resetting for another
 /// attempt actually does.
 ///

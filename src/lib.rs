@@ -291,8 +291,38 @@ async fn run(process: &Process, settings: &mut Settings) {
     let module = Module::wait_attach_auto_detect(process).await;
     asr::print_message("Attached to the Mono runtime.");
 
-    // Everything hangs off this: it is the shared validation target, and it
-    // only exists once the game has constructed an EventBus.
+    // The two full sweeps of the session, and they come first deliberately.
+    //
+    // Neither needs a game: `SceneLoader` is validated through its
+    // `AssetLoader`, not through the event bus, and finding the reference table
+    // needs only something already located. So on a splitter started before the
+    // game -- which is how LiveSplit is normally run -- both land on the main
+    // menu, where the process is a fraction of the size it will reach. Measured
+    // on Windows: 704 MiB at the menu against 7.5 GiB by a second game.
+    //
+    // They used to sit below the clock, and that was wrong in a way nothing
+    // offline could show: `retry` there blocks until Mono has filled in a
+    // vtable, and `DayNightCycle` has none until a game scene is built, so both
+    // sweeps were pushed into the first load instead.
+    let mut table: Option<table::ReferenceTable> = None;
+    let mut scene = loop {
+        if let Some(scene) = SceneLoad::resolve(process, &module, table.as_ref()).await {
+            break scene;
+        }
+        for _ in 0..RESCAN_DELAY_TICKS {
+            next_tick().await;
+        }
+    };
+    // The scene loader is the anchor: it exists at the main menu and outlives
+    // every scene, so it is present whenever this runs.
+    table = table::ReferenceTable::find(process, scene.instance, || {}).await;
+
+    // Everything below hangs off this: it is the shared validation target, and
+    // it only exists once the game has constructed an EventBus. The clock is
+    // the same -- Mono fills a class's vtable in lazily, so neither resolves
+    // until a game scene is being built. Waiting for them is therefore waiting
+    // for a game, which is why nothing that can be done without one is left
+    // below this point.
     asr::print_message("Waiting for the game to load...");
     let event_bus_vtable = retry(|| service::event_bus_vtable(process, &module)).await;
 
@@ -311,23 +341,6 @@ async fn run(process: &Process, settings: &mut Settings) {
         status::warn("Game version not supported: DayNumber missing");
         return;
     };
-
-    // The two full sweeps of the session: one to find the scene loader, one to
-    // find the table of references that makes every later search cheap. Both
-    // happen here, which on the main menu is a process a fifth the size it will
-    // be in a game -- 811 MiB against 3916 MiB, measured.
-    let mut table: Option<table::ReferenceTable> = None;
-    let mut scene = loop {
-        if let Some(scene) = SceneLoad::resolve(process, &module, table.as_ref()).await {
-            break scene;
-        }
-        for _ in 0..RESCAN_DELAY_TICKS {
-            next_tick().await;
-        }
-    };
-    // The scene loader is the anchor: it exists at the main menu and outlives
-    // every scene, so it is present whenever this runs.
-    table = table::ReferenceTable::find(process, scene.instance, || {}).await;
 
     let mut probed = false;
     // The DI container of the game just left, skipped for the same reason its

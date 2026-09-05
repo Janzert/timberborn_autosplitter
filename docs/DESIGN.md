@@ -209,12 +209,32 @@ holds an object by definition, so it is skipped outright. That is what makes the
 rule exact in a synthetic world, where a heap with a dozen objects in it is
 otherwise sparse enough to look like a table.
 
-#### Both sweeps happen at the main menu
+#### Both sweeps happen at the main menu, and the ordering is load-bearing
 
 Finding the anchor and then finding the table are two full passes, and both run
-before a run can start — on a process a fifth the size it will be in a game.
-Measured: 811 MiB scannable at the menu against 3916 MiB in a game, with the
-anchor sweep stopping early at 376 MiB.
+before a game exists — on a process a fraction of the size it will reach.
+Measured on Windows: 704 MiB at the menu against 7.5 GiB by the second game of
+a session.
+
+That only holds because nothing above them waits for a game. `SceneLoader` is
+validated through its `AssetLoader`, which is instantiated at the menu, and
+finding the table needs only something already located. **The event bus and the
+clock are resolved below them for exactly this reason.** Mono fills a class's
+vtable in lazily, so `retry` on either blocks until a game scene is being built;
+with them above, both sweeps were pushed into the first load instead — which is
+the one place the whole design is trying to keep clear.
+
+That was live for a while and nothing offline could see it: every recording
+still passed, because the sweeps still happened and still found everything, just
+later than the comment above them claimed. A live Windows run is what showed it.
+`both_sweeps_land_before_the_first_game` in `tests/scenario_run.rs` now pins the
+ordering to the recordings, which do begin at the main menu.
+
+Verified across all four recordings and both builds: the loader resolves at the
+menu, and the table is found there — at `0x230000000` on 1.0.13.1 and
+`0x1f0000000` on 1.1.2.4. The discriminator has *less* to get wrong there than
+in a game: four or five candidate ranges at the menu against seven to ten once
+a game is up.
 
 #### What it is not
 
@@ -243,11 +263,17 @@ only records that a sweep happened leaves whoever reads it guessing, and the
 whole point of the change is that sweeps should be rare and accounted for.
 
 **The fallback is not decoration.** During the *first* scene load of a session
-the incoming `GameInitializer` is on the heap before the runtime has a reference
-to it: the table reports zero instances and the sweep finds it. That is once per
-session, at main-menu prices — 894 MiB, against the 5195 MiB the same sweep
-would cost by the second game — and by the second load there are two
-initializers in the table and no sweep happens at all.
+the incoming `GameInitializer` can be on the heap before the runtime has a
+reference to it: the table reports zero instances and the sweep finds it. That
+is once per session and early, while the process is still small — 894 MiB in
+the recordings, against the 5195 MiB the same sweep would cost by the second
+game — and by the second load there are two initializers in the table and no
+sweep happens at all.
+
+It is a race rather than a rule. Every recording replays it, and the live
+Windows run did not hit it at all: the initializer was in the table on the first
+game too. So it is timing-dependent — which is the argument for keeping the
+sweep behind the table rather than for expecting to need it.
 
 ## Split sources
 
@@ -1184,13 +1210,34 @@ attached. The Proton numbers above do not carry over.
 the main menu and 6.3 GB with a game loaded, and it keeps growing across games.
 So how bad this gets depends on how long the process has lived, which is why a
 first game can look fine and a second cannot, and why none of it reproduces on
-a small process. It is also why the reference table matters most here: the
-20–70 MiB it reads does not grow with the process, while the sweep it replaces
-grew from 3916 MiB to 5195 MiB across two games of one recorded session.
+a small process. It is also why the reference table matters most here: what it
+reads does not grow with the process.
 
-These Windows figures predate the table and describe the fallback path. What
-they establish is the size of the problem it removes: at ~240 MiB/s, the 40.3s
-`SingletonRepository` sweep above becomes a read of 70 MiB.
+#### Windows, with the reference table
+
+LiveSplit 1.8.37, game build 1.1.2.4, two games in one process. Timings are
+arrival stamps from tailing the trace log, which carries none of its own.
+
+| | |
+|---|---|
+| `SceneLoader` sweep, at the menu | 1.12s, 524 of 704 MiB |
+| Table discovery sweep | 2.66s |
+| `GameInitializer` through the table | same millisecond, both games |
+| `SingletonRepository` through the table | same millisecond, both games |
+| **Second game, bytes swept** | **0**, against a 7.5 GiB process |
+
+3.78s in total, all of it 19s before the timer started, and two `[scan]` lines
+in the whole session — both the one expected startup sweep. No fallback reason
+was printed at any point, and the discriminator never failed to pick a range.
+
+Against the figures above it: the same session used to sweep 6151 MiB to find
+`SingletonRepository`, and would have swept ~5 GiB again for the second game.
+
+The instance counts also confirm the table tracks the process rather than a
+snapshot taken once: `GameInitializer` went 1 → 2 and `SingletonRepository`
+3 → 4 across the second load, the previous game's objects still being alive.
+That is exactly what `previous_run_start` and `previous_registry` exist to
+skip, and it arrives through the table unchanged.
 
 ### Scanning and attaching, learned the hard way
 
