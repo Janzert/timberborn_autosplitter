@@ -257,6 +257,37 @@ So [`ReferenceTable`] keeps the base and nothing else, and reads the extent
 back from the process on every search. It is the one number here that is not
 allowed to be remembered.
 
+**What is read back is the mapped range, which is an upper bound and not the
+table.** Watched live across six games, the range containing the base flaps
+during every scene load -- 2048 KiB to 8192, to 14336, to 28672 -- and returns
+to 2048 within a second or two each time. That is neighbouring anonymous
+mappings coalescing and splitting as the runtime commits and releases memory,
+with the range enumeration reporting whatever abuts the base at that instant.
+
+Reading too much is harmless: the extra words become candidate object pointers,
+and the vtable check and the validator reject them. It costs a few reads during
+a load, against a sweep of gigabytes. Reading too *little* would matter, and has
+not been observed -- the range has never been reported smaller than the table.
+
+The two effects are worth keeping apart, because only one of them is the table:
+
+| | a load's flap | real growth |
+|---|---|---|
+| Settles at | back to 2048 KiB within seconds | 4096 KiB, stably, mid-game |
+| Entries past the old end | none | four `SingletonRepository` among them |
+| The table's own end pointer | unmoved | `base+0x1fffe0` to `base+0x3fffe0` |
+
+The header is the table's own account of its size and the mapping is not, which
+is what settles it: four repository pointers beyond the 2 MiB mark are not a
+coincidental neighbour.
+
+That header would in fact be the exact answer, and it is deliberately not used.
+Reading a length out of the third word of a structure nobody has identified is
+the kind of hardcoded knowledge everything else here avoids -- it would work
+until the day it silently did not, which is the failure mode this design exists
+to stay away from. The mapping is name-free, self-correcting, and wrong only in
+the direction that costs reads.
+
 `notices_the_reference_table_growing` in `tests/synthetic_run.rs` pins it. The
 world is a scene load in progress, because that is what opens a window wide
 enough to express the bug: the table is found while the load runs, grows during
@@ -1307,6 +1338,31 @@ So how bad this gets depends on how long the process has lived, which is why a
 first game can look fine and a second cannot, and why none of it reproduces on
 a small process. It is also why the reference table matters most here: what it
 reads does not grow with the process.
+
+#### Linux, with the reference table
+
+Six games in one process under Proton -- a new game, a save with 16171 entities
+loaded to fill the table, then four more new games with a trip through the main
+menu between each:
+
+| | |
+|---|---|
+| Scene loads | 5 |
+| **Full sweeps** | **1** -- the anchor, at startup, 329 of 857 MiB |
+| Everything else | served from the table |
+
+The run-start retry is visible on every single load, as a pair of lines a second
+or two apart: the first look finds only the previous game's initializer, which
+the skip predicate rejects, and the next finds the incoming one. Each of those
+pairs was a multi-gigabyte sweep in the session before the retry existed.
+
+`SingletonRepository` counts moved 3, 4, 3 across the games as containers were
+built and collected, which is the live-set behaviour inferred from a capture,
+now watched in motion.
+
+The self-healing never fired, because the table was never lost. That is the
+better of the two outcomes: under exactly the pressure expected to break it --
+a 16k-entity save and six games in one process -- it stayed where it was found.
 
 #### Windows, with the reference table
 
