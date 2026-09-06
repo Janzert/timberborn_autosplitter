@@ -13,9 +13,7 @@ The exact revision is pinned by the submodule gitlink, so a clone with
 
 ## What the fork carries
 
-Two accessors the splitter needs, and one bug fix. There were two fixes; the
-scanner's dangling buffer is upstream now, and the fork was rebased onto a
-`master` containing it, so only the page-boundary fix is still carried.
+Two accessors the splitter needs, and one bug fix in the signature scanner.
 
 ## The accessors, and why they are needed
 
@@ -33,63 +31,10 @@ and a splitter can already `read` any address, enumerate every memory range via
 addresses from `get_static_table()`, `UnityPointer::deref_offsets()` and
 `MemoryRange::address()`.
 
-## The signature scanner's dangling buffer
-
-`Signature::scan_iter` zero-initialised a `Buffer<N>` as a local, took a
-`&mut [u8]` over it through `slice::from_raw_parts_mut`, and moved *that slice*
-into the `iter::from_fn` closure it returned. The buffer itself stayed a local
-of `scan_iter`, so every poll of the returned iterator read and wrote a stack
-frame that had already been given back — 4 KiB of it, in a scan that runs on
-every `Module::attach`.
-
-It is the sort of unsoundness that behaves for years: the stale address is
-usually still slack stack. It stops behaving when the caller is deeper than
-whatever ran before, which is how it turned up here — replaying a recording
-reads through a chain of twenty delta captures, and the scan's 256-byte write
-landed on one of those frames' return addresses.
-
-The fix is to move the buffer into the closure and take the slice inside each
-call, where the storage is live for as long as the pointer is used. It is a
-soundness fix rather than an API change, and nothing about it is
-Timberborn-specific.
-
-**This one is upstream, and no longer carried here.**
-<https://github.com/LiveSplit/asr/pull/158>, merged 2026-09-05 as `12375fc` on
-`master`; the fork was rebased onto that and its own copy dropped. What is
-described above is now upstream's code, kept in this document because the
-reasoning behind it is not obvious from the diff and the measurements below
-were expensive to make.
-
-### What it meant for the shipped `.wasm`
-
-Almost certainly nothing, which is worth writing down so this is not
-remembered as a released bug.
-
-Checked rather than assumed, by disassembling the release wasm built from the
-commit before the fix. `scan_iter` is inlined into every caller there, so its
-4 KiB buffer is allocated in the frame that then drives the iterator, and there
-is no popped frame for the pointer to dangle into. Each of
-`scan_process_range`'s instantiations opens with a 4240-, 4224- or 4256-byte
-`__stack_pointer` adjustment, which is that buffer. The splitter never calls
-`scan_iter` itself.
-
-**What decides it is `opt-level`, not LTO** — measured against unmodified
-upstream, sweeping both. `opt-level = 0` reproduces with LTO either way; 1, 2
-and 3 do not, and
-`-C llvm-args=--inline-threshold=0` does not bring it back at 3. So the crash
-needed a build where `scan_iter` is a real frame that gets popped, which is the
-unoptimised one the tests run — and every debug build is exposed, not just this
-project's.
-
-So this is a latent bug, not a live one — but latent by codegen accident rather
-than by anything guaranteeing it, and wasm has no guard page: the day inlining
-went the other way it would corrupt linear memory silently instead of
-segfaulting. That is the argument for fixing it rather than noting it.
-
 ## The page tail carried across a boundary
 
-Found by reading the rest of `signature.rs` after the one above, and verified by
-running it. Scans go a page at a time, with the last N - 1 bytes of the previous
+Found by reading `signature.rs` closely, and verified by running it. Scans go a
+page at a time, with the last N - 1 bytes of the previous
 page placed in front of the next so a signature lying across the boundary is
 still found. The offset that tail is taken from assumes the previous page was a
 full 4 KiB -- true of every page but two, the first page of a range that does
@@ -150,11 +95,9 @@ Fixed on `timberborn` by tracking how much the last page actually held. Two
 regression tests come with it, `tests/signature_page_boundary.rs`. This is the
 only thing the fork still carries beyond the accessors.
 
-**This one was kept off the pull request branch**, being a different bug in
-code the dangling-buffer fix does not touch, and pairing them would have held up
-whichever review was slower. #158's body offers it as a follow-up. Nothing has
-been sent yet -- and when it is, it goes **without** the two regression tests,
-for the reason under [Upstreaming](#upstreaming).
+It is upstream as <https://github.com/LiveSplit/asr/pull/159>, opened
+2026-09-05 and still in review. **The two regression tests did not go with
+it**, for the reason under [Upstreaming](#upstreaming); they stay here.
 
 ## Where the submodule points
 
@@ -169,18 +112,18 @@ the submodule:
 The accessors and the page-boundary fix live on the **`timberborn`** branch,
 which is what the parent repo's gitlink points at. It is named for what it is
 for -- the branch this project builds against -- rather than for whatever
-happened to land on it first; it was `class-vtable` until the rebase.
+happened to land on it first; it was `class-vtable` until 2026-09-05.
 `mono-class-vtable` carries the accessors shaped for upstream review --
 retitled to the house style, with the dedup and the doc comments a reviewer
 asked for in advance.
 
 **The gitlink tracks `timberborn`, never `mono-class-vtable`.** A PR branch is
-rewritten as review proceeds -- #158's was, to drop its test commit -- and a
-gitlink pointing at a commit that a later force-push orphans cannot be fetched
-at all: every fresh clone breaks. That is the one rule here worth more than the
-convenience of a single branch. Keep the
-two at the same commit while they agree, and let them diverge if review asks
-for something the splitter does not need.
+rewritten as review proceeds -- a branch of this fork's has been, to drop a
+commit a reviewer did not want -- and a gitlink pointing at a commit that a
+later force-push orphans cannot be fetched at all: every fresh clone breaks.
+That is the one rule here worth more than the convenience of a single branch.
+Keep the two at the same commit while they agree, and let them diverge if
+review asks for something the splitter does not need.
 
 That rule is why the rename left something behind. Rebasing rewrote every
 commit `class-vtable` had, and deleting the branch would have orphaned the
@@ -216,49 +159,37 @@ git add vendor/asr && git commit -m "chore: bump vendored asr"
 
 ## Upstreaming
 
-Two pull requests, deliberately separate.
-
-The scanner's dangling buffer was
-<https://github.com/LiveSplit/asr/pull/158>, from
-`signature-scan-dangling-buffer`, based on `upstream/master` -- upstream's
-default branch is `master`, and its `signature.rs` was byte-identical to the
-pre-fix state, so the bug was live there. **Merged 2026-09-05** as `12375fc`.
+Two pull requests, deliberately separate, both open.
 
 The accessors are <https://github.com/LiveSplit/asr/pull/157>, from the
-`mono-class-vtable` branch on the fork. Still open.
+`mono-class-vtable` branch on the fork.
 
-They were kept apart because the scanner fix is a soundness bug in code the
-accessors do not touch, and reviewing it alongside an API proposal would have
-held up whichever of the two was slower. That is borne out: one is merged and
-the other is still in review.
+The page-boundary fix is <https://github.com/LiveSplit/asr/pull/159>, from
+`signature-page-tail-boundary`, based on `upstream/master` -- upstream's
+default branch is `master`, and its `signature.rs` is the pre-fix code, so the
+bug is live there.
+
+They are apart because one is a bug fix in code the accessors do not touch and
+the other is an API proposal; reviewing them together would hold up whichever
+is slower. Keeping fixes on their own is what got the last one merged quickly.
 
 ### Upstream does not want tests right now
 
-#158 went in as the fix commit alone. Its second commit was a regression test,
-and the maintainer asked for it to be dropped -- not on its merits, but because
-several open pull requests are adding tests at once and he wants to settle a
-testing strategy for the crate before any of them land.
+Asked for directly by the maintainer in September 2026, on a fix of ours that
+had arrived with a regression test: several open pull requests are adding tests
+at once, and he wants a testing strategy settled for the crate before any of
+them land. The test was dropped and the fix merged without it.
 
 Treat that as standing until upstream says otherwise: **send fixes without
-their tests**, and offer the tests separately in the body. That applies to the
-page-boundary follow-up, whose two regression tests stay on `timberborn` and
-do not go with it.
-
-The dropped test was `tests/signature_scan_buffer.rs`. It is not lost -- commit
-`4a2fdd5`, still reachable from #158's own commit list on GitHub -- if the
-strategy question is ever settled.
-
-Removing it was a force-push over the published branch rather than a revert
-commit, which was safe here for reasons worth checking again next time: the test
-was the tip commit, it touched only its own new file, and the PR had no
-submitted reviews and no inline comments anchored to it, so nothing was
-orphaned. `--force-with-lease` pinned the expected remote tip.
+their tests**, and offer the tests separately in the body. #159 was sent that
+way, and its two regression tests stay on `timberborn`.
 
 ### What upstream's CI actually runs
 
-Upstream's `master` is green under its own CI commands -- `cargo test
---all-features` (22 doctests), `cargo clippy --all-features` without
-`-D warnings`, and a `cargo fmt` step that ends in `|| true`. A red check on a
+Upstream's `master` is green under its own CI commands --
+`cargo test --all-features` (22 doctests), `cargo clippy --all-features`
+without `-D warnings`, and a `cargo fmt` step that ends in `|| true`. A red
+check on a
 pull request therefore means something. (Plain `cargo test` and
 `cargo clippy -- -D warnings` do fail on pristine master, but neither is what
 CI runs.)
@@ -291,5 +222,5 @@ get reviewed, which is why it is worth doing after the splitter works.
 
 The submodule goes away when the fork has nothing left that upstream lacks --
 which now means #157 landing, and the page-boundary fix after it. Delete the
-`[patch]` stanza and the submodule then, not before: a merged #158 alone does
-not get us there.
+`[patch]` stanza and the submodule then, not before -- which means both open
+pull requests landing, not just one.
