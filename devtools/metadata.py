@@ -30,6 +30,7 @@ import re
 import struct
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 # ECMA-335 II.23.1.16, the primitives a field signature can name outright.
@@ -276,6 +277,109 @@ def check_validators(managed_dir, src_dir):
     return problems
 
 
+def _template_names(src_dir):
+    """Every game template name the splitter matches on, with where it is used.
+
+    Read out of the source rather than listed again here, so the two cannot
+    drift. A template name is matched against `ComponentCache._name` at
+    runtime, and a wrong one is **silent**: the building is simply never
+    recognised and its split never fires. That is the failure this project has
+    already paid for twice, so it is worth an offline check.
+    """
+    found = {}
+    for path in sorted(Path(src_dir).glob("*.rs")):
+        text = path.read_text(encoding="utf8")
+        # `templates: &["A.Folktails", "B.IronTeeth"]`, and the bare
+        # `const SMELTER/WOOD_WORKSHOP/WONDER_TEMPLATES: &[&str] = &[...]`.
+        blocks = re.findall(r"templates:\s*&\[([^\]]*)\]", text)
+        blocks += re.findall(
+            r"const\s+(?:SMELTER|WOOD_WORKSHOP|WONDER_TEMPLATES)\s*:\s*&\[&str\]\s*=\s*&\[([^\]]*)\]",
+            text,
+        )
+        for raw in blocks:
+            for name in re.findall(r'"([^"]+)"', raw):
+                found.setdefault(name, path.name)
+    return found
+
+
+def _blueprint_templates(managed_dir):
+    """Every TemplateName the installed game declares, from Blueprints.zip.
+
+    `TemplateSpec.TemplateName` is the game's own name for a template -- the
+    thing `ComponentCache._name` reports -- rather than the blueprint's
+    filename, which merely tends to agree with it. Returns None if the archive
+    is not where it should be, so a missing one reads as "cannot check" instead
+    of as "every name is wrong".
+    """
+    archive = (
+        Path(managed_dir).parent
+        / "StreamingAssets"
+        / "Modding"
+        / "Blueprints.zip"
+    )
+    if not archive.exists():
+        return None
+    names = {}
+    with zipfile.ZipFile(archive) as z:
+        for entry in z.namelist():
+            if not entry.endswith(".blueprint.json"):
+                continue
+            try:
+                spec = json.loads(z.read(entry)).get("TemplateSpec")
+            except Exception:
+                continue
+            if spec and spec.get("TemplateName"):
+                names[spec["TemplateName"]] = spec.get(
+                    "BackwardCompatibleTemplateNames"
+                ) or []
+    return names
+
+
+def check_templates(managed_dir, src_dir):
+    """Checks every template name the splitter matches against the game's own.
+
+    Unlike a class or a field, a template name has no runtime probe: nothing
+    resolves it, so nothing can report it missing. The only symptom of a wrong
+    one is a split that never fires, discovered during a run. This is the whole
+    of the check that exists for them.
+    """
+    wanted = _template_names(src_dir)
+    if not wanted:
+        return 0
+    declared = _blueprint_templates(managed_dir)
+    print()
+    print("building template names:")
+    if declared is None:
+        print(
+            "  SKIPPED           no Blueprints.zip beside this Managed directory, "
+            "so template names cannot be checked"
+        )
+        return 0
+    problems = 0
+    for name in sorted(wanted):
+        if name in declared:
+            print(f"  ok                {name}")
+            continue
+        # A rename leaves the old name listed as backward compatible, which is
+        # worth telling apart from a name that was never right: the splitter
+        # still matches, but it is matching history.
+        superseded = [
+            new for new, old in declared.items() if name in old
+        ]
+        if superseded:
+            print(
+                f"  RENAMED           {name} is now {', '.join(superseded)} "
+                f"(kept as backward compatible)  ({wanted[name]})"
+            )
+        else:
+            print(
+                f"  MISSING TEMPLATE  {name} is declared by no blueprint, so its "
+                f"split can never fire  ({wanted[name]})"
+            )
+        problems += 1
+    return problems
+
+
 def check(managed_dir, probe_rs):
     problems = 0
     for image, cls, fields in _probe_subjects(probe_rs):
@@ -300,6 +404,7 @@ def check(managed_dir, probe_rs):
             listed = ", ".join(fields) if fields else "(class only)"
             print(f"  ok                {image}/{cls}: {listed}")
     problems += check_validators(managed_dir, Path(probe_rs).parent)
+    problems += check_templates(managed_dir, Path(probe_rs).parent)
 
     print()
     print("ALL RESOLVED" if not problems else f"{problems} PROBLEM(S)")

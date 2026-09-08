@@ -17,9 +17,18 @@ something" is answerable entirely offline:
 ./metadata.py check ~/.steam/steam/steamapps/common/Timberborn/Timberborn_Data/Managed
 ```
 
-That checks every name `src/probe.rs` depends on. Run it after switching Steam
-branches: a clean result means any `MISSING` the runtime probe reports is a real
-change rather than a typo in the probe.
+That checks three things: every name `src/probe.rs` depends on, every field a
+`Locatable` site validates an instance through, and every building template
+name the splitter matches on. Run it after switching Steam branches: a clean
+result means any `MISSING` the runtime probe reports is a real change rather
+than a typo in the probe.
+
+The template names are the part with no runtime counterpart. Nothing resolves a
+template name -- it is compared against `ComponentCache._name` during the entity
+walk -- so a wrong one produces a split that silently never fires, and this is
+the only place that can catch it. They are read out of `src/` rather than listed
+again here, and checked against `TemplateSpec.TemplateName` in the install's
+`StreamingAssets/Modding/Blueprints.zip`.
 
 `facts` prints the same set as JSON -- names, declared types and static flags
 -- which is the half of a test fixture that lives in the assemblies. The other

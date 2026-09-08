@@ -175,15 +175,16 @@ pub const CATALOGUE: &[Requirement] = &[
              turns the Timberbot triggers on for you; they ship off, and a \
              recording made without them would capture the start and the Gear \
              Workshop and nothing else.",
-            "Start a new game and play it through: **build and finish** a Gear \
-             Workshop, a Smelter and a Bot Part Factory, then a Bot Assembler, \
-             and assemble one bot.",
-            "Developer mode is a legitimate way to get through it quickly -- \
-             grant the science and the resources freely. Do **not** shortcut the \
-             three buildings by consoling their goods in: they are the splits, \
-             and matching their template names against real memory is half of \
-             what this recording is for. The `first-bot` capture was taken that \
-             way and walks 5252 entities for none of them.",
+            "Start a new game and play it through: a Gear Workshop, a Smelter \
+             and a Bot Part Factory, then a Bot Assembler, and one bot \
+             assembled.",
+            "Developer mode is the ordinary way to do this and the other \
+             recordings were made that way -- a console-built building is a \
+             real entity with a real template name, which is exactly what the \
+             splitter matches on. What matters is only that the three buildings \
+             are actually **placed and finished**: they are the splits. The \
+             `first-bot` capture skipped straight to the Bot Assembler, and so \
+             walks 5252 entities for none of them.",
             "Stop the recorder with Ctrl-C once the bot is out.",
         ],
         begins_at: Some("main-menu"),

@@ -625,9 +625,22 @@ ever fire, since the two factions are separate categories:
 Note the lowercase `c` in `Numbercruncher`, and that Iron Teeth have no
 Observatory at all.
 
-Template names are checkable with the game closed, which is the cheap way to
-settle one: `Timberborn_Data/StreamingAssets/Modding/Blueprints.zip` holds a
-`*.blueprint.json` per building, each carrying its own `TemplateName`.
+Template names are checkable with the game closed, and **`metadata.py check`
+now does it**: `Timberborn_Data/StreamingAssets/Modding/Blueprints.zip` holds a
+`*.blueprint.json` per building, each carrying its own `TemplateSpec.TemplateName`,
+and the check reads every name the splitter matches on out of `src/` and looks
+for it there. A name declared by no blueprint is reported as one whose split can
+never fire.
+
+That is the only check these names get, and it had to be built rather than
+inherited: a class or a field has a runtime probe that can report it missing,
+and a template name has nothing. Nothing resolves one -- it is compared against
+`ComponentCache._name` as the entity walk goes past -- so the only symptom of a
+wrong one is a split that does not happen, discovered during a run.
+
+It tells a rename apart from a name that was never right, using
+`BackwardCompatibleTemplateNames`: a superseded name still matches, so the
+splitter keeps working, but it is matching history and should be updated.
 
 Guessing costs test runs. `TributeToIngenuity.IronTeeth` reads like a wonder and
 is not one — it is a monument, alongside `FarmerMonument.Folktails` and
@@ -1613,8 +1626,11 @@ survive game updates. Two halves check that, and neither takes long:
 
 - **Offline**, with the game closed:
   `devtools/metadata.py check <Timberborn_Data/Managed>` verifies every name
-  `src/probe.rs` depends on against the installed assemblies. This is the fast
-  answer to "did an update rename something".
+  `src/probe.rs` depends on against the installed assemblies, every field a
+  `Locatable` validates through, and every building template name the splitter
+  matches on -- the last against `Blueprints.zip` beside that Managed
+  directory, skipped with a note if it is not there. This is the fast answer to
+  "did an update rename something".
 - **At runtime**, `src/probe.rs` resolves the same set against the live process
   and logs each one's offset, plus the Mono version and pointer size. It runs
   once a save is loaded, because Mono loads assemblies lazily and some are
