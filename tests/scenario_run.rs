@@ -313,7 +313,6 @@ fn both_sweeps_land_before_the_first_game() {
     }
 }
 
-
 /// The Timberbot category, replayed out of real memory: the timer starts and
 /// all four splits fire.
 ///
