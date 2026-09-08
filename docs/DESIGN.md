@@ -459,7 +459,9 @@ All paths below were verified to exist in the shipped assemblies.
 | Buildings finished | `GameOverChecker._entityRegistry` → `EntityRegistry._entitiesInInstantiationOrder`, each entity's `_componentCache` → `ComponentCache._name`, and its `BlockObjectState._state` | `List<EntityComponent>`, `string`, `State` enum |
 | Wonder unlocked | `BuildingUnlockingService._unlockedBuildings` | **`HashSet<string>`** |
 | Wonder activated *(logged, not split)* | `WonderCompletionCountdownStarter._unlockDay` | `int` |
-| Run end | `WonderCompletionCountdownStarter.CountdownFinished` | `bool` |
+| Run end (Wonder) | `WonderCompletionCountdownStarter.CountdownFinished` | `bool` |
+| Run end (Timberbot) | `BotPopulation.BotCreated` | `bool` |
+| Bots alive *(logged, not split)* | `BotPopulation._bots` | `List<BotSpec>` |
 | Day | `DayNightCycle.DayNumber` | `int` |
 
 Field types were read out of the assemblies offline (`devtools/metadata.py`),
@@ -790,6 +792,40 @@ ABI rather than of a BCL implementation, and correspondingly more stable: if
 `Slot<T>` ever changed shape, its declared fields would have changed with it
 and the name lookups would fail first, loudly.
 
+### Two routes, one flat list of triggers
+
+There are two run shapes -- the Wonder run and the Timberbot run -- and no
+setting says which is being run. Every trigger is a checkbox, the runner turns
+on what their route hits, and `Trigger::enabled` is one exhaustive match from
+trigger to checkbox.
+
+A `Category` choice was built first and then removed. It bought exactly one
+thing: it made "every checkbox defaults on" safe. Only one pair of triggers can
+collide, and the defaults settle it more cheaply:
+
+- **Smelter** (solo) and **Smelter + Wood Workshop** read the same watched
+  building. The combined one fires on whichever of the pair is second; the solo
+  one fires on the Smelter alone.
+- The combined one ships on and the solo one ships off, so a runner who never
+  opens the settings gets one split out of a Smelter. Turning both on is
+  allowed and gives two, which is then a choice.
+
+Everything else is inert rather than conflicting: a Timberbot run simply never
+finishes a Wonder or a Wood Workshop, so those triggers cannot fire whatever
+their checkbox says. `tests/synthetic_scenario.rs` plays a wonder run on the
+shipped defaults, produces a bot part way through, and asserts seven splits --
+with both declining triggers logged, so the count cannot pass for the wrong
+reason.
+
+The gate would have been the right shape if the trigger catalogue were large
+enough that defaults could not keep the routes apart. It is ten. See the
+parent notes' costing of the settings API for where that changes.
+
+`Buildings::solo_trigger` is what lets one watched building serve two triggers:
+it maps the smelter's slot to `Trigger::Smelter` while the combined split reads
+the same slot. The Wood Workshop has no solo trigger, because nothing has asked
+to split on it alone.
+
 ### Category rules, and what they mean in memory
 
 From the category rules:
@@ -848,6 +884,31 @@ only fires on a **transition we observed**, never on a value that was already
 set when we attached. A real run starts from a new game and can never hit this,
 but a splitter that fires the run-end split on loading an old save would be
 badly behaved.
+
+**The Timberbot end is the same shape, and the same trap.** `BotPopulation`
+handles `CharacterCreatedEvent`; when the new character has a `BotSpec` it is
+added to `_bots` and `BotCreated` is set:
+
+```
+CharacterCreatedEvent
+  -> BotPopulation.OnCharacterCreated
+     -> if the character has a BotSpec:
+          _bots.Add(bot)
+          BotCreated = true
+```
+
+So `BotCreated` means "a Timberbot has been created in this settlement", which
+is the run end stated directly rather than inferred. It is a `bool` on a
+singleton with `_eventBus`, so the ordinary locator finds it, and it is one
+read a tick.
+
+It is persisted (`BotPopulationKey` / `BotCreatedKey`), and -- unlike the live
+list -- it never goes back: `OnCharacterKilled` removes a dead bot from `_bots`
+and leaves the flag alone. That is why the split reads the flag rather than the
+count, and why the flag needs the same already-true-on-arrival suppression the
+countdown has. `_bots.Count` is read alongside it and only logged; it is what
+the population overlay counts, so a log line quoting it can be checked against
+what the runner saw on screen.
 
 **Start** is identified, and the game's own state machine uses the same concept
 the rules do. `GameInitializer` steps through an `InitializationState` enum:

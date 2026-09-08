@@ -115,7 +115,14 @@ fn attaches_to_the_executable_name_directly() {
     assert!(!world.logged("Still looking for Timberborn..."));
 }
 
-/// The splitter registers eight splits, all defaulting on.
+/// The splitter registers eleven splits: the eight wonder ones on, the three
+/// Timberbot ones off.
+///
+/// The defaults are the whole of the interaction between the two routes.
+/// Smelter and Smelter + Wood Workshop read the same building, so shipping
+/// both on would give a runner who never opened the settings two splits out of
+/// one Smelter. Asserting the values here, not just the keys, is what keeps
+/// that from being reintroduced by a copied `#[default = true]`.
 #[test]
 fn registers_its_settings() {
     let world = test_harness::drive(World::new(), timberborn_autosplitter::main(), 1);
@@ -136,10 +143,16 @@ fn registers_its_settings() {
             "smelter_woodworkshop",
             "unlock_wonder",
             "congratulations_screen",
+            "smelter",
+            "bot_part_factory",
+            "first_bot",
         ]
     );
-    assert!(world
+    let off: Vec<&str> = world
         .registered_settings
         .iter()
-        .all(|(_, default)| *default));
+        .filter(|(_, default)| !*default)
+        .map(|(key, _)| key.as_str())
+        .collect();
+    assert_eq!(off, ["smelter", "bot_part_factory", "first_bot"]);
 }

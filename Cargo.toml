@@ -62,6 +62,10 @@ name = "snapshot_run"
 required-features = ["snapshot-tests"]
 
 [[test]]
+name = "snapshot_first_bot"
+required-features = ["snapshot-tests"]
+
+[[test]]
 name = "scenario_run"
 required-features = ["snapshot-tests"]
 

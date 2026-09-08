@@ -136,8 +136,16 @@ pub const SUBJECTS: &[Subject] = &[
     Subject {
         image: "Timberborn.Population",
         class: "PopulationData",
-        fields: &["NumberOfAdults", "NumberOfChildren"],
+        fields: &["NumberOfAdults", "NumberOfChildren", "NumberOfBots"],
         used_for: "population",
+    },
+    Subject {
+        image: "Timberborn.Bots",
+        class: "BotPopulation",
+        // BotCreated is the run end for the Timberbot category; _bots is the
+        // live count, logged beside it.
+        fields: &["BotCreated", "_bots", "_eventBus"],
+        used_for: "run end: the first Timberbot produced",
     },
     Subject {
         image: "Timberborn.SceneLoading",

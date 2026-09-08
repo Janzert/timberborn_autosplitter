@@ -335,6 +335,8 @@ pub mod reached_by {
     /// `HashSet<string>` of unlocked building names.
     pub const UNLOCKED_SET: &str = "Timberborn.ScienceSystem/BuildingUnlockingService -> \
          BuildingUnlockingService._unlockedBuildings";
+    /// `List<BotSpec>`, the bots the settlement has alive.
+    pub const BOT_LIST: &str = "Timberborn.Bots/BotPopulation -> BotPopulation._bots";
     /// `List<object>`, an entity's component cache.
     pub const COMPONENT_LIST: &str = "Timberborn.GameOver/GameOverChecker -> \
          GameOverChecker._entityRegistry -> EntityRegistry._entitiesInInstantiationOrder -> \
@@ -374,6 +376,11 @@ impl Scene {
         let data = self.object("Timberborn.Population", "PopulationData");
         self.set_ptr(&population, "GlobalPopulationData", data.address);
 
+        // Every game has one, bots or not: it is a singleton constructed at
+        // load, and `BotCreated` is false until a bot is produced. Its `_bots`
+        // is left null; a scenario that cares gives it a list.
+        let bots = self.service("Timberborn.Bots", "BotPopulation");
+
         let initializer = self.service("Timberborn.GameStartup", "GameInitializer");
         self.set_i32(&initializer, "_initializationState", initialization_state);
 
@@ -383,6 +390,7 @@ impl Scene {
             countdown,
             game_over,
             population,
+            bots,
             initializer,
         }
     }
@@ -528,6 +536,9 @@ pub struct CoreServices {
     /// the entity registry. Its `_entityRegistry` is left null.
     pub game_over: Object,
     pub population: Object,
+    /// `BotPopulation`, whose `BotCreated` is the Timberbot category's run
+    /// end. Its `_bots` is left null.
+    pub bots: Object,
     /// `GameInitializer`, whose `_initializationState` is the run start.
     pub initializer: Object,
 }

@@ -35,9 +35,9 @@ cargo snapshot-tests    # replays real captured memory: ~2 minutes
 **The offline suite gates commits.** It builds a synthetic Mono process out of
 the layout facts in [`fixtures/`](../fixtures/README.md) — assemblies, images,
 class caches, classes, fields, vtables — and drives the real splitter against
-it. It covers a whole wonder run as both factions, the mid-run attach, the timer
-states a runner sets by hand rather than the splitter causing, and the edges of
-a session: the game starting after the splitter, closing under it, dying
+it. It covers a whole wonder run as both factions, a
+Timberbot run as both, the mid-run attach, the timer states a runner sets by
+hand rather than the splitter causing, and the edges of a session: the game starting after the splitter, closing under it, dying
 slowly, or being the second game of the evening. It runs on a machine that
 has never had Timberborn installed, which is why CI can run it.
 
@@ -50,6 +50,13 @@ does not run it.
 
 Both are kept deliberately. A fixture and the builder can agree with each other
 perfectly while both being wrong about Timberborn.
+
+`tests/snapshot_first_bot.rs` is that argument at its smallest. The Timberbot
+run end is one `bool`, and every offline test reads it out of a heap this
+repository wrote -- so the offline suite would agree with the splitter about a
+flag the game does not set, or sets for something else. It replays a capture of
+a settlement with eleven adults, two children and exactly one bot, and asserts
+the splitter read one. That is the game saying so rather than the fixture.
 
 The synthetic world models the runtime's reference table as well as the heap —
 every object placed gets an entry, in a range of its own holding pointers and

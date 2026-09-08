@@ -1,9 +1,8 @@
 {
   "format": 1,
   "game_version": "1.0.13.1-b769e88-sw",
-  "build_id": 23107127,
   "sources": {
-    "snapshot": "1.0.13.1-b769e88-sw-run-finished"
+    "snapshot": "1.0.13.1-b769e88-sw-wonder-run/step20"
   },
   "classes": [
     {
@@ -35,6 +34,16 @@
       "name": "BlockObjectState",
       "fields": [
         { "name": "_state", "type": "State", "static": false, "offset": 48 }
+      ]
+    },
+    {
+      "image": "Timberborn.Bots",
+      "namespace": "Timberborn.Bots",
+      "name": "BotPopulation",
+      "fields": [
+        { "name": "<BotCreated>k__BackingField", "requested": "BotCreated", "type": "bool", "static": false, "offset": 40 },
+        { "name": "_bots", "type": "System.Collections.Generic.List<Timberborn.Bots.BotSpec>", "static": false, "offset": 32 },
+        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 16 }
       ]
     },
     {
@@ -108,7 +117,8 @@
       "name": "PopulationData",
       "fields": [
         { "name": "<NumberOfAdults>k__BackingField", "requested": "NumberOfAdults", "type": "int", "static": false, "offset": 16 },
-        { "name": "<NumberOfChildren>k__BackingField", "requested": "NumberOfChildren", "type": "int", "static": false, "offset": 20 }
+        { "name": "<NumberOfChildren>k__BackingField", "requested": "NumberOfChildren", "type": "int", "static": false, "offset": 20 },
+        { "name": "<NumberOfBots>k__BackingField", "requested": "NumberOfBots", "type": "int", "static": false, "offset": 24 }
       ]
     },
     {
@@ -176,6 +186,14 @@
   "instances": [
     {
       "reached_by": "Timberborn.GameOver/GameOverChecker -> GameOverChecker._entityRegistry -> EntityRegistry._entitiesInInstantiationOrder",
+      "role": "list",
+      "fields": [
+        { "name": "_items", "offset": 16 },
+        { "name": "_size", "offset": 24 }
+      ]
+    },
+    {
+      "reached_by": "Timberborn.Bots/BotPopulation -> BotPopulation._bots",
       "role": "list",
       "fields": [
         { "name": "_items", "offset": 16 },

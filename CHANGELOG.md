@@ -3,6 +3,28 @@
 What changed between releases, from a runner's point of view. Dates are the
 release date.
 
+## Unreleased
+
+### Added
+
+- **Three splits for a Timberbot run**: **Smelter**, **Bot Part Factory** and
+  **Produce a Timberbot**, the last of which fires the moment the first bot
+  walks out of the assembler — when the population overlay starts showing a bot
+  count. With the Gear Workshop, which the route shares with the wonder run,
+  that is a four-segment category, and
+  [`examples/Timberborn-Timberbot.lss`](examples/Timberborn-Timberbot.lss) is a
+  splits file for it that serves both factions.
+
+  **They ship off, and wonder runners need do nothing** — the seven wonder
+  splits behave exactly as before. Turn on the ones your route hits; there is
+  no category to pick, so you can mix them however you actually run.
+
+  One pairing to know about: **Smelter** and **Smelter + Wood Workshop** read
+  the same building, the first splitting when the Smelter is done and the
+  second waiting for the Wood Workshop too. That is why the solo one ships off.
+  Turning both on gives two splits out of one Smelter, which is allowed if that
+  is what you want.
+
 ## 0.3 — 2026-09-05
 
 Mostly about what the splitter costs while you play. Starting a game used to

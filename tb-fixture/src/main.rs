@@ -90,6 +90,25 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
+/// What to write down as "says who".
+///
+/// A single capture is one directory in the store, so its own name identifies
+/// it. A step of a recording is not: `step19` names nothing on its own, and
+/// the recording it belongs to is the part worth keeping, so both are.
+fn snapshot_name(dir: &Path) -> String {
+    let name = |path: &Path| {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    match dir.parent() {
+        Some(parent) if name(dir).starts_with("step") => {
+            format!("{}/{}", name(parent), name(dir))
+        }
+        _ => name(dir),
+    }
+}
+
 fn run() -> Result<(), String> {
     let args = match parse_args() {
         Ok(args) => args,
@@ -146,10 +165,7 @@ fn run() -> Result<(), String> {
         game_version: snapshot.metadata.game_version.clone(),
         build_id: snapshot.metadata.build_id.parse().ok(),
         sources: Sources {
-            snapshot: dir
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            snapshot: snapshot_name(&dir),
         },
         classes,
     };
@@ -408,6 +424,13 @@ mod instances {
                     "_entitiesInInstantiationOrder",
                 ),
             ],
+            role: "list",
+            fields: &["_items", "_size"],
+        },
+        Wanted {
+            image: "Timberborn.Bots",
+            class: "BotPopulation",
+            path: &[Step::Field("Timberborn.Bots", "BotPopulation", "_bots")],
             role: "list",
             fields: &["_items", "_size"],
         },

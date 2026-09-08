@@ -38,6 +38,17 @@ use asr::{
 /// Which splits are enabled. The set and order follow the mod-based splitter
 /// this replaces, except that the advanced science split covers both factions'
 /// buildings and the run end is named for the Congratulations screen.
+///
+/// One checkbox per trigger and nothing above them: a runner ticks what their
+/// route actually hits, whatever category it belongs to. The Gear Workshop is
+/// on both routes and has one checkbox for both.
+///
+/// The Wonder splits default on and the Timberbot ones default off, which is
+/// the only place the two categories touch. Both read the Smelter -- alone for
+/// Timberbot, as half of the pair for Wonder -- so a runner who has never
+/// opened these settings must not have both, and the wonder run is the one
+/// that was here first. Ticking both is allowed, and gives two splits off the
+/// one building; that is then a choice rather than an accident.
 #[derive(Gui)]
 struct Settings {
     /// Start the run when the overlay appears after naming the settlement
@@ -65,6 +76,9 @@ struct Settings {
     advanced_science: bool,
 
     /// Split when both the Smelter and Wood Workshop are finished
+    ///
+    /// The Wonder route's split. Fires on whichever of the pair is second. The
+    /// Timberbot route splits on the Smelter alone instead; see below.
     #[default = true]
     smelter_woodworkshop: bool,
 
@@ -79,6 +93,30 @@ struct Settings {
     /// the prerequisite; this screen is the official end time.
     #[default = true]
     congratulations_screen: bool,
+
+    // The Timberbot route's splits, off by default and kept together at the
+    // end so each route's list reads in order. The Gear Workshop is on both
+    // routes and is not repeated: one checkbox governs it either way.
+    /// Split when the Smelter is finished (off by default)
+    ///
+    /// The same building as half of the Smelter + Wood Workshop split, on its
+    /// own. Off by default because that split is on: a wonder runner who has
+    /// never opened these settings would otherwise get two splits out of one
+    /// building. Turning both on is allowed and does exactly that.
+    #[default = false]
+    smelter: bool,
+
+    /// Split when the Bot Part Factory is finished (off by default)
+    #[default = false]
+    bot_part_factory: bool,
+
+    /// Split when the first Timberbot is produced (off by default)
+    ///
+    /// The end of a Timberbot run: the moment a bot walks out of the Bot
+    /// Assembler, which is when the population overlay starts showing a bot
+    /// count beside the adults and children.
+    #[default = false]
+    first_bot: bool,
 }
 
 asr::async_main!(stable);
@@ -878,8 +916,10 @@ async fn watch(
     let mut completion: Option<WonderCompletion> = None;
     let mut unlock: Option<WonderUnlock> = None;
     let mut buildings: Option<Buildings> = None;
+    let mut bots: Option<BotCreation> = None;
     let mut explained_buildings = false;
     let mut ended = false;
+    let mut bot_ended = false;
     // Whether a run start was observed while watching this scene. Anything
     // resolved afterwards belongs to a run already under way, so "already done
     // when we arrived" is not a reason to stay quiet.
@@ -949,6 +989,7 @@ async fn watch(
                 unlock = None;
                 completion = None;
                 buildings = None;
+                bots = None;
 
                 // Whatever went wrong before, it was about a previous game.
                 status::clear();
@@ -981,7 +1022,7 @@ async fn watch(
             // these are retried precisely because the services do not all
             // exist at once. Registering one replaces the container's array,
             // so nothing short of re-reading it will show the new arrival.
-            if completion.is_none() || unlock.is_none() || buildings.is_none() {
+            if completion.is_none() || unlock.is_none() || buildings.is_none() || bots.is_none() {
                 registry.refresh(process).await;
             }
             if completion.is_none() {
@@ -1010,6 +1051,14 @@ async fn watch(
                     }
                 }
             }
+            if bots.is_none() {
+                bots = BotCreation::resolve(process, module, event_bus_vtable, registry);
+                if run_began {
+                    if let Some(b) = &mut bots {
+                        b.arrived_mid_run();
+                    }
+                }
+            }
         }
 
         // Each watcher owns a different object with its own lifetime, so the
@@ -1024,6 +1073,9 @@ async fn watch(
         }
         if buildings.as_ref().is_some_and(|b| !b.still_valid(process)) {
             buildings = None;
+        }
+        if bots.as_ref().is_some_and(|b| !b.still_valid(process)) {
+            bots = None;
         }
 
         if let Some(b) = &mut buildings {
@@ -1081,6 +1133,29 @@ async fn watch(
             }
         }
 
+        // The end of a Timberbot run: the first bot produced. Read every tick,
+        // like the wonder's, and independent of it -- which of them a runner
+        // has turned on is entirely their affair.
+        if let Some(b) = &mut bots {
+            if !bot_ended && b.created(process) {
+                bot_ended = true;
+                let alive = match b.live(process) {
+                    Some(count) => alloc::format!(" Bots alive: {count}."),
+                    None => alloc::string::String::new(),
+                };
+                if Trigger::FirstBot.enabled(settings) && timer::state() == TimerState::Running {
+                    asr::print_message(&format!(
+                        "Run end: the first Timberbot was created. Splitting.{alive}"
+                    ));
+                    timer::split();
+                } else {
+                    asr::print_message(&format!(
+                        "The first Timberbot was created, but not splitting.{alive}"
+                    ));
+                }
+            }
+        }
+
         ticks = ticks.wrapping_add(1);
         next_tick().await;
     }
@@ -1108,6 +1183,13 @@ enum Trigger {
     SmelterWoodWorkshop,
     WonderUnlocked,
     CongratulationsScreen,
+    /// The Smelter on its own, which is a segment of the Timberbot run rather
+    /// than half of a Wonder one. The same building, watched once: the two
+    /// triggers are independent, and a runner with both ticked gets both.
+    Smelter,
+    BotPartFactory,
+    /// The end of a Timberbot run: the first bot produced.
+    FirstBot,
 }
 
 impl Trigger {
@@ -1122,6 +1204,9 @@ impl Trigger {
             Trigger::SmelterWoodWorkshop => "Smelter + Wood Workshop",
             Trigger::WonderUnlocked => "wonder unlocked",
             Trigger::CongratulationsScreen => "Congratulations screen",
+            Trigger::Smelter => "Smelter",
+            Trigger::BotPartFactory => "Bot Part Factory",
+            Trigger::FirstBot => "the first Timberbot",
         }
     }
 
@@ -1135,6 +1220,9 @@ impl Trigger {
             Trigger::SmelterWoodWorkshop => settings.smelter_woodworkshop,
             Trigger::WonderUnlocked => settings.unlock_wonder,
             Trigger::CongratulationsScreen => settings.congratulations_screen,
+            Trigger::Smelter => settings.smelter,
+            Trigger::BotPartFactory => settings.bot_part_factory,
+            Trigger::FirstBot => settings.first_bot,
         }
     }
 }
@@ -1166,6 +1254,12 @@ const BUILDING_SPLITS: &[BuildingSplit] = &[
     BuildingSplit {
         trigger: Trigger::AdvancedScience,
         templates: &["Observatory.Folktails", "Numbercruncher.IronTeeth"],
+    },
+    // Timberbot only. Nothing in a Wonder run builds one, so tracking it there
+    // costs an entry in the watch list and never fires.
+    BuildingSplit {
+        trigger: Trigger::BotPartFactory,
+        templates: &["BotPartFactory.Folktails", "BotPartFactory.IronTeeth"],
     },
 ];
 
@@ -1234,11 +1328,15 @@ struct Buildings {
 }
 
 impl Buildings {
-    /// Four single-building splits, plus smelter and wood workshop tracked
+    /// Five single-building splits, plus smelter and wood workshop tracked
     /// separately for the combined one.
-    const TRACKED: usize = 6;
-    const SMELTER_INDEX: usize = 4;
-    const WOOD_WORKSHOP_INDEX: usize = 5;
+    ///
+    /// The smelter's slot is one of the two, not a `BUILDING_SPLITS` entry, so
+    /// that both the split it fires alone and the combined one read the same
+    /// watched building. See [`Buildings::solo_trigger`].
+    const TRACKED: usize = 7;
+    const SMELTER_INDEX: usize = 5;
+    const WOOD_WORKSHOP_INDEX: usize = 6;
 
     /// `BlockObjectState.State`: `Unfinished`, `Finished`, `Preview`.
     const FINISHED: i32 = 1;
@@ -1523,6 +1621,18 @@ impl Buildings {
         newly
     }
 
+    /// The split a slot fires on its own, if it has one.
+    ///
+    /// The smelter has one -- a Timberbot run splits on it alone -- and the
+    /// wood workshop has none: nothing has asked to split on it by itself, so
+    /// it is watched without being a trigger of its own.
+    fn solo_trigger(slot: usize) -> Option<Trigger> {
+        if slot == Self::SMELTER_INDEX {
+            return Some(Trigger::Smelter);
+        }
+        BUILDING_SPLITS.get(slot).map(|split| split.trigger)
+    }
+
     fn all_templates() -> impl Iterator<Item = &'static [&'static str]> {
         BUILDING_SPLITS
             .iter()
@@ -1596,8 +1706,8 @@ impl Buildings {
             if self.on_arrival[slot] {
                 continue;
             }
-            if let Some(split) = BUILDING_SPLITS.get(slot) {
-                fired.push(split.trigger);
+            if let Some(trigger) = Self::solo_trigger(slot) {
+                fired.push(trigger);
             }
         }
 
@@ -1883,6 +1993,120 @@ impl WonderCompletion {
             ));
             self.reported_activation = true;
         }
+    }
+}
+
+/// The run end for the Timberbot category: the first bot produced.
+///
+/// `BotPopulation` handles `CharacterCreatedEvent`. When the character it
+/// carries has a `BotSpec` the population adds it to `_bots` and sets
+/// `BotCreated` -- so the flag means exactly "a Timberbot has been created in
+/// this settlement", it is set on the tick the first one walks out of the
+/// assembler, and it is persisted in the save. It is also what the population
+/// overlay gates the bot count on, so the runner sees the same instant on
+/// screen that this splits on.
+///
+/// `_bots` is the *live* count: it goes back down when a bot is destroyed, and
+/// would be zero again in a settlement whose only bot died. `BotCreated` never
+/// goes back, which is why the split reads the flag and the count is only
+/// logged.
+struct BotCreation {
+    /// Kept so the instance can be re-validated, exactly as the other watchers
+    /// do: a freed object keeps reading, and returns whatever now owns it.
+    class: service::Locatable,
+    instance: Address,
+    created: u32,
+    /// `_bots` and the offset of its `_size`. Diagnostic only, and `None` if
+    /// the list could not be read -- nothing splits on it.
+    bots: Option<(Address, u32)>,
+    /// The value when we first saw it. A save that already has bots loads with
+    /// this true, and that must not read as the run ending.
+    created_on_arrival: bool,
+}
+
+impl BotCreation {
+    fn resolve(
+        process: &Process,
+        module: &Module,
+        event_bus_vtable: Address,
+        registry: &singletons::Registry,
+    ) -> Option<Self> {
+        let class = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.Bots",
+            "BotPopulation",
+            event_bus_vtable,
+        )?;
+        // An auto-property, so Mono knows it as `<BotCreated>k__BackingField`.
+        // asr falls back to that spelling on its own, the same way DayNumber is
+        // read.
+        let created = class.field(process, module, "BotCreated")?;
+        let instance = registry.lookup(class.vtable())?;
+
+        let bots = class
+            .field(process, module, "_bots")
+            .and_then(|offset| read_pointer(process, instance, offset))
+            .and_then(|list| {
+                collections::List::offsets(process, module, list).map(|(size, _items)| (list, size))
+            });
+
+        let already = Self::flag(process, instance, created);
+        asr::print_message(&format!(
+            "Watching the bot population at {instance} (run end for the Timberbot \
+             category). A bot has already been created in this save: {already}. \
+             Bots alive now: {}.",
+            match Self::count(process, bots) {
+                Some(count) => alloc::format!("{count}"),
+                None => alloc::string::String::from("unreadable"),
+            }
+        ));
+
+        Some(Self {
+            class,
+            instance,
+            created,
+            bots,
+            created_on_arrival: already,
+        })
+    }
+
+    fn flag(process: &Process, instance: Address, offset: u32) -> bool {
+        process
+            .read::<u8>(instance.add(offset as u64))
+            .is_ok_and(|created| created != 0)
+    }
+
+    fn count(process: &Process, bots: Option<(Address, u32)>) -> Option<i32> {
+        let (list, size) = bots?;
+        process.read::<i32>(list.add(size as u64)).ok()
+    }
+
+    /// Bound part way through a run, so a bot standing now was produced during
+    /// it and the split is still owed.
+    fn arrived_mid_run(&mut self) {
+        if self.created_on_arrival {
+            asr::print_message(
+                "A bot reads as already created, but this watcher was bound \
+                 after the run started, so that belongs to the game before it. \
+                 Watching for the first bot anyway.",
+            );
+        }
+        self.created_on_arrival = false;
+    }
+
+    fn still_valid(&self, process: &Process) -> bool {
+        self.class.still_valid(process, self.instance)
+    }
+
+    /// True only on a transition we actually observed.
+    fn created(&self, process: &Process) -> bool {
+        !self.created_on_arrival && Self::flag(process, self.instance, self.created)
+    }
+
+    /// How many bots are alive, for the log line that reports the split.
+    fn live(&self, process: &Process) -> Option<i32> {
+        Self::count(process, self.bots)
     }
 }
 

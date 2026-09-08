@@ -1,9 +1,15 @@
-//! A whole wonder run, played against a world built from the fixture.
+//! Whole runs, played against a world built from the fixture.
 //!
 //! `tests/scenario_run.rs` does this by replaying two recorded games, which
 //! costs 55s and captures this repository cannot ship. This plays the same
-//! category — the timer starting, then all seven splits — against a world
+//! categories — the timer starting, then every split — against a world
 //! assembled from committed facts, in milliseconds, on any machine.
+//!
+//! Both routes are here, because the thing worth testing about a second one is
+//! that it does not leak into the first: the Smelter ends a Timberbot segment
+//! and is only half of a Wonder split, and both read the same building. What
+//! keeps them apart is nothing but the shipped defaults, which is why a test
+//! plays a wonder run with the settings untouched.
 //!
 //! Both suites stay. This one can only ever be as right as the fixture, and
 //! the recording is what says whether the fixture is right; see
@@ -53,6 +59,11 @@ struct Faction {
     /// category builds them. The last two share one split, which fires when
     /// both are up.
     buildings: [&'static str; 6],
+    /// The three buildings a Timberbot run splits on, in route order. The Gear
+    /// Workshop is shared with the wonder run and the Smelter is the same
+    /// building as one of the pair above; only the Bot Part Factory is this
+    /// route's alone.
+    bot_buildings: [&'static str; 3],
     /// The wonder unlocked with science. Not the similar-sounding Tribute to
     /// Ingenuity, which is a monument — a confusion that has already cost this
     /// project a debugging session, and one a synthetic world would happily
@@ -75,6 +86,11 @@ const FACTIONS: &[Faction] = &[
             "Smelter.Folktails",
             "WoodWorkshop.Folktails",
         ],
+        bot_buildings: [
+            "GearWorkshop.Folktails",
+            "Smelter.Folktails",
+            "BotPartFactory.Folktails",
+        ],
         wonder: "EarthRecultivator.Folktails",
     },
     Faction {
@@ -88,6 +104,11 @@ const FACTIONS: &[Faction] = &[
             "Numbercruncher.IronTeeth",
             "Smelter.IronTeeth",
             "WoodWorkshop.IronTeeth",
+        ],
+        bot_buildings: [
+            "GearWorkshop.IronTeeth",
+            "Smelter.IronTeeth",
+            "BotPartFactory.IronTeeth",
         ],
         wonder: "EarthRepopulator.IronTeeth",
     },
@@ -107,15 +128,24 @@ struct Run {
     loader: Object,
     initializer: Object,
     countdown: Object,
+    bots: Object,
     clock: Object,
     entities: u64,
     unlocked: u64,
+    /// The bot population's `_bots`, which is the live count rather than the
+    /// flag the run ends on. Both move when a bot is produced.
+    bot_list: u64,
     /// Every entity, placed but not yet revealed.
     placed: Vec<Entity>,
 }
 
-/// Builds the world a wonder run happens in, with nothing yet done in it.
-fn wonder_run(fixture: &fixture::Fixture, faction: &Faction) -> (World, Run) {
+/// Builds the world a run happens in, with nothing yet done in it.
+///
+/// `buildings` is what this category puts up, in route order; everything else
+/// is the same settlement either way. A Timberbot run's game still has a
+/// wonder completion countdown and a science tree -- leaving them out would
+/// model a game Timberborn does not have.
+fn settlement(fixture: &fixture::Fixture, faction: &Faction, buildings: &[&str]) -> (World, Run) {
     let mut scene = Scene::new(fixture);
 
     let clock = scene.service("Timberborn.TimeSystem", "DayNightCycle");
@@ -142,8 +172,7 @@ fn wonder_run(fixture: &fixture::Fixture, faction: &Faction) -> (World, Run) {
 
     // The entity registry, reached the way the splitter reaches it: through
     // the one singleton that holds it.
-    let placed: Vec<Entity> = faction
-        .buildings
+    let placed: Vec<Entity> = buildings
         .iter()
         .map(|template| scene.entity(template, 0))
         .collect();
@@ -164,6 +193,15 @@ fn wonder_run(fixture: &fixture::Fixture, faction: &Faction) -> (World, Run) {
     let data = scene.object("Timberborn.Population", "PopulationData");
     scene.set_ptr(&population, "GlobalPopulationData", data.address);
 
+    // The bot population, which every game has whether or not it ever makes a
+    // bot. Its list is built holding one, and emptied below: a bot cannot be
+    // added to a process's memory once it exists, so the run reveals one the
+    // same way it reveals a finished building.
+    let bots = scene.service("Timberborn.Bots", "BotPopulation");
+    let bot = scene.builder().alloc(0x20);
+    let bot_list = scene.list(reached_by::BOT_LIST, &[bot]);
+    scene.set_ptr(&bots, "_bots", bot_list);
+
     let initializer = scene.service("Timberborn.GameStartup", "GameInitializer");
     scene.set_i32(&initializer, "_initializationState", WAITING);
 
@@ -180,6 +218,8 @@ fn wonder_run(fixture: &fixture::Fixture, faction: &Faction) -> (World, Run) {
     live.set_instance_i32(reached_by::ENTITY_LIST, entities, "_size", 0);
     live.set_instance_i32(reached_by::UNLOCKED_SET, unlocked_object, "_count", 0);
     live.set_instance_i32(reached_by::UNLOCKED_SET, unlocked_object, "_lastIndex", 0);
+    // No bots yet, and none ever made: the flag is what the run ends on.
+    live.set_instance_i32(reached_by::BOT_LIST, bot_list, "_size", 0);
 
     (
         World::new().with_process(process),
@@ -188,9 +228,11 @@ fn wonder_run(fixture: &fixture::Fixture, faction: &Faction) -> (World, Run) {
             loader,
             initializer,
             countdown,
+            bots,
             clock,
             entities,
             unlocked: unlocked_object,
+            bot_list,
             placed,
         },
     )
@@ -252,6 +294,15 @@ impl Run {
     fn congratulations(&self) {
         self.live.set_i32(&self.countdown, "CountdownFinished", 1);
     }
+
+    /// A bot walks out of the assembler, which is where the Timberbot category
+    /// ends. The game sets both: the flag, which is persisted and never goes
+    /// back, and the live list, which is what the population overlay counts.
+    fn first_bot(&self) {
+        self.live
+            .set_instance_i32(reached_by::BOT_LIST, self.bot_list, "_size", 1);
+        self.live.set_u8(&self.bots, "BotCreated", 1);
+    }
 }
 
 /// How many splits had fired by the time each step was applied.
@@ -266,6 +317,39 @@ fn play(fixture: &fixture::Fixture, faction: &Faction) -> (World, SplitsAtStep) 
     play_with(fixture, faction, |_, _| {})
 }
 
+/// A Timberbot run: three buildings and then a bot.
+///
+/// The three triggers are ticked and the Smelter + Wood Workshop one is not,
+/// which is a runner configuring the splitter for their route -- there is no
+/// category, so this is the whole of it. The wonder is never unlocked and the
+/// countdown never runs out, because the route does not go near either.
+fn play_timberbot(fixture: &fixture::Fixture, faction: &Faction) -> (World, SplitsAtStep) {
+    let (world, run) = settlement(fixture, faction, &faction.bot_buildings);
+    let world = world
+        .with_setting("smelter", true)
+        .with_setting("bot_part_factory", true)
+        .with_setting("first_bot", true)
+        .with_setting("smelter_woodworkshop", false);
+    let steps: Vec<Step> = vec![
+        Box::new(|r: &Run| r.load_ends()),
+        Box::new(|r: &Run| r.overlay()),
+        Box::new(|r: &Run| {
+            r.place(0);
+            r.finish(0);
+        }),
+        Box::new(|r: &Run| {
+            r.place(1);
+            r.finish(1);
+        }),
+        Box::new(|r: &Run| {
+            r.place(2);
+            r.finish(2);
+        }),
+        Box::new(|r: &Run| r.first_bot()),
+    ];
+    drive_steps(world, run, steps, |_, _| {})
+}
+
 /// The same run, with `meddle` called just before each step with that step's
 /// index and the world.
 ///
@@ -276,9 +360,9 @@ fn play(fixture: &fixture::Fixture, faction: &Faction) -> (World, SplitsAtStep) 
 fn play_with(
     fixture: &fixture::Fixture,
     faction: &Faction,
-    mut meddle: impl FnMut(usize, &mut World),
+    meddle: impl FnMut(usize, &mut World),
 ) -> (World, SplitsAtStep) {
-    let (world, run) = wonder_run(fixture, faction);
+    let (world, run) = settlement(fixture, faction, &faction.buildings);
 
     // What happens, in order. The splitter is given room between each.
     let steps: Vec<Step> = vec![
@@ -312,7 +396,17 @@ fn play_with(
         Box::new(|r: &Run| r.activate_wonder()),
         Box::new(|r: &Run| r.congratulations()),
     ];
+    drive_steps(world, run, steps, meddle)
+}
 
+/// Runs a world through a list of steps, with ticks between each, and gives
+/// back the world and what had split by the time each step was applied.
+fn drive_steps(
+    world: World,
+    run: Run,
+    steps: Vec<Step>,
+    mut meddle: impl FnMut(usize, &mut World),
+) -> (World, SplitsAtStep) {
     // How long the load runs before the game comes up. Modelled on a real
     // one rather than on how long the splitter happens to need: Timberborn
     // takes seconds to load a map, which at the splitter's ~100 ticks a second
@@ -359,6 +453,20 @@ fn for_each_run(check: impl Fn(&str, &World)) {
     for fixture in &fixtures {
         for faction in FACTIONS {
             let (world, _) = play(fixture, faction);
+            check(
+                &format!("{} as {}", fixture.game_version, faction.name),
+                &world,
+            );
+        }
+    }
+}
+
+/// The same, for a Timberbot run.
+fn for_each_timberbot_run(check: impl Fn(&str, &World)) {
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for fixture in &fixtures {
+        for faction in FACTIONS {
+            let (world, _) = play_timberbot(fixture, faction);
             check(
                 &format!("{} as {}", fixture.game_version, faction.name),
                 &world,
@@ -414,6 +522,125 @@ fn the_whole_category_fires() {
             world.log
         );
     });
+}
+
+/// A Timberbot run played through: a start and four splits, in order and no
+/// others. The last of them is the first bot, which is where the route ends.
+#[test]
+fn the_whole_timberbot_category_fires() {
+    for_each_timberbot_run(|version, world| {
+        let events = controlling(world);
+        let expected = std::iter::once("Start")
+            .chain(std::iter::repeat_n("Split", 4))
+            .collect::<Vec<_>>();
+        let actual: Vec<&str> = events
+            .iter()
+            .map(|event| match event {
+                TimerEvent::Start => "Start",
+                TimerEvent::Split => "Split",
+                TimerEvent::Reset => "Reset",
+                other => Box::leak(format!("{other:?}").into_boxed_str()),
+            })
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "{version}: the timer was driven wrongly; log was {:#?}",
+            world.log
+        );
+    });
+}
+
+/// Each Timberbot split fires for the thing it is for, in route order.
+///
+///
+/// The Smelter is the one worth reading twice: it is the same building the
+/// wonder run watches, and here it splits on its own.
+#[test]
+fn the_timberbot_splits_are_for_the_right_things_in_order() {
+    for_each_timberbot_run(|version, world| {
+        let reasons: Vec<&str> = world
+            .log
+            .iter()
+            .filter_map(|line| {
+                line.strip_prefix("Split: ")
+                    .or_else(|| line.strip_prefix("Run end: "))
+            })
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                "Gear Workshop finished.",
+                "Smelter finished.",
+                "Bot Part Factory finished.",
+                "the first Timberbot was created. Splitting. Bots alive: 1.",
+            ],
+            "{version}: log was {:#?}",
+            world.log
+        );
+    });
+}
+
+/// A wonder run played with the settings untouched: a bot is produced and the
+/// Smelter goes up, and neither costs a split it should not.
+///
+/// This is the whole of what separates the two routes now that there is no
+/// category. The shipped defaults have the Timberbot triggers off, so a runner
+/// who opens the splitter and starts a wonder run gets seven splits -- not an
+/// eighth for the bot, and not a ninth for the Smelter, which two triggers
+/// read and only one of them is on.
+#[test]
+fn a_wonder_run_with_the_shipped_defaults_splits_seven_times() {
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for (fixture, faction) in fixtures
+        .iter()
+        .flat_map(|f| FACTIONS.iter().map(move |x| (f, x)))
+    {
+        // A bot appears just after the run starts, and the wonder run then
+        // plays out in full.
+        let (world, run) = settlement(fixture, faction, &faction.buildings);
+        let mut steps: Vec<Step> = vec![
+            Box::new(|r: &Run| r.load_ends()),
+            Box::new(|r: &Run| r.overlay()),
+            Box::new(|r: &Run| r.first_bot()),
+        ];
+        for index in 0..faction.buildings.len() {
+            steps.push(Box::new(move |r: &Run| {
+                r.place(index);
+                r.finish(index);
+            }));
+        }
+        steps.push(Box::new(|r: &Run| r.unlock_wonder()));
+        steps.push(Box::new(|r: &Run| r.activate_wonder()));
+        steps.push(Box::new(|r: &Run| r.congratulations()));
+        let (world, _) = drive_steps(world, run, steps, |_, _| {});
+
+        assert_eq!(
+            world.timer.splits(),
+            7,
+            "{}: a wonder run on the shipped defaults should split seven times. \
+             An eighth means the bot split, a ninth means the Smelter split \
+             twice. Log was {:#?}",
+            run_name(fixture, faction),
+            world.log
+        );
+        // Both must have been *seen* and declined, or this proves nothing: a
+        // watcher that never bound would pass the count above for the wrong
+        // reason.
+        assert!(
+            world.logged("The first Timberbot was created, but not splitting."),
+            "{}: the bot was not even noticed, so the count above says nothing \
+             about the default. Log was {:#?}",
+            run_name(fixture, faction),
+            world.log
+        );
+        assert!(
+            world.logged("Smelter finished, but not splitting."),
+            "{}: the solo Smelter trigger never fired, so the count above says \
+             nothing about the two triggers reading one building. Log was {:#?}",
+            run_name(fixture, faction),
+            world.log
+        );
+    }
 }
 
 /// The run start is bound while the scene is still loading.

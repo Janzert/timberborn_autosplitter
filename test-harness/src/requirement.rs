@@ -95,6 +95,21 @@ pub const CATALOGUE: &[Requirement] = &[
         ends_at: None,
     },
     Requirement {
+        id: "first-bot",
+        summary: "a settlement that has produced its first Timberbot",
+        reproduce: &[
+            "Start a new game as either faction.",
+            "Build a Bot Part Factory and a Bot Assembler, and assemble one bot.",
+            "The developer console is a legitimate way to get there: it can grant \
+             the science, the buildings and the parts, and the splitter reads the \
+             same state either way.",
+            "Stop once the population overlay shows a bot count beside the adults \
+             and children -- that is the flag this state is of.",
+        ],
+        begins_at: None,
+        ends_at: None,
+    },
+    Requirement {
         id: "wonder-run",
         summary: "a whole wonder run recorded as it was played, split by split",
         reproduce: &[

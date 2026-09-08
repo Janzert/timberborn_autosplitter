@@ -37,6 +37,31 @@ Both factions are covered: where they have faction specific buildings — the
 advanced science building and the wonder itself — one split covers both, and
 only the one belonging to the faction being played can fire.
 
+Three more triggers cover a **Timberbot** run, which ends at the first bot
+rather than at a wonder. They are **off by default** — tick the ones your route
+hits:
+
+| Split | Fires when |
+|---|---|
+| *(run start)* | the overlay appears after naming the settlement |
+| Gear Workshop | a Gear Workshop is built *(the same checkbox as above)* |
+| Smelter | a Smelter is built |
+| Bot Part Factory | a Bot Part Factory is built |
+| Produce a Timberbot *(run end)* | the first bot is created — the moment the population overlay starts showing a bot count |
+
+There is no category to choose: every trigger is a checkbox and you turn on
+whichever ones you actually split on, mixing them however your route goes.
+
+Two of them are worth a sentence each:
+
+- **Smelter** and **Smelter + Wood Workshop** read the same building. The first
+  splits when the Smelter is finished; the second waits for the Wood Workshop
+  as well and fires on whichever is second. Leaving both on gives you two
+  splits out of one Smelter, which is why the solo one ships off.
+- Doing a Timberbot run means turning the wonder splits **off** as well as
+  turning these on — nothing else stops the Observatory or Numbercruncher from
+  splitting if you build one on the way to bots.
+
 One LiveSplit limitation worth noting: **Splits fire in whatever order the
 player achieves them**, which need not match the order in a `.lss` file. So an
 out of order split will get attributed to the wrong item.
@@ -47,18 +72,19 @@ measured.
 ## Setup
 
 No build needed to try it — the release carries a prebuilt module, and
-[`examples/`](examples/) has a splits file per faction and a layout to start
-from.
+[`examples/`](examples/) has a splits file per category (and per faction for
+the wonder run) and a layout to start from.
 [`CHANGELOG.md`](CHANGELOG.md) says what changed if you are updating from an
 earlier one.
 
 1. From the [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest),
    download
    [`timberborn_autosplitter.wasm`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/timberborn_autosplitter.wasm),
-   the splits file for the faction you run —
-   [`Timberborn-Wonder-Folktails.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-Folktails.lss)
-   or
+   the splits file for what you run —
+   [`Timberborn-Wonder-Folktails.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-Folktails.lss),
    [`Timberborn-Wonder-IronTeeth.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-IronTeeth.lss)
+   or
+   [`Timberborn-Timberbot.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Timberbot.lss)
    — and
    [`Timberborn.lsl`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn.lsl).
 2. In LiveSplit, right-click → **Open Splits** → **From File...** and pick the
@@ -70,8 +96,10 @@ earlier one.
    Runtime** in the component list. Use **Browse...** next to **Script Path**
    to pick the `.wasm` you downloaded. (The **Layout Settings** button and its
    **Auto Splitting Runtime** tab reach the same place.)
-4. The individual splits appear as checkboxes below it and can be turned off
-   there. **Save Layout** and **Save Splits** when done.
+4. The individual splits appear as checkboxes below it. Turn on the ones your
+   route hits and turn off the ones it does not — the wonder splits ship on and
+   the three Timberbot ones ship off. **Save Layout** and **Save Splits** when
+   done.
 
    ![The Auto Splitting Runtime tab, showing Script Path and the per-split checkboxes](docs/images/script-path.png)
 
@@ -85,15 +113,16 @@ The Auto Splitting Runtime component ships with LiveSplit itself — this was
 tested against 1.8.29 — so there is nothing else to install, and nothing is
 added to the game.
 
-There is a splits file for each faction, because the segment names and icons
-are the faction's own: the Iron Teeth one has the Numbercruncher and the Earth
-Repopulator where the Folktails one has the Observatory and the Earth
+There is a wonder splits file for each faction, because the segment names and
+icons are the faction's own: the Iron Teeth one has the Numbercruncher and the
+Earth Repopulator where the Folktails one has the Observatory and the Earth
 Recultivator. The other five segments are the same either way, as are the
-splitter and the layout — only the `.lss` differs.
+splitter and the layout — only the `.lss` differs. The Timberbot file is one for
+both factions, since none of its four segments is a faction specific building.
 
-Order the seven splits to match the route **you** run rather than the order
-they are listed in: each fires when you achieve it, so a `.lss` ordered the
-way you actually play keeps every split attributed to the right segment.
+Order the splits to match the route **you** run rather than the order they are
+listed in: each fires when you achieve it, so a `.lss` ordered the way you
+actually play keeps every split attributed to the right segment.
 
 ### Adding the auto splitter to your own layout
 
@@ -169,8 +198,8 @@ provides a fake auto splitting runtime, so the splitter can be driven and
 inspected directly.
 
 Most of it builds a whole synthetic Mono process out of the committed layout
-facts in `fixtures/` — up to and including a whole wonder run, the timer
-starting and all seven splits firing, and the awkward edges of a session: the
+facts in `fixtures/` — up to and including whole runs of both categories, the
+timer starting and every split firing, and the awkward edges of a session: the
 game starting after the splitter, closing under it, or being the second game of
 the evening. All in a twentieth of a second, on a machine that has never had
 Timberborn installed. See [fixtures/README.md](fixtures/README.md).
