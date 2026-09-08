@@ -52,9 +52,36 @@ recordings still answers every test.
 
 The end is found by the splitter announcing the run over, not by "the last step
 recorded" -- a recording stopped early is a shorter scenario, not a finished
-run. Matching the splitter's own words is safe here in a way it would not be
-for choosing *what* to capture: a reworded message loses the mark, and a test
-wanting `run-finished` then fails with the instructions for producing one.
+run. The phrase is the catalogue's `ends_when`, per scenario rather than one
+constant, because the two categories end on different things and a recorder
+that only knew the wonder's phrase would leave a Timberbot recording untagged.
+
+Matching the splitter's own words is safe here in a way it would not be for
+choosing *what* to capture: a reworded message loses the mark, and a test
+wanting the end state then fails with the instructions for producing one.
+`tests/synthetic_scenario.rs` checks each phrase against what the splitter
+actually says, so that drift is caught at commit time rather than after a run
+has been played for nothing.
+
+### A scenario can need the splitter configured
+
+The recorder drives the **real** splitter, so it splits where a runner's would
+-- including *not* splitting on a trigger that ships off. A `timberbot-run`
+recorded on the shipped defaults would capture the run start and the Gear
+Workshop and then go quiet, because captures are taken on splits and the rest
+of that route's triggers default off. An hour of playing for a recording
+missing the thing it is of, and nothing about it would look wrong.
+
+So a requirement carries the settings its scenario needs and the recorder
+applies them, which is why `--state` is enough on its own:
+
+```rust
+settings: &[("smelter", true), ("bot_part_factory", true), ("first_bot", true)],
+```
+
+`--setting key=true` overrides them for a one-off. `tests/attach.rs` checks
+every key in the catalogue against what the splitter registers, because a
+renamed key would fail exactly as quietly as forgetting the flag.
 
 ## Capturing one
 
@@ -165,6 +192,7 @@ frame has none. `tb-record` records the changes:
 
 ```bash
 tb-record --state wonder-run --notes "folktails, developer mode"
+tb-record --state timberbot-run --notes "iron teeth, developer mode"
 ```
 
 It drives the real splitter against the live game through the same `Memory`

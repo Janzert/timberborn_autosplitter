@@ -156,3 +156,34 @@ fn registers_its_settings() {
         .collect();
     assert_eq!(off, ["smelter", "bot_part_factory", "first_bot"]);
 }
+
+/// Every setting a recorded scenario asks `tb-record` to force is a setting
+/// the splitter actually has.
+///
+/// The recorder turns these on so a scenario whose triggers ship off records
+/// the splits it was made for. A renamed key would not fail anything: the
+/// harness would file it under a name nothing reads, the splitter would keep
+/// its default, and the recording would capture the run start and then go
+/// quiet -- hours of playing for a snapshot missing the thing it is of, with
+/// nothing about it looking wrong. So the catalogue is checked against the
+/// register here, where it costs a millisecond.
+#[test]
+fn every_setting_a_scenario_forces_is_one_the_splitter_registers() {
+    let world = test_harness::drive(World::new(), timberborn_autosplitter::main(), 1);
+    let registered: Vec<&str> = world
+        .registered_settings
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .collect();
+
+    for requirement in test_harness::requirement::CATALOGUE {
+        for (key, _) in requirement.settings {
+            assert!(
+                registered.contains(key),
+                "the {:?} scenario forces the setting {key:?}, which the \
+                 splitter does not register. Registered: {registered:?}.",
+                requirement.id
+            );
+        }
+    }
+}

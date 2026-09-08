@@ -11,7 +11,17 @@ Options:
   --label <name>   Names the steps, after the game version. Defaults to --state.
   --notes <text>   Free text recorded in every step's manifest.
   --pid <pid>      Record this process instead of searching for the game.
+  --setting <k=v>  Force a splitter setting, true or false. May be repeated.
+                   Rarely needed: a scenario that requires settings names them
+                   itself, and this only overrides those.
   --help           This.
+
+The splitter is driven with its real settings, so it splits where a runner's
+would -- including not splitting on a trigger that ships off. A scenario whose
+route needs such a trigger says so in its own definition and the recorder turns
+it on, which is why --state is usually enough on its own. Getting this wrong
+does not fail: it records the start and then goes quiet, because captures are
+taken on splits.
 
 The game must already be running, and the run played while this watches. Every
 time the splitter starts, splits or resets, the game is stopped and captured.

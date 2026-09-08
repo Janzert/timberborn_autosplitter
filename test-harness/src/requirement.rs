@@ -30,6 +30,35 @@ pub struct Requirement {
     /// run captured split by split already contains the instants a single
     /// capture would hold, so keeping both costs gigabytes for a duplicate.
     pub ends_at: Option<&'static str>,
+    /// The splitter's own words for *this* scenario's run being over, which is
+    /// how the recorder knows which step to tag with [`ends_at`](Self::ends_at).
+    ///
+    /// Per scenario rather than one constant, because the two categories end on
+    /// different things and a recorder that only knew the wonder's phrase would
+    /// silently leave a Timberbot recording untagged.
+    ///
+    /// Matching a phrase is safe here in a way it would not be for choosing
+    /// what to capture: a reworded message loses the tag, and a test wanting
+    /// the end state then fails with the instructions for producing one --
+    /// loud, and about the right thing. `tests/synthetic_scenario.rs` checks
+    /// these against what the splitter actually says, so the drift is caught at
+    /// commit time rather than after a run has been played.
+    pub ends_when: Option<&'static str>,
+    /// Splitter settings the recorder must force before this scenario is
+    /// played, as `(key, value)`.
+    ///
+    /// The recorder drives the real splitter, so it splits where a runner's
+    /// splitter would -- including *not* splitting on a trigger that ships off.
+    /// A Timberbot recording made on the stock defaults would capture the run
+    /// start and the Gear Workshop and then go quiet, because captures are
+    /// taken on splits and the rest of that route's triggers are off. That is a
+    /// recording which misses exactly what it was made for, after an hour of
+    /// playing, and nothing about it looks wrong.
+    ///
+    /// Naming them here rather than in the reproduce steps means
+    /// `tb-record --state <id>` is enough and a person cannot forget.
+    /// `tests/attach.rs` checks every key against what the splitter registers.
+    pub settings: &'static [(&'static str, bool)],
 }
 
 impl Requirement {
@@ -76,6 +105,8 @@ pub const CATALOGUE: &[Requirement] = &[
         ],
         begins_at: None,
         ends_at: None,
+        ends_when: None,
+        settings: &[],
     },
     Requirement {
         id: "run-finished",
@@ -93,6 +124,8 @@ pub const CATALOGUE: &[Requirement] = &[
         ],
         begins_at: None,
         ends_at: None,
+        ends_when: None,
+        settings: &[],
     },
     Requirement {
         id: "first-bot",
@@ -108,6 +141,8 @@ pub const CATALOGUE: &[Requirement] = &[
         ],
         begins_at: None,
         ends_at: None,
+        ends_when: None,
+        settings: &[],
     },
     Requirement {
         id: "wonder-run",
@@ -128,6 +163,39 @@ pub const CATALOGUE: &[Requirement] = &[
         // is why the store keeps recordings and not separate captures of them.
         begins_at: Some("main-menu"),
         ends_at: Some("run-finished"),
+        ends_when: Some("Run end: Congratulations screen."),
+        settings: &[],
+    },
+    Requirement {
+        id: "timberbot-run",
+        summary: "a whole Timberbot run recorded as it was played, split by split",
+        reproduce: &[
+            "Start the game and stop at the main menu -- do not load a save yet.",
+            "Start `tb-record --state timberbot-run` and leave it running. It \
+             turns the Timberbot triggers on for you; they ship off, and a \
+             recording made without them would capture the start and the Gear \
+             Workshop and nothing else.",
+            "Start a new game and play it through: **build and finish** a Gear \
+             Workshop, a Smelter and a Bot Part Factory, then a Bot Assembler, \
+             and assemble one bot.",
+            "Developer mode is a legitimate way to get through it quickly -- \
+             grant the science and the resources freely. Do **not** shortcut the \
+             three buildings by consoling their goods in: they are the splits, \
+             and matching their template names against real memory is half of \
+             what this recording is for. The `first-bot` capture was taken that \
+             way and walks 5252 entities for none of them.",
+            "Stop the recorder with Ctrl-C once the bot is out.",
+        ],
+        begins_at: Some("main-menu"),
+        ends_at: Some("first-bot"),
+        ends_when: Some("Run end: the first Timberbot was created."),
+        // The three triggers this route splits on, which ship off so that a
+        // wonder run on the stock defaults does not split twice on the Smelter.
+        settings: &[
+            ("smelter", true),
+            ("bot_part_factory", true),
+            ("first_bot", true),
+        ],
     },
     Requirement {
         id: "two-games",
@@ -145,6 +213,8 @@ pub const CATALOGUE: &[Requirement] = &[
         // No run is played, so nothing tags an end state.
         begins_at: Some("main-menu"),
         ends_at: None,
+        ends_when: None,
+        settings: &[],
     },
 ];
 

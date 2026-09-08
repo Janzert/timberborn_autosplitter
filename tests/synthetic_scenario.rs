@@ -643,6 +643,46 @@ fn a_wonder_run_with_the_shipped_defaults_splits_seven_times() {
     }
 }
 
+/// The words `tb-record` watches for to tag a recording's last step are words
+/// the splitter actually says.
+///
+/// `Requirement::ends_when` is a phrase matched against the log, which is the
+/// one place this project matches on a message rather than on behaviour. It is
+/// deliberate -- see the field's own docs -- but it drifts silently: reword the
+/// run-end message and a recording loses its `ends_at` tag, which is only
+/// discovered when a test asks for that state and cannot find it, long after
+/// the recording was made. Both categories are played here anyway, so checking
+/// costs nothing.
+#[test]
+fn the_recorder_knows_what_the_splitter_calls_a_run_ending() {
+    let phrase = |id: &str| {
+        test_harness::requirement::get(id)
+            .unwrap_or_else(|| panic!("no {id:?} requirement"))
+            .ends_when
+            .unwrap_or_else(|| panic!("{id:?} has no ends_when"))
+    };
+
+    for_each_run(|version, world| {
+        let wonder = phrase("wonder-run");
+        assert!(
+            world.logged(wonder),
+            "{version}: the wonder-run scenario tags its last step by matching \
+             {wonder:?}, which the splitter never said. Log was {:#?}",
+            world.log
+        );
+    });
+    for_each_timberbot_run(|version, world| {
+        let timberbot = phrase("timberbot-run");
+        assert!(
+            world.logged(timberbot),
+            "{version}: the timberbot-run scenario tags its last step by \
+             matching {timberbot:?}, which the splitter never said. Log was \
+             {:#?}",
+            world.log
+        );
+    });
+}
+
 /// The run start is bound while the scene is still loading.
 ///
 /// Not a nicety: the gap between a load finishing and the overlay appearing is
