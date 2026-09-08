@@ -58,6 +58,15 @@ flag the game does not set, or sets for something else. It replays a capture of
 a settlement with eleven adults, two children and exactly one bot, and asserts
 the splitter read one. That is the game saying so rather than the fixture.
 
+That capture is one instant, though, and a flag that is already `true` proves
+the arrival suppression rather than the split. The `timberbot-run` recording is
+what holds the tick it changed on, and `tests/scenario_run.rs` replays it. It
+also carries the only real-memory evidence for the Bot Part Factory's template
+name: those are checked offline against the blueprints, but a template name has
+no runtime probe, so until a real one was matched against a real
+`ComponentCache._name` the offline check and a synthetic world built from the
+name we wrote could both have been happy while no split ever fired.
+
 The synthetic world models the runtime's reference table as well as the heap —
 every object placed gets an entry, in a range of its own holding pointers and
 nothing else. Two knobs make the fallback testable rather than merely claimed:
@@ -176,7 +185,7 @@ So they are not re-litigated.
 ## Risks that are still live
 
 - **A separate suite is a forgettable suite.** `cargo test` will not mention it.
-  It is now ~2 minutes, up from 54s, because four recordings are replayed
+  It is now ~3 minutes, up from 54s, because five recordings are replayed
   rather than two — long enough that nobody will run it absent-mindedly. Keep a
   line for it wherever notes carry between sessions, or it becomes stale code
   nobody has run against a current capture. Partly mitigated: a missing capture fails with the steps for

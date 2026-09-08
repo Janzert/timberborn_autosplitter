@@ -30,7 +30,15 @@ struct Replay {
     recorded: Vec<String>,
 }
 
-fn replay(name: &str, dirs: &[std::path::PathBuf]) -> Replay {
+/// Replays one recording, with the splitter configured the way the recorder
+/// configured it.
+///
+/// The settings come from the requirement, which is the same place `tb-record`
+/// takes them from -- so a replay reproduces the conditions the recording was
+/// made under rather than a fresh splitter's defaults. Without this a
+/// `timberbot-run` replays with its three triggers off, and the run that was
+/// recorded splitting four times replays splitting once.
+fn replay(name: &str, dirs: &[std::path::PathBuf], state: &str) -> Replay {
     let scenario = Scenario::open(dirs).unwrap_or_else(|e| panic!("{e}"));
     let recorded = scenario.events();
     let (process, playhead) = scenario.into_process();
@@ -39,8 +47,16 @@ fn replay(name: &str, dirs: &[std::path::PathBuf]) -> Replay {
     let mut seen = 0usize;
     let mut budget = 0usize;
 
+    let mut world = World::new().with_process(process);
+    for (key, value) in test_harness::requirement::get(state)
+        .unwrap_or_else(|| panic!("no {state:?} requirement"))
+        .settings
+    {
+        world = world.with_setting(*key, *value);
+    }
+
     let world = test_harness::drive_with(
-        World::new().with_process(process),
+        world,
         timberborn_autosplitter::main(),
         200_000,
         |_, world| {
@@ -85,7 +101,23 @@ fn replayed() -> &'static [Replay] {
         Scenario::all("wonder-run")
             .unwrap_or_else(|e| panic!("{e}"))
             .iter()
-            .map(|(name, dirs)| replay(name, dirs))
+            .map(|(name, dirs)| replay(name, dirs, "wonder-run"))
+            .collect()
+    })
+}
+
+/// The Timberbot recordings, replayed once and shared.
+///
+/// Separate from `replayed()` because the two categories assert different
+/// things -- a different number of splits, for different buildings, ending on
+/// a different event.
+fn replayed_timberbot() -> &'static [Replay] {
+    static ONCE: std::sync::OnceLock<Vec<Replay>> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        Scenario::all("timberbot-run")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .iter()
+            .map(|(name, dirs)| replay(name, dirs, "timberbot-run"))
             .collect()
     })
 }
@@ -281,6 +313,88 @@ fn both_sweeps_land_before_the_first_game() {
     }
 }
 
+
+/// The Timberbot category, replayed out of real memory: the timer starts and
+/// all four splits fire.
+///
+/// This is the run end that no still capture can show. `BotCreated` is
+/// persisted, so a capture of a settlement that has a bot reads `true` on
+/// arrival and is correctly suppressed -- which proves the suppression and says
+/// nothing about the split. Only a recording holds the tick it changed on.
+#[test]
+fn fires_the_whole_timberbot_category() {
+    for run in replayed_timberbot() {
+        let events: Vec<&TimerEvent> = run.fired.iter().map(|(_, e)| e).collect();
+        assert_eq!(
+            events.len(),
+            5,
+            "{}: expected a start and four splits, got {events:?}",
+            run.name
+        );
+        assert_eq!(events[0], &TimerEvent::Start, "{}", run.name);
+        for event in &events[1..] {
+            assert_eq!(**event, TimerEvent::Split, "{}", run.name);
+        }
+    }
+}
+
+/// Each Timberbot split fired for the thing it was for, in route order.
+///
+/// The Bot Part Factory line is the one worth having. Its template name is
+/// checked offline against the blueprints, but until this recording existed it
+/// had never been matched against a `ComponentCache._name` in a real process --
+/// and a wrong template name is silent, so the offline check and a synthetic
+/// world using the name we wrote could both be happy while no split ever fired.
+#[test]
+fn splits_for_the_right_timberbot_things() {
+    for run in replayed_timberbot() {
+        let reasons: Vec<&str> = run
+            .log
+            .iter()
+            .filter_map(|line| {
+                line.strip_prefix("Split: ")
+                    .or_else(|| line.strip_prefix("Run end: "))
+            })
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                "Gear Workshop finished.",
+                "Smelter finished.",
+                "Bot Part Factory finished.",
+                "the first Timberbot was created. Splitting. Bots alive: 1.",
+            ],
+            "{}: log was {:#?}",
+            run.name,
+            run.log
+        );
+    }
+}
+
+/// The splits landed on the steps the recording says they landed on.
+///
+/// A splitter that fired all four at once, or a step late, would satisfy a
+/// count and be badly wrong.
+#[test]
+fn fires_the_timberbot_splits_where_they_were_recorded() {
+    for run in replayed_timberbot() {
+        let expected: Vec<usize> = run
+            .recorded
+            .iter()
+            .enumerate()
+            .filter(|(_, label)| *label == "start" || *label == "split")
+            .map(|(index, _)| index)
+            .collect();
+        let actual: Vec<usize> = run.fired.iter().map(|(step, _)| *step).collect();
+        assert_eq!(
+            actual, expected,
+            "{}: the splitter acted at different steps than the recording did.\n\
+             recorded steps: {:?}",
+            run.name, run.recorded
+        );
+    }
+}
+
 /// Two games in one process, which is what a runner resetting for another
 /// attempt actually does.
 ///
@@ -292,7 +406,7 @@ fn two_games() -> &'static Replay {
     ONCE.get_or_init(|| {
         let all = Scenario::all("two-games").unwrap_or_else(|e| panic!("{e}"));
         let (name, dirs) = all.first().expect("a two-games recording");
-        replay(name, dirs)
+        replay(name, dirs, "two-games")
     })
 }
 

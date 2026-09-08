@@ -192,7 +192,7 @@ frame has none. `tb-record` records the changes:
 
 ```bash
 tb-record --state wonder-run --notes "folktails, developer mode"
-tb-record --state timberbot-run --notes "iron teeth, developer mode"
+tb-record --state timberbot-run --notes "folktails, developer console"
 ```
 
 It drives the real splitter against the live game through the same `Memory`
