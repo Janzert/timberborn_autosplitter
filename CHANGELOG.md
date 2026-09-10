@@ -27,6 +27,24 @@ release date.
 
 ### Changed
 
+- **LiveSplit now downloads the splitter for you, and keeps it up to date.**
+  Timberborn is in LiveSplit's auto splitter list, so there is no
+  `timberborn_autosplitter.wasm` to fetch and no **Script Path** to browse to.
+  Open your splits, then **Edit Splits...** → **Activate** once, and LiveSplit
+  handles the rest from then on — including every future release.
+
+  **If you are upgrading, undo the old setup.** The previous instructions had
+  you add an **Auto Splitting Runtime** component to your layout and point it
+  at a downloaded `.wasm`. That component is unaffected by any of this and will
+  keep running its own copy, so leaving it in place while activating the
+  downloaded splitter runs **two** splitters and splits everything twice.
+  Remove it from your layout: **Edit Layout...**, select **Auto Splitting
+  Runtime**, `−`.
+
+  `examples/Timberborn.lsl` no longer contains that component for the same
+  reason. If you deliberately want to run a specific build rather than the
+  current release, adding it back by hand is still how — see the README.
+
 - **The example splits files now spell out every split setting**, rather than
   only the ones that differ from the shipped defaults. LiveSplit stores a
   setting in the `.lss` only once you change it, so the wonder examples used to

@@ -175,13 +175,5 @@
         <TimeSaveAccuracy>Tenths</TimeSaveAccuracy>
       </Settings>
     </Component>
-    <Component>
-      <Path>LiveSplit.AutoSplittingRuntime.dll</Path>
-      <Settings>
-        <Version>1.0</Version>
-        <ScriptPath></ScriptPath>
-        <CustomSettings />
-      </Settings>
-    </Component>
   </Components>
 </Layout>

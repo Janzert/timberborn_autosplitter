@@ -38,8 +38,8 @@ advanced science building and the wonder itself — one split covers both, and
 only the one belonging to the faction being played can fire.
 
 Three more triggers cover a **Timberbot** run, which ends at the first bot
-rather than at a wonder. They are **off by default** — tick the ones your route
-hits:
+rather than at a wonder. They are **off by default**, and the Timberbot splits
+file turns them on for you:
 
 | Split | Fires when |
 |---|---|
@@ -58,9 +58,10 @@ Two of them are worth a sentence each:
   splits when the Smelter is finished; the second waits for the Wood Workshop
   as well and fires on whichever is second. Leaving both on gives you two
   splits out of one Smelter, which is why the solo one ships off.
-- Doing a Timberbot run means turning the wonder splits **off** as well as
-  turning these on — nothing else stops the Observatory or Numbercruncher from
-  splitting if you build one on the way to bots.
+- A Timberbot run means turning the wonder splits **off** as well as turning
+  these on — nothing else stops the Observatory or Numbercruncher from
+  splitting if you build one on the way to bots. The Timberbot splits file
+  already does both; it only matters if you are configuring one yourself.
 
 One LiveSplit limitation worth noting: **Splits fire in whatever order the
 player achieves them**, which need not match the order in a `.lss` file. So an
@@ -71,47 +72,56 @@ measured.
 
 ## Setup
 
-No build needed to try it — the release carries a prebuilt module, and
-[`examples/`](examples/) has a splits file per category (and per faction for
-the wonder run) and a layout to start from.
-[`CHANGELOG.md`](CHANGELOG.md) says what changed if you are updating from an
-earlier one.
+Nothing to build, and no module to download: LiveSplit carries a list of auto
+splitters and fetches this one itself. All you need is a splits file.
+[`examples/`](examples/) has one per category (and per faction for the wonder
+run) plus a layout to start from. [`CHANGELOG.md`](CHANGELOG.md) says what
+changed if you are updating from an earlier one.
 
 1. From the [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest),
-   download
-   [`timberborn_autosplitter.wasm`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/timberborn_autosplitter.wasm),
-   the splits file for what you run —
+   download the splits file for what you run —
    [`Timberborn-Wonder-Folktails.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-Folktails.lss),
    [`Timberborn-Wonder-IronTeeth.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-IronTeeth.lss)
    or
    [`Timberborn-Timberbot.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Timberbot.lss)
-   — and
+   — and, if you want the layout these were designed against,
    [`Timberborn.lsl`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn.lsl).
 2. In LiveSplit, right-click → **Open Splits** → **From File...** and pick the
    `.lss`. Then right-click → **Open Layout** → **From File...** and pick the
-   `.lsl`, which already has the **Auto Splitting Runtime** component in it.
+   `.lsl`.
 
    ![The LiveSplit context menu with Open Splits expanded](docs/images/open-splits.png)
-3. Right-click → **Edit Layout...**, then double-click **Auto Splitting
-   Runtime** in the component list. Use **Browse...** next to **Script Path**
-   to pick the `.wasm` you downloaded. (The **Layout Settings** button and its
-   **Auto Splitting Runtime** tab reach the same place.)
-4. The individual splits appear as checkboxes below it. Turn on the ones your
-   route hits and turn off the ones it does not — the wonder splits ship on and
-   the three Timberbot ones ship off. **Save Layout** and **Save Splits** when
-   done.
+3. Right-click → **Edit Splits...**. The auto splitter is at the bottom of that
+   dialog, found by the game name. Press **Activate**.
 
-   ![The Auto Splitting Runtime tab, showing Script Path and the per-split checkboxes](docs/images/script-path.png)
+   ![The Splits Editor, with the Timberborn auto splitter described below the game name and an Activate button beside it](docs/images/edit-splits-activate.png)
 
-The layout ships with **Script Path** deliberately empty, because the path is
-stored in the layout and only you know where you put the file. For the same
-reason, moving the `.wasm` afterwards breaks it until you browse to it again. A
-relative path is resolved against LiveSplit's own working directory rather than
-the layout's, so it only works if the `.wasm` sits next to `LiveSplit.exe`.
+   **That is the only step you have to remember.** LiveSplit downloads the
+   splitter, switches it on, and records that Timberborn's auto splitter is
+   active — so from then on, opening a splits file whose game name is
+   **Timberborn** is the whole procedure.
+4. Still in **Edit Splits**, **Settings** shows the individual splits. Each
+   splits file above already has its own category ticked, so there is nothing
+   to change unless your route differs. **OK**, then **Save Splits** if you
+   changed anything.
 
-The Auto Splitting Runtime component ships with LiveSplit itself — this was
-tested against 1.8.29 — so there is nothing else to install, and nothing is
-added to the game.
+   ![The auto splitter settings, showing a checkbox per split](docs/images/split-settings.png)
+
+**It updates itself.** LiveSplit re-fetches the current release every time the
+splitter activates, so a new version arrives on its own and there is no file to
+replace. The **Script Path** box in those settings is greyed out for that
+reason, and shows where LiveSplit put the download rather than anything you
+need to set. The flip side is that you always get the newest release — if you
+need a specific build, see [Building](#building).
+
+Which splits are on is stored in the **splits file**, so each `.lss` carries its
+own configuration and switching categories is just opening a different one.
+Whether the splitter is active at all is remembered by LiveSplit itself, per
+game name, rather than in either file.
+
+The Auto Splitting Runtime that runs the module ships with LiveSplit itself —
+this was tested against 1.8.29 — so there is nothing else to install, and
+nothing is added to the game.
 
 There is a wonder splits file for each faction, because the segment names and
 icons are the faction's own: the Iron Teeth one has the Numbercruncher and the
@@ -124,13 +134,9 @@ Order the splits to match the route **you** run rather than the order they are
 listed in: each fires when you achieve it, so a `.lss` ordered the way you
 actually play keeps every split attributed to the right segment.
 
-### Adding the auto splitter to your own layout
-
-Already have a layout you like? Skip the example `.lsl` and add the component
-to yours instead: right-click → **Edit Layout...** → `+` → **Control** →
-**Auto Splitting Runtime**, then step 3 above.
-
-![The Layout Editor with the Auto Splitting Runtime component added](docs/images/layout-editor.png)
+Already have a layout you like? Keep it. The splitter is not part of the
+layout at all — the only thing the example `.lsl` adds is the status line
+below, and that is one component you can add to your own.
 
 ### The status line
 
@@ -184,8 +190,17 @@ git submodule update --init --recursive
 ```
 
 The output is `target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm`.
-Point LiveSplit's Auto Splitting Runtime component at it, or use
-[asr-debugger](https://github.com/LiveSplit/asr-debugger) while developing.
+
+To run *that* rather than the release LiveSplit downloads, add the runtime to a
+layout by hand — right-click → **Edit Layout...** → `+` → **Control** → **Auto
+Splitting Runtime**, then **Browse...** to the file. A component added this way
+takes its path from the layout and ignores the auto splitter list entirely, so
+**deactivate the downloaded one in Edit Splits first** or both will run. Note
+that its settings then live in the `.lsl` rather than the `.lss`, which is why
+this is the development route and not the one above.
+
+[asr-debugger](https://github.com/LiveSplit/asr-debugger) is the quicker loop
+still, with a log pane and no LiveSplit in the way.
 
 ### Tests
 
