@@ -1,12 +1,16 @@
 // `no_std` only where it is required. The shipped wasm artifact has no `std`
 // to link, but a native build -- which is how the tests run -- needs one. The
 // crate uses only `core` and `alloc` either way, so `cargo wasm` catches a slip.
-//
-// The allocator, the panic handler and the exported `update` are not here:
-// they belong to the module that ships, which is `wasm/`.
 #![cfg_attr(target_family = "wasm", no_std)]
 
 extern crate alloc;
+
+// Only the wasm artifact brings its own allocator. A native test binary has
+// one already, and `asr`'s `async_main!` and `panic_handler!` gate themselves
+// the same way.
+#[cfg(target_family = "wasm")]
+#[global_allocator]
+static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
 // The unit tests call into asr, whose runtime imports only the harness
 // provides. Integration tests name the harness themselves; the unit-test
@@ -118,6 +122,9 @@ struct Settings {
     #[default = false]
     first_bot: bool,
 }
+
+asr::async_main!(stable);
+asr::panic_handler!();
 
 /// Names that identify the game on their own. Windows reports the executable
 /// name, which is what runners will hit.
@@ -258,9 +265,9 @@ const TABLE_SEARCH_ATTEMPTS: u32 = 3;
 /// game on screen.
 const GIVE_UP_SKIPPING_AFTER: u32 = 3;
 
-/// The splitter itself. `wasm/` drives this through `async_main!`; the test
-/// harness drives it natively. Being `pub` also keeps the whole crate
-/// reachable and its dead-code analysis honest.
+/// The splitter itself. `async_main!` drives this on wasm; it is `pub` so that
+/// a native test harness can drive it too, which also keeps the whole crate
+/// reachable and its dead-code analysis honest off-target.
 pub async fn main() {
     asr::print_message("Timberborn auto splitter.");
     // A message from a previous session survives a module reload, so start

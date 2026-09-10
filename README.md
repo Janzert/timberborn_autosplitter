@@ -177,11 +177,11 @@ git clone --recurse-submodules https://github.com/Janzert/timberborn_autosplitte
 cargo wasm
 ```
 
-`cargo wasm` is an alias for `cargo build --release --target
-wasm32-unknown-unknown -p timberborn_autosplitter_wasm`, defined in
-`.cargo/config.toml`. That package, in `wasm/`, is a thin wrapper that turns
-the splitter into the module LiveSplit loads; the splitter itself is the crate
-at the top, which the tests link natively. The wasm target is
+`cargo wasm` is an alias for `cargo rustc --release --target
+wasm32-unknown-unknown --crate-type cdylib`, defined in `.cargo/config.toml`.
+It is the only command that produces the `.wasm`: a plain `cargo build
+--target wasm32-unknown-unknown` builds the library the tests link, not the
+module LiveSplit loads, for the reason given in `Cargo.toml`. The wasm target is
 deliberately not the default: a default target applies to every cargo command,
 not just `build`, which stopped `cargo test` from running at all and made
 `cargo install` quietly produce a wasm binary. Ordinary commands therefore

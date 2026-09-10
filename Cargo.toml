@@ -1,8 +1,8 @@
 # The harness is a workspace member as well as a dev-dependency, so its dumper
 # binary can be built by name. `cargo build` in this directory still builds only
-# this package. The artifact that ships is `wasm/`, built by `cargo wasm`.
+# this package, and only as an `rlib`: the artifact that ships is `cargo wasm`.
 [workspace]
-members = ["test-harness", "tb-fixture", "tb-ptrace-open", "tb-record", "wasm"]
+members = ["test-harness", "tb-fixture", "tb-ptrace-open", "tb-record"]
 
 [package]
 name = "timberborn_autosplitter"
@@ -22,6 +22,8 @@ asr = { git = "https://github.com/LiveSplit/asr", features = [
 
 # Bytemuck is used to define structs that are read from the game's process.
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+# Heap allocator.
+dlmalloc = { version = "0.2.4", features = ["global"] }
 
 # Redirect the upstream asr dependency to our submodule, so local changes are
 # picked up and the exact revision is pinned by the submodule gitlink.
@@ -71,10 +73,15 @@ required-features = ["snapshot-tests"]
 name = "fixture_vs_snapshot"
 required-features = ["snapshot-tests"]
 
-# Only an `rlib`: the `cdylib` that ships is the thin wrapper in `wasm/`. This
-# crate used to be both, which was fine on Linux, where a shared object may
-# leave asr's runtime imports undefined, and not on Windows, where the host DLL
-# failed to link before any test could run.
+[lib]
+# The wasm module is what this crate is for, but it is not declared here: Cargo
+# cannot choose a crate type by target, and a `cdylib` declared here is built
+# for the host too. That host DLL leaves asr's runtime imports undefined, which
+# a Linux shared object tolerates and an MSVC DLL does not, so on Windows it
+# failed to link before any test ran. So `cargo wasm` asks for the `cdylib`
+# itself -- it is `cargo rustc --crate-type cdylib` -- and every other build,
+# the tests' included, gets the `rlib` they link against.
+crate-type = ["rlib"]
 
 [profile.release]
 lto = true

@@ -36,7 +36,7 @@ jobs:
         run: cargo wasm
 
       - name: Clippy
-        run: cargo clippy --release --target wasm32-unknown-unknown -p timberborn_autosplitter -p timberborn_autosplitter_wasm -- -D warnings
+        run: cargo clippy --release --target wasm32-unknown-unknown -- -D warnings
 
       # Runs on the host with no game and no wasm: test-harness/ stands in for
       # the auto splitting runtime. Tests that need a captured snapshot are

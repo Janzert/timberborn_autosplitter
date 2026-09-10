@@ -16,8 +16,10 @@ rustflags = [
 ]
 
 [alias]
-# The shipped artifact: the `wasm/` wrapper, which is the only `cdylib`.
-wasm = "build --release --target wasm32-unknown-unknown -p timberborn_autosplitter_wasm"
+# The shipped artifact. `rustc --crate-type` because the `cdylib` is asked for
+# here rather than in Cargo.toml, where it would be built for the host as well
+# and fail to link on Windows. See Cargo.toml.
+wasm = "rustc --release --target wasm32-unknown-unknown --crate-type cdylib"
 # Captures a memory snapshot of the running game. See snapshots/README.md.
 dump = "run -p test-harness --bin tb-dump --release"
 # Records a scenario against the running game. See snapshots/README.md.
