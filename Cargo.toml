@@ -1,8 +1,8 @@
 # The harness is a workspace member as well as a dev-dependency, so its dumper
 # binary can be built by name. `cargo build` in this directory still builds only
-# this package, and so still only the wasm artifact.
+# this package. The artifact that ships is `wasm/`, built by `cargo wasm`.
 [workspace]
-members = ["test-harness", "tb-fixture", "tb-ptrace-open", "tb-record"]
+members = ["test-harness", "tb-fixture", "tb-ptrace-open", "tb-record", "wasm"]
 
 [package]
 name = "timberborn_autosplitter"
@@ -22,8 +22,6 @@ asr = { git = "https://github.com/LiveSplit/asr", features = [
 
 # Bytemuck is used to define structs that are read from the game's process.
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
-# Heap allocator.
-dlmalloc = { version = "0.2.4", features = ["global"] }
 
 # Redirect the upstream asr dependency to our submodule, so local changes are
 # picked up and the exact revision is pinned by the submodule gitlink.
@@ -73,15 +71,10 @@ required-features = ["snapshot-tests"]
 name = "fixture_vs_snapshot"
 required-features = ["snapshot-tests"]
 
-[lib]
-# `rlib` as well as `cdylib` so the crate can be linked into native test
-# binaries. It costs about 9% on the shipped wasm -- 153 KB to 167 KB, measured
-# -- because an rlib output has to keep the crate's symbols linkable, which
-# defeats some of the fat-LTO dead-code elimination in the cdylib. Accepted
-# deliberately: the alternative is splitting the logic into an inner crate with
-# a thin cdylib wrapper, and 14 KB on a once-downloaded file does not pay for
-# that. See docs/TESTING.md.
-crate-type = ["cdylib", "rlib"]
+# Only an `rlib`: the `cdylib` that ships is the thin wrapper in `wasm/`. This
+# crate used to be both, which was fine on Linux, where a shared object may
+# leave asr's runtime imports undefined, and not on Windows, where the host DLL
+# failed to link before any test could run.
 
 [profile.release]
 lto = true

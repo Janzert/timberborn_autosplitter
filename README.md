@@ -178,7 +178,10 @@ cargo wasm
 ```
 
 `cargo wasm` is an alias for `cargo build --release --target
-wasm32-unknown-unknown`, defined in `.cargo/config.toml`. The wasm target is
+wasm32-unknown-unknown -p timberborn_autosplitter_wasm`, defined in
+`.cargo/config.toml`. That package, in `wasm/`, is a thin wrapper that turns
+the splitter into the module LiveSplit loads; the splitter itself is the crate
+at the top, which the tests link natively. The wasm target is
 deliberately not the default: a default target applies to every cargo command,
 not just `build`, which stopped `cargo test` from running at all and made
 `cargo install` quietly produce a wasm binary. Ordinary commands therefore

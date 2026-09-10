@@ -16,8 +16,8 @@ rustflags = [
 ]
 
 [alias]
-# The shipped artifact.
-wasm = "build --release --target wasm32-unknown-unknown"
+# The shipped artifact: the `wasm/` wrapper, which is the only `cdylib`.
+wasm = "build --release --target wasm32-unknown-unknown -p timberborn_autosplitter_wasm"
 # Captures a memory snapshot of the running game. See snapshots/README.md.
 dump = "run -p test-harness --bin tb-dump --release"
 # Records a scenario against the running game. See snapshots/README.md.

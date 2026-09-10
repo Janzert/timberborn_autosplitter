@@ -86,11 +86,19 @@ once because a pre-merge review checked clippy and stopped there.
 
 ```bash
 cargo wasm
-cargo clippy --release --target wasm32-unknown-unknown -- -D warnings
+cargo clippy --release --target wasm32-unknown-unknown -p timberborn_autosplitter -p timberborn_autosplitter_wasm -- -D warnings
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+All five run on Windows as well as Linux. Two things make that so. The
+splitter is only an `rlib`; the `cdylib` that ships is the wrapper in `wasm/`,
+which is empty off wasm, because a host DLL cannot link with asr's runtime
+imports left undefined. And the tools that read the game through `/proc` --
+`tb-dump`, `tb-record`, `tb-fixture`, `tb-ptrace-open`, `fd-source` -- build
+elsewhere to a `main` that says they are Linux only, and `fd_handoff.rs`
+compiles to nothing.
 
 Two of those are stricter than their bare forms: `--workspace` reaches the
 harness and the tools, and `-D warnings` fails on lints a local `cargo clippy`

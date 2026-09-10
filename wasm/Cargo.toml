@@ -1,0 +1,28 @@
+[package]
+name = "timberborn_autosplitter_wasm"
+version = "0.4.0"
+edition = "2021"
+publish = false
+description = "The shipped artifact: the splitter in the parent crate, wrapped as a wasm module"
+license = "MIT"
+
+# Its own crate so that the splitter itself is only ever an `rlib`. A `cdylib`
+# built for the host has to resolve every symbol it references, and asr's
+# runtime imports are only ever supplied by the auto splitting runtime -- or, in
+# the tests, by test-harness, which a `cdylib` cannot link. An MSVC DLL refuses
+# to link with them undefined, so while the splitter was a `cdylib` as well,
+# `cargo test` could not run on Windows at all.
+#
+# Named `timberborn_autosplitter` so the artifact keeps the file name the
+# release, the auto splitter index and every layout already use.
+[lib]
+name = "timberborn_autosplitter"
+crate-type = ["cdylib"]
+
+# Only on wasm. Off it this crate compiles to nothing -- see src/lib.rs -- so it
+# does not pull the splitter into a host `cdylib` after all.
+[target.'cfg(target_family = "wasm")'.dependencies]
+splitter = { package = "timberborn_autosplitter", path = ".." }
+asr = { git = "https://github.com/LiveSplit/asr" }
+# Heap allocator.
+dlmalloc = { version = "0.2.4", features = ["global"] }
