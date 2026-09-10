@@ -92,7 +92,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-All five run on Windows as well as Linux. Two things make that so. The
+All five run on Windows as well as Linux, and CI runs the three host commands
+on `windows-latest` too, so it stays that way. Two things make it so. The
 splitter is only an `rlib`; the `cdylib` that ships is the wrapper in `wasm/`,
 which is empty off wasm, because a host DLL cannot link with asr's runtime
 imports left undefined. And the tools that read the game through `/proc` --

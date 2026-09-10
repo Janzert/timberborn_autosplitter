@@ -78,3 +78,25 @@ jobs:
             examples/Timberborn-Wonder-IronTeeth.lss \
             examples/Timberborn-Timberbot.lss \
             examples/Timberborn.lsl --clobber
+
+  # The host checks again, on Windows. The two platforms drifted apart twice
+  # before anyone looked -- an MSVC DLL will not link with the undefined
+  # symbols a Linux .so accepts, and Linux-only tools sat in unconditional
+  # targets -- so both are checked rather than one by hand. The wasm build is
+  # the same on either and is only done above.
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy (tests)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
