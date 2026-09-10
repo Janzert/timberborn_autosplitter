@@ -181,6 +181,15 @@
         { "name": "<DaytimeLengthInHours>k__BackingField", "requested": "DaytimeLengthInHours", "type": "float", "static": false, "offset": 80 },
         { "name": "<NighttimeLengthInHours>k__BackingField", "requested": "NighttimeLengthInHours", "type": "float", "static": false, "offset": 84 }
       ]
+    },
+    {
+      "image": "Timberborn.Wellbeing",
+      "namespace": "Timberborn.Wellbeing",
+      "name": "WellbeingService",
+      "fields": [
+        { "name": "<AverageGlobalWellbeing>k__BackingField", "requested": "AverageGlobalWellbeing", "type": "int", "static": false, "offset": 48 },
+        { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 24 }
+      ]
     }
   ],
   "instances": [
