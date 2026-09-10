@@ -29,13 +29,26 @@
 //! cargo install --path tb-ptrace-open --root ~/.local \
 //!   && sudo setcap cap_sys_ptrace+ep ~/.local/bin/tb-ptrace-open
 //! ```
+//!
+//! Linux only. Elsewhere there is no `/proc` to open and nothing to pass, and
+//! this builds to a `main` that says so -- only so `cargo --workspace` compiles.
 
-use std::{ffi::CString, os::fd::RawFd, process::ExitCode};
+use std::process::ExitCode;
+#[cfg(target_os = "linux")]
+use std::{ffi::CString, os::fd::RawFd};
 
 /// The socket to the caller. Inherited, so there is no path to guess and no
 /// window in which anyone else could connect.
+#[cfg(target_os = "linux")]
 const SOCKET_FD: RawFd = 3;
 
+#[cfg(not(target_os = "linux"))]
+fn main() -> ExitCode {
+    eprintln!("tb-ptrace-open: Linux only -- it opens /proc/<pid>/mem.");
+    ExitCode::FAILURE
+}
+
+#[cfg(target_os = "linux")]
 fn main() -> ExitCode {
     let Some(pid) = std::env::args().nth(1).and_then(|a| a.parse::<u32>().ok()) else {
         eprintln!("usage: tb-ptrace-open <pid>   (with fd 3 a unix socket to the caller)");
@@ -80,6 +93,7 @@ fn main() -> ExitCode {
 /// deliberately depends on nothing that changes. `/proc/<pid>/exe` is no use
 /// under Proton -- it points at Wine's preloader -- so the signal is that the
 /// game's own data directory is mapped.
+#[cfg(target_os = "linux")]
 fn is_timberborn(pid: u32) -> bool {
     let Ok(maps) = std::fs::read_to_string(format!("/proc/{pid}/maps")) else {
         return false;
@@ -89,6 +103,7 @@ fn is_timberborn(pid: u32) -> bool {
 }
 
 /// Sends `fd` over `socket` as an SCM_RIGHTS ancillary message.
+#[cfg(target_os = "linux")]
 fn send_fd(socket: RawFd, fd: RawFd) -> std::io::Result<()> {
     let mut payload = [0u8; 1];
     let mut iov = libc::iovec {

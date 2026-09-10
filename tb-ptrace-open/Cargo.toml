@@ -10,5 +10,8 @@ description = "Opens Timberborn's memory and hands back the descriptor. The only
 # lost on every rebuild -- so the less reason it has to change, the fewer times
 # anyone has to think about it. It must not depend on test-harness, which
 # changes constantly.
-[dependencies]
+#
+# Linux only: `/proc/<pid>/mem` and SCM_RIGHTS are what it is for. Elsewhere it
+# builds to a `main` that says so, so `--workspace` still compiles.
+[target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

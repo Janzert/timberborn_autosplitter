@@ -4,9 +4,21 @@
 //! Opens the file named by its first argument and sends the descriptor over the
 //! socket on fd 3 -- the same protocol, none of the privilege. Test fixture
 //! only; nothing outside `live.rs`'s tests should invoke it.
+//!
+//! Linux only, like the protocol it stands in for. Elsewhere it builds to a
+//! `main` that fails, only so `cargo --workspace` compiles.
 
-use std::{ffi::CString, os::fd::RawFd, process::ExitCode};
+use std::process::ExitCode;
+#[cfg(target_os = "linux")]
+use std::{ffi::CString, os::fd::RawFd};
 
+#[cfg(not(target_os = "linux"))]
+fn main() -> ExitCode {
+    eprintln!("fd-source: Linux only");
+    ExitCode::FAILURE
+}
+
+#[cfg(target_os = "linux")]
 fn main() -> ExitCode {
     let Some(path) = std::env::args().nth(1) else {
         return ExitCode::FAILURE;

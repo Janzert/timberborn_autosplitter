@@ -8,6 +8,9 @@
 //! These test the plumbing, not the premise, and do it against an ordinary file
 //! so they need no privilege and no running game. SCM_RIGHTS mistakes are
 //! silent, which is why they are worth a test at all.
+//!
+//! Linux only: SCM_RIGHTS and `/proc/<pid>/mem` are the whole subject.
+#![cfg(target_os = "linux")]
 
 use std::{io::Read, process::Command};
 
