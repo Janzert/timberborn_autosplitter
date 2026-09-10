@@ -148,6 +148,14 @@ pub const SUBJECTS: &[Subject] = &[
         used_for: "run end: the first Timberbot produced",
     },
     Subject {
+        image: "Timberborn.Wellbeing",
+        class: "WellbeingService",
+        // The average the top bar shows, and the one the game unlocks the Iron
+        // Teeth on.
+        fields: &["AverageGlobalWellbeing", "_eventBus"],
+        used_for: "run end: average well-being 15 (Unlock Iron Teeth)",
+    },
+    Subject {
         image: "Timberborn.SceneLoading",
         class: "SceneLoader",
         fields: &["_isLoading", "_assetLoader", "_sceneParameters"],

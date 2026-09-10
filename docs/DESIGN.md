@@ -462,6 +462,7 @@ All paths below were verified to exist in the shipped assemblies.
 | Run end (Wonder) | `WonderCompletionCountdownStarter.CountdownFinished` | `bool` |
 | Run end (Timberbot) | `BotPopulation.BotCreated` | `bool` |
 | Bots alive *(logged, not split)* | `BotPopulation._bots` | `List<BotSpec>` |
+| Run end (Unlock Iron Teeth) | `WellbeingService.AverageGlobalWellbeing` | `int` |
 | Day | `DayNightCycle.DayNumber` | `int` |
 
 Field types were read out of the assemblies offline (`devtools/metadata.py`),
@@ -922,6 +923,67 @@ count, and why the flag needs the same already-true-on-arrival suppression the
 countdown has. `_bots.Count` is read alongside it and only logged; it is what
 the population overlay counts, so a log line quoting it can be checked against
 what the runner saw on screen.
+
+**The Unlock Iron Teeth end reads the number, not the unlock.** The category
+ends when the average well-being of the settlement is 15, which is the Iron
+Teeth blueprint's `UnlockableFactionSpec.AverageWellbeingToUnlock`. The game
+unlocks them from a tickable singleton:
+
+```
+FactionGoalsUnlocker.Tick
+  -> for each faction still locked whose PrerequisiteFaction is being played:
+       WellbeingService.AverageGlobalWellbeing >= AverageWellbeingToUnlock
+  -> FactionUnlockingService.UnlockFaction
+     -> player data FactionUnlocked_IronTeeth = true
+     -> FactionUnlockedEvent (the "new faction unlocked" alert)
+```
+
+The unlock is kept in player data rather than in the save, so on a machine
+that has unlocked the Iron Teeth once it never happens again -- and the
+category allows running there. So the split reads the condition, not its
+consequence: `AverageGlobalWellbeing` against 15, a plain `int` on a singleton
+with `_eventBus`, one read a tick.
+
+That value is the mean of every beaver's well-being, rounded
+(`Mathf.RoundToInt`), recomputed by `WellbeingService.Tick`. The top bar
+(`BasicStatisticsPanel`) reads the same property every frame, or
+`AverageDistrictWellbeing` while a district is selected -- the same beavers, in
+a settlement of one district. Being rounded, and moving both ways as needs are
+met and lapse, it can cross 15 and fall back, so the split fires on the first
+read at 15 or more and not again in that game. An average already there on
+arrival belongs to a loaded save, and is suppressed like the other run ends.
+
+**The runner sees four signals, and they land together.** The number in the
+top bar, the well-being highscore alert, the faction unlocked alert and this
+split all come from that one `int`, so what could separate them is only when
+each reads it:
+
+- The game advances in full ticks of 0.6s of game time
+  (`TickTimeSpec.TickIntervalInSeconds`), each spread over frames as 129
+  buckets: one holding every tickable singleton, then 128 of entities. Game
+  speed sets `Time.timeScale`, so a full tick is 0.6s of real time at 1x and
+  0.2s at 3x. Beavers' well-being changes in the entity buckets and the
+  average is recomputed only in the singleton one, once per full tick -- a
+  delay every signal shares, so it separates none of them.
+- Inside that bucket, singletons tick in the DI container's order
+  (`SingletonListener._allSingletons`), with only `ILateTickable` moved to the
+  end, which none of these three is. Read out of a live 1.1.2.4-52e959e-sw
+  game: `WellbeingService` at index 62 of 620, `FactionGoalsUnlocker` at 426,
+  `WellbeingHighscore` at 615. The average is recomputed first, and the unlock
+  and the highscore alert are both raised from it later in the **same pass**,
+  on the same frame. The other order would have put each a full tick behind.
+- Both alerts are posted synchronously on the event bus and shown by their
+  handlers at once. The top bar is rewritten by an update singleton every
+  frame, so it shows the new value on that frame or the next: a frame at most,
+  ~17ms at 60fps.
+- The splitter reads memory, not the screen, once per its own tick of ~10ms
+  (see *Split latency*).
+
+So a run timed off the top bar, the highscore alert or the unlock alert differs
+from this split by a frame or so, never by a tick. One quirk does not change
+that: `WellbeingHighscore` stays silent for the first two new highscores after
+a load (`_tickCounter`), which in a fresh game are single digits and cannot be
+the 15.
 
 **Start** is identified, and the game's own state machine uses the same concept
 the rules do. `GameInitializer` steps through an `InitializationState` enum:

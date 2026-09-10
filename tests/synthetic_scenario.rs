@@ -129,6 +129,8 @@ struct Run {
     initializer: Object,
     countdown: Object,
     bots: Object,
+    /// `WellbeingService`, whose average is the Unlock Iron Teeth run's end.
+    wellbeing: Object,
     clock: Object,
     entities: u64,
     unlocked: u64,
@@ -202,6 +204,11 @@ fn settlement(fixture: &fixture::Fixture, faction: &Faction, buildings: &[&str])
     let bot_list = scene.list(reached_by::BOT_LIST, &[bot]);
     scene.set_ptr(&bots, "_bots", bot_list);
 
+    // The well-being service, which every game has too. Its average starts at
+    // zero, as a new settlement's does, and climbs as the run goes on.
+    let wellbeing = scene.service("Timberborn.Wellbeing", "WellbeingService");
+    scene.set_i32(&wellbeing, "AverageGlobalWellbeing", 0);
+
     let initializer = scene.service("Timberborn.GameStartup", "GameInitializer");
     scene.set_i32(&initializer, "_initializationState", WAITING);
 
@@ -229,6 +236,7 @@ fn settlement(fixture: &fixture::Fixture, faction: &Faction, buildings: &[&str])
             initializer,
             countdown,
             bots,
+            wellbeing,
             clock,
             entities,
             unlocked: unlocked_object,
@@ -303,6 +311,13 @@ impl Run {
             .set_instance_i32(reached_by::BOT_LIST, self.bot_list, "_size", 1);
         self.live.set_u8(&self.bots, "BotCreated", 1);
     }
+
+    /// The settlement's average well-being becomes `value` -- the number the
+    /// top bar shows, and 15 of it ends an Unlock Iron Teeth run.
+    fn wellbeing(&self, value: i32) {
+        self.live
+            .set_i32(&self.wellbeing, "AverageGlobalWellbeing", value);
+    }
 }
 
 /// How many splits had fired by the time each step was applied.
@@ -346,6 +361,30 @@ fn play_timberbot(fixture: &fixture::Fixture, faction: &Faction) -> (World, Spli
             r.finish(2);
         }),
         Box::new(|r: &Run| r.first_bot()),
+    ];
+    drive_steps(world, run, steps, |_, _| {})
+}
+
+/// An Unlock Iron Teeth run: the average well-being climbing to 15, dipping
+/// back under it and coming back.
+///
+/// Its own trigger is ticked and the rest are left as shipped, which is the
+/// category's splits file. Nothing is built: the category has no other splits,
+/// so a building would only test that an unticked trigger stays quiet. Played
+/// as Folktails, the only faction the category is run as.
+fn play_unlock_iron_teeth(fixture: &fixture::Fixture) -> (World, SplitsAtStep) {
+    let (world, run) = settlement(fixture, &FACTIONS[0], &[]);
+    let world = world.with_setting("wellbeing_15", true);
+    let steps: Vec<Step> = vec![
+        Box::new(|r: &Run| r.load_ends()),
+        Box::new(|r: &Run| r.overlay()),
+        Box::new(|r: &Run| r.wellbeing(10)),
+        Box::new(|r: &Run| r.wellbeing(14)),
+        Box::new(|r: &Run| r.wellbeing(15)),
+        // A rounded mean of every beaver's well-being moves both ways as needs
+        // come and go, so crossing the goal once is no promise of staying.
+        Box::new(|r: &Run| r.wellbeing(14)),
+        Box::new(|r: &Run| r.wellbeing(16)),
     ];
     drive_steps(world, run, steps, |_, _| {})
 }
@@ -580,14 +619,52 @@ fn the_timberbot_splits_are_for_the_right_things_in_order() {
     });
 }
 
-/// A wonder run played with the settings untouched: a bot is produced and the
-/// Smelter goes up, and neither costs a split it should not.
+/// An Unlock Iron Teeth run played through: a start, then one split on the
+/// tick the average well-being first reaches 15 -- not at 14, and not again
+/// when it dips under and comes back.
+#[test]
+fn the_unlock_iron_teeth_category_splits_once_at_fifteen() {
+    /// Where the average first reaches 15 in the step list.
+    const REACHES_GOAL: usize = 4;
+
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for fixture in &fixtures {
+        let version = &fixture.game_version;
+        let (world, splits) = play_unlock_iron_teeth(fixture);
+        assert_eq!(
+            controlling(&world),
+            [&TimerEvent::Start, &TimerEvent::Split],
+            "{version}: the timer was driven wrongly; log was {:#?}",
+            world.log
+        );
+        let splits = splits.borrow();
+        assert_eq!(
+            (
+                splits.get(REACHES_GOAL).copied(),
+                splits.get(REACHES_GOAL + 1).copied()
+            ),
+            (Some(0), Some(1)),
+            "{version}: the split should land between the average reaching 15 \
+             and the next step. Steps were {splits:?}; log was {:#?}",
+            world.log
+        );
+        assert!(
+            world.logged("Run end: average well-being reached 15. Splitting."),
+            "{version}: log was {:#?}",
+            world.log
+        );
+    }
+}
+
+/// A wonder run played with the settings untouched: a bot is produced, the
+/// average well-being reaches 15 and the Smelter goes up, and none of them
+/// costs a split it should not.
 ///
-/// This is the whole of what separates the two routes now that there is no
-/// category. The shipped defaults have the Timberbot triggers off, so a runner
-/// who opens the splitter and starts a wonder run gets seven splits -- not an
-/// eighth for the bot, and not a ninth for the Smelter, which two triggers
-/// read and only one of them is on.
+/// This is the whole of what separates the routes now that there is no
+/// category. The shipped defaults have the Timberbot and Unlock Iron Teeth
+/// triggers off, so a runner who opens the splitter and starts a wonder run
+/// gets seven splits -- not an eighth for the bot or the well-being, and not a
+/// ninth for the Smelter, which two triggers read and only one of them is on.
 #[test]
 fn a_wonder_run_with_the_shipped_defaults_splits_seven_times() {
     let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
@@ -602,6 +679,7 @@ fn a_wonder_run_with_the_shipped_defaults_splits_seven_times() {
             Box::new(|r: &Run| r.load_ends()),
             Box::new(|r: &Run| r.overlay()),
             Box::new(|r: &Run| r.first_bot()),
+            Box::new(|r: &Run| r.wellbeing(15)),
         ];
         for index in 0..faction.buildings.len() {
             steps.push(Box::new(move |r: &Run| {
@@ -630,6 +708,13 @@ fn a_wonder_run_with_the_shipped_defaults_splits_seven_times() {
             world.logged("The first Timberbot was created, but not splitting."),
             "{}: the bot was not even noticed, so the count above says nothing \
              about the default. Log was {:#?}",
+            run_name(fixture, faction),
+            world.log
+        );
+        assert!(
+            world.logged("Average well-being reached 15, but not splitting."),
+            "{}: the well-being goal was not even noticed, so the count above \
+             says nothing about its default. Log was {:#?}",
             run_name(fixture, faction),
             world.log
         );

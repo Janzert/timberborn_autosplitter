@@ -380,6 +380,9 @@ impl Scene {
         // load, and `BotCreated` is false until a bot is produced. Its `_bots`
         // is left null; a scenario that cares gives it a list.
         let bots = self.service("Timberborn.Bots", "BotPopulation");
+        // Every game has one of these as well. Its average is left at zero,
+        // which is a new settlement's.
+        let wellbeing = self.service("Timberborn.Wellbeing", "WellbeingService");
 
         let initializer = self.service("Timberborn.GameStartup", "GameInitializer");
         self.set_i32(&initializer, "_initializationState", initialization_state);
@@ -391,6 +394,7 @@ impl Scene {
             game_over,
             population,
             bots,
+            wellbeing,
             initializer,
         }
     }
@@ -539,6 +543,9 @@ pub struct CoreServices {
     /// `BotPopulation`, whose `BotCreated` is the Timberbot category's run
     /// end. Its `_bots` is left null.
     pub bots: Object,
+    /// `WellbeingService`, whose `AverageGlobalWellbeing` is the Unlock Iron
+    /// Teeth category's run end.
+    pub wellbeing: Object,
     /// `GameInitializer`, whose `_initializationState` is the run start.
     pub initializer: Object,
 }

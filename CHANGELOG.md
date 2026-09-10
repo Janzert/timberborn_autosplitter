@@ -3,6 +3,21 @@
 What changed between releases, from a runner's point of view. Dates are the
 release date.
 
+## Unreleased
+
+### Added
+
+- **A split for an Unlock Iron Teeth run**: **Well-being 15**, which fires the
+  moment the settlement's average well-being first reaches 15 — the number in
+  the top bar, and the level at which the game unlocks the Iron Teeth. It
+  fires whether or not they are already unlocked on your machine, and only
+  once: dipping back under 15 and returning does not split again.
+  [`examples/Timberborn-UnlockIronTeeth.lss`](examples/Timberborn-UnlockIronTeeth.lss)
+  is a splits file for the category, a start and this one split.
+
+  **It ships off, and nobody else need do anything** — the wonder and
+  Timberbot splits behave exactly as before.
+
 ## 0.4 — 2026-09-09
 
 ### Added

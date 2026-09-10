@@ -96,6 +96,7 @@
       <Setting id="smelter" type="bool">False</Setting>
       <Setting id="bot_part_factory" type="bool">False</Setting>
       <Setting id="first_bot" type="bool">False</Setting>
+      <Setting id="wellbeing_15" type="bool">False</Setting>
     </CustomSettings>
   </AutoSplitterSettings>
 </Run>

@@ -121,6 +121,18 @@ struct Settings {
     /// count beside the adults and children.
     #[default = false]
     first_bot: bool,
+
+    // The Unlock Iron Teeth run's end, off by default for the same reason the
+    // Timberbot splits are: a runner of another category who never opens these
+    // settings must not get a split out of it.
+    /// Split when the average well-being reaches 15 (off by default)
+    ///
+    /// The end of an Unlock Iron Teeth run: the settlement's average
+    /// well-being, the number in the top bar, reaching the 15 that unlocks the
+    /// Iron Teeth. Fires whether or not they are already unlocked on this
+    /// machine.
+    #[default = false]
+    wellbeing_15: bool,
 }
 
 asr::async_main!(stable);
@@ -921,9 +933,11 @@ async fn watch(
     let mut unlock: Option<WonderUnlock> = None;
     let mut buildings: Option<Buildings> = None;
     let mut bots: Option<BotCreation> = None;
+    let mut wellbeing: Option<WellbeingGoal> = None;
     let mut explained_buildings = false;
     let mut ended = false;
     let mut bot_ended = false;
+    let mut wellbeing_ended = false;
     // Whether a run start was observed while watching this scene. Anything
     // resolved afterwards belongs to a run already under way, so "already done
     // when we arrived" is not a reason to stay quiet.
@@ -994,6 +1008,7 @@ async fn watch(
                 completion = None;
                 buildings = None;
                 bots = None;
+                wellbeing = None;
 
                 // Whatever went wrong before, it was about a previous game.
                 status::clear();
@@ -1026,7 +1041,12 @@ async fn watch(
             // these are retried precisely because the services do not all
             // exist at once. Registering one replaces the container's array,
             // so nothing short of re-reading it will show the new arrival.
-            if completion.is_none() || unlock.is_none() || buildings.is_none() || bots.is_none() {
+            if completion.is_none()
+                || unlock.is_none()
+                || buildings.is_none()
+                || bots.is_none()
+                || wellbeing.is_none()
+            {
                 registry.refresh(process).await;
             }
             if completion.is_none() {
@@ -1063,6 +1083,14 @@ async fn watch(
                     }
                 }
             }
+            if wellbeing.is_none() {
+                wellbeing = WellbeingGoal::resolve(process, module, event_bus_vtable, registry);
+                if run_began {
+                    if let Some(w) = &mut wellbeing {
+                        w.arrived_mid_run();
+                    }
+                }
+            }
         }
 
         // Each watcher owns a different object with its own lifetime, so the
@@ -1080,6 +1108,9 @@ async fn watch(
         }
         if bots.as_ref().is_some_and(|b| !b.still_valid(process)) {
             bots = None;
+        }
+        if wellbeing.as_ref().is_some_and(|w| !w.still_valid(process)) {
+            wellbeing = None;
         }
 
         if let Some(b) = &mut buildings {
@@ -1160,6 +1191,26 @@ async fn watch(
             }
         }
 
+        // The end of an Unlock Iron Teeth run: the average well-being reaching
+        // the goal. Read every tick, and independent of the other two ends.
+        if let Some(w) = &mut wellbeing {
+            if !wellbeing_ended && w.reached(process) {
+                wellbeing_ended = true;
+                if Trigger::AverageWellbeing.enabled(settings)
+                    && timer::state() == TimerState::Running
+                {
+                    asr::print_message(&format!(
+                        "Run end: average well-being reached {WELLBEING_GOAL}. Splitting."
+                    ));
+                    timer::split();
+                } else {
+                    asr::print_message(&format!(
+                        "Average well-being reached {WELLBEING_GOAL}, but not splitting."
+                    ));
+                }
+            }
+        }
+
         ticks = ticks.wrapping_add(1);
         next_tick().await;
     }
@@ -1194,6 +1245,9 @@ enum Trigger {
     BotPartFactory,
     /// The end of a Timberbot run: the first bot produced.
     FirstBot,
+    /// The end of an Unlock Iron Teeth run: the average well-being reaching
+    /// [`WELLBEING_GOAL`].
+    AverageWellbeing,
 }
 
 impl Trigger {
@@ -1211,6 +1265,7 @@ impl Trigger {
             Trigger::Smelter => "Smelter",
             Trigger::BotPartFactory => "Bot Part Factory",
             Trigger::FirstBot => "the first Timberbot",
+            Trigger::AverageWellbeing => "average well-being 15",
         }
     }
 
@@ -1227,6 +1282,7 @@ impl Trigger {
             Trigger::Smelter => settings.smelter,
             Trigger::BotPartFactory => settings.bot_part_factory,
             Trigger::FirstBot => settings.first_bot,
+            Trigger::AverageWellbeing => settings.wellbeing_15,
         }
     }
 }
@@ -2111,6 +2167,113 @@ impl BotCreation {
     /// How many bots are alive, for the log line that reports the split.
     fn live(&self, process: &Process) -> Option<i32> {
         Self::count(process, self.bots)
+    }
+}
+
+/// The average well-being that unlocks the Iron Teeth, and so ends an Unlock
+/// Iron Teeth run. The category rules name it, and the game's own
+/// `UnlockableFactionSpec.AverageWellbeingToUnlock` agrees.
+const WELLBEING_GOAL: i32 = 15;
+
+/// The run end for the Unlock Iron Teeth category: the settlement's average
+/// well-being reaching [`WELLBEING_GOAL`].
+///
+/// `WellbeingService.AverageGlobalWellbeing` is recomputed every game tick, as
+/// the mean of every beaver's well-being rounded to the nearest whole number.
+/// It is the number the top bar shows while no district is selected, and it is
+/// exactly what `FactionGoalsUnlocker` compares against the Iron Teeth's
+/// threshold when it unlocks them.
+///
+/// The unlock itself is not what is watched. It is recorded in player data
+/// rather than in the game, so on a machine where the Iron Teeth are already
+/// unlocked it never happens at all -- and the category allows running there.
+struct WellbeingGoal {
+    /// Kept so the instance can be re-validated, as every watcher's is.
+    class: service::Locatable,
+    instance: Address,
+    average: u32,
+    /// The highest average seen, for the log. The value moves both ways as
+    /// needs come and go, and a line for every change would bury the rest.
+    highest: Option<i32>,
+    /// Already at the goal when we arrived. Only a loaded save can be, and
+    /// that must not read as the run ending.
+    reached_on_arrival: bool,
+    fired: bool,
+}
+
+impl WellbeingGoal {
+    fn resolve(
+        process: &Process,
+        module: &Module,
+        event_bus_vtable: Address,
+        registry: &singletons::Registry,
+    ) -> Option<Self> {
+        let class = service::Locatable::new(
+            process,
+            module,
+            "Timberborn.Wellbeing",
+            "WellbeingService",
+            event_bus_vtable,
+        )?;
+        // An auto-property, so Mono knows it as a backing field; asr falls back
+        // to that spelling on its own.
+        let average = class.field(process, module, "AverageGlobalWellbeing")?;
+        let instance = registry.lookup(class.vtable())?;
+
+        let now = process.read::<i32>(instance.add(average as u64)).ok();
+        let reached_on_arrival = now.is_some_and(|value| value >= WELLBEING_GOAL);
+        asr::print_message(&format!(
+            "Watching average well-being at {instance} (run end for the Unlock \
+             Iron Teeth category). Already at {WELLBEING_GOAL} in this save: \
+             {reached_on_arrival}. Average now: {}.",
+            match now {
+                Some(value) => alloc::format!("{value}"),
+                None => alloc::string::String::from("unreadable"),
+            }
+        ));
+
+        Some(Self {
+            class,
+            instance,
+            average,
+            highest: now,
+            reached_on_arrival,
+            fired: false,
+        })
+    }
+
+    /// Bound part way through a run, so an average already at the goal was
+    /// reached during it and the split is still owed.
+    fn arrived_mid_run(&mut self) {
+        if self.reached_on_arrival {
+            asr::print_message(
+                "The average well-being reads as already at the goal, but this \
+                 watcher was bound after the run started, so that happened during \
+                 it. Splitting on the next read.",
+            );
+        }
+        self.reached_on_arrival = false;
+    }
+
+    fn still_valid(&self, process: &Process) -> bool {
+        self.class.still_valid(process, self.instance)
+    }
+
+    /// One read per tick. True once, on the first read at or above the goal
+    /// that was not already there on arrival.
+    fn reached(&mut self, process: &Process) -> bool {
+        let Ok(value) = process.read::<i32>(self.instance.add(self.average as u64)) else {
+            return false;
+        };
+        if self.highest.is_none_or(|highest| value > highest) {
+            self.highest = Some(value);
+            asr::print_message(&format!("Average well-being {value}, the highest yet."));
+        }
+        if self.fired || self.reached_on_arrival || value < WELLBEING_GOAL {
+            return false;
+        }
+        self.fired = true;
+        true
     }
 }
 

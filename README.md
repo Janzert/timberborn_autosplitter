@@ -29,9 +29,10 @@ changed if you are updating from an earlier one.
 1. From the [latest release](https://github.com/Janzert/timberborn_autosplitter/releases/latest),
    download the splits file for what you run —
    [`Timberborn-Wonder-Folktails.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-Folktails.lss),
-   [`Timberborn-Wonder-IronTeeth.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-IronTeeth.lss)
-   or
+   [`Timberborn-Wonder-IronTeeth.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Wonder-IronTeeth.lss),
    [`Timberborn-Timberbot.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-Timberbot.lss)
+   or
+   [`Timberborn-UnlockIronTeeth.lss`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn-UnlockIronTeeth.lss)
    — and, if you want the layout these were designed against,
    [`Timberborn.lsl`](https://github.com/Janzert/timberborn_autosplitter/releases/latest/download/Timberborn.lsl).
 2. In LiveSplit, right-click → **Open Splits** → **From File...** and pick the
@@ -146,6 +147,21 @@ file turns them on for you:
 | Smelter | a Smelter is built |
 | Bot Part Factory | a Bot Part Factory is built |
 | Produce a Timberbot *(run end)* | the first bot is created — the moment the population overlay starts showing a bot count |
+
+One more ends an **Unlock Iron Teeth** run, which is over when the
+settlement's average well-being reaches 15 — the level that unlocks the Iron
+Teeth. It is **off by default** too, and the Unlock Iron Teeth splits file
+turns it on:
+
+| Split | Fires when |
+|---|---|
+| *(run start)* | the overlay appears after naming the settlement |
+| Well-being 15 *(run end)* | the average well-being first reaches 15 |
+
+It reads the same number the top bar shows, which is also the one the game
+unlocks the Iron Teeth on — so it fires whether or not they are already
+unlocked on your machine. It fires once: the average moves both ways as needs
+come and go, and dipping under 15 and coming back does not split again.
 
 There is no category to choose: every trigger is a checkbox and you turn on
 whichever ones you actually split on, mixing them however your route goes.

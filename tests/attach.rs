@@ -146,6 +146,7 @@ fn registers_its_settings() {
             "smelter",
             "bot_part_factory",
             "first_bot",
+            "wellbeing_15",
         ]
     );
     let off: Vec<&str> = world
@@ -154,7 +155,10 @@ fn registers_its_settings() {
         .filter(|(_, default)| !*default)
         .map(|(key, _)| key.as_str())
         .collect();
-    assert_eq!(off, ["smelter", "bot_part_factory", "first_bot"]);
+    assert_eq!(
+        off,
+        ["smelter", "bot_part_factory", "first_bot", "wellbeing_15"]
+    );
 }
 
 /// Every setting a recorded scenario asks `tb-record` to force is a setting
