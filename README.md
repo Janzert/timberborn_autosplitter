@@ -87,6 +87,34 @@ layout at all — the only thing the example `.lsl` adds is
 [the status line](#the-status-line), and that is one component you can add to
 your own.
 
+## The status line
+
+The example layout carries a **Text** component just below the split list that
+is blank almost all the time. It is how the splitter says something went wrong.
+
+It only ever shows warnings — a run start it could not time, or a game version
+it cannot read. In normal use it stays empty, so anything appearing there is
+worth reading:
+
+| Message | What it means |
+|---|---|
+| `Run start missed` | A new game was loading, but the splitter bound to it too late to catch the start. Start the timer yourself; your other splits still work. |
+| `Game already in progress` | The splitter attached to a game that was already running, so there was no start for it to see. Start the timer yourself; your other splits still work. |
+| `Game version not supported: DayNumber missing` | A game update renamed something the splitter cannot do without. |
+| `Game version may not be supported -- see the log` | Some names did not resolve. Some splits may still work. |
+| `Cannot tell a new game from a loaded save` | The splitter cannot rule out starting the timer on a loaded save. |
+
+To add it to a layout of your own: **Edit Layout...** → `+` → **Information**
+→ **Text**, then in its settings tick **Custom Variable**, put
+`Timberborn Autosplitter` in the variable-name box, and leave the other text
+box empty so the row is blank when there is nothing to say. It reads best
+directly under the splits — the row keeps its height even when empty, and a gap
+there is less conspicuous than one between the title and the first split.
+
+This never touches your splits file. LiveSplit only writes custom variables to
+a `.lss` if they were made permanent in the Run Editor, and one set by an auto
+splitter is not — it does not even mark your splits as needing saving.
+
 ## The splits
 
 The wonder run is seven splits, a new game through to the Congratulations
@@ -139,34 +167,6 @@ out of order split will get attributed to the wrong item.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for how it works and what has been
 measured.
-
-## The status line
-
-The example layout carries a **Text** component just below the split list that
-is blank almost all the time. It is how the splitter says something went wrong.
-
-It only ever shows warnings — a run start it could not time, or a game version
-it cannot read. In normal use it stays empty, so anything appearing there is
-worth reading:
-
-| Message | What it means |
-|---|---|
-| `Run start missed` | A new game was loading, but the splitter bound to it too late to catch the start. Start the timer yourself; your other splits still work. |
-| `Game already in progress` | The splitter attached to a game that was already running, so there was no start for it to see. Start the timer yourself; your other splits still work. |
-| `Game version not supported: DayNumber missing` | A game update renamed something the splitter cannot do without. |
-| `Game version may not be supported -- see the log` | Some names did not resolve. Some splits may still work. |
-| `Cannot tell a new game from a loaded save` | The splitter cannot rule out starting the timer on a loaded save. |
-
-To add it to a layout of your own: **Edit Layout...** → `+` → **Information**
-→ **Text**, then in its settings tick **Custom Variable**, put
-`Timberborn Autosplitter` in the variable-name box, and leave the other text
-box empty so the row is blank when there is nothing to say. It reads best
-directly under the splits — the row keeps its height even when empty, and a gap
-there is less conspicuous than one between the title and the first split.
-
-This never touches your splits file. LiveSplit only writes custom variables to
-a `.lss` if they were made permanent in the Run Editor, and one set by an auto
-splitter is not — it does not even mark your splits as needing saving.
 
 ## Building
 
