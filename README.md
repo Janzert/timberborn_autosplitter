@@ -9,66 +9,14 @@ which uses a game mod to collect the split information.
 For this autosplitter **nothing runs inside the game.** It reads state directly
 from the game's memory, so it works on a stock, unmodified game.
 
+It is **development stable**: every split works and is verified on both
+factions, against real runs replayed from captured game memory as well as
+played through live. What it has not yet had is widespread use, which is the
+only thing between here and calling it stable outright — so feedback,
+especially from a run that went wrong, is worth a great deal.
+
 ![LiveSplit part way through a Folktails run, with the splitter attached and
 the first three splits already fired](docs/images/running.png)
-
-## Status
-
-Currently this is barely beyond prototype stage in a minimally working state.
-Any feedback would certainly be appreciated, but be cautious if using this in
-an actual run.
-
-All seven splits defined by MHVandborg's splitter work, new game start to the
-"Congratulations!" screen. Verified on both factions: a complete Folktails run,
-and every split condition on Iron Teeth:
-
-| Split | Fires when |
-|---|---|
-| *(run start)* | the overlay appears after naming the settlement |
-| Forester | a Forester is built |
-| Gear Workshop | a Gear Workshop is built |
-| Tapper's Shack | a Tapper's Shack is built |
-| Observatory / Numbercruncher | the faction's advanced science building is built (Observatory for Folktails, Numbercruncher for Iron Teeth) |
-| Smelter + Wood Workshop | both are built, in either order |
-| Wonder Unlocked | the faction's wonder is unlocked in the science tree |
-| Congratulations screen *(run end)* | the Congratulations screen appears |
-
-Both factions are covered: where they have faction specific buildings — the
-advanced science building and the wonder itself — one split covers both, and
-only the one belonging to the faction being played can fire.
-
-Three more triggers cover a **Timberbot** run, which ends at the first bot
-rather than at a wonder. They are **off by default**, and the Timberbot splits
-file turns them on for you:
-
-| Split | Fires when |
-|---|---|
-| *(run start)* | the overlay appears after naming the settlement |
-| Gear Workshop | a Gear Workshop is built *(the same checkbox as above)* |
-| Smelter | a Smelter is built |
-| Bot Part Factory | a Bot Part Factory is built |
-| Produce a Timberbot *(run end)* | the first bot is created — the moment the population overlay starts showing a bot count |
-
-There is no category to choose: every trigger is a checkbox and you turn on
-whichever ones you actually split on, mixing them however your route goes.
-
-Two of them are worth a sentence each:
-
-- **Smelter** and **Smelter + Wood Workshop** read the same building. The first
-  splits when the Smelter is finished; the second waits for the Wood Workshop
-  as well and fires on whichever is second. Leaving both on gives you two
-  splits out of one Smelter, which is why the solo one ships off.
-- A Timberbot run means turning the wonder splits **off** as well as turning
-  these on — nothing else stops the Observatory or Numbercruncher from
-  splitting if you build one on the way to bots. The Timberbot splits file
-  already does both; it only matters if you are configuring one yourself.
-
-One LiveSplit limitation worth noting: **Splits fire in whatever order the
-player achieves them**, which need not match the order in a `.lss` file. So an
-out of order split will get attributed to the wrong item.
-
-See [docs/DESIGN.md](docs/DESIGN.md) for how it works and what has been
-measured.
 
 ## Setup
 
@@ -102,8 +50,8 @@ changed if you are updating from an earlier one.
    **Timberborn** is the whole procedure.
 4. Still in **Edit Splits**, **Settings** shows the individual splits. Each
    splits file above already has its own category ticked, so there is nothing
-   to change unless your route differs. **OK**, then **Save Splits** if you
-   changed anything.
+   to change unless your route differs — [The splits](#the-splits) below says
+   what each one does. **OK**, then **Save Splits** if you changed anything.
 
    ![The auto splitter settings, showing a checkbox per split](docs/images/split-settings.png)
 
@@ -165,6 +113,59 @@ there is less conspicuous than one between the title and the first split.
 This never touches your splits file. LiveSplit only writes custom variables to
 a `.lss` if they were made permanent in the Run Editor, and one set by an auto
 splitter is not — it does not even mark your splits as needing saving.
+
+## The splits
+
+The wonder run is seven splits, a new game through to the Congratulations
+screen — the same set MHVandborg's splitter defines:
+
+| Split | Fires when |
+|---|---|
+| *(run start)* | the overlay appears after naming the settlement |
+| Forester | a Forester is built |
+| Gear Workshop | a Gear Workshop is built |
+| Tapper's Shack | a Tapper's Shack is built |
+| Observatory / Numbercruncher | the faction's advanced science building is built (Observatory for Folktails, Numbercruncher for Iron Teeth) |
+| Smelter + Wood Workshop | both are built, in either order |
+| Wonder Unlocked | the faction's wonder is unlocked in the science tree |
+| Congratulations screen *(run end)* | the Congratulations screen appears |
+
+Both factions are covered: where they have faction specific buildings — the
+advanced science building and the wonder itself — one split covers both, and
+only the one belonging to the faction being played can fire.
+
+Three more triggers cover a **Timberbot** run, which ends at the first bot
+rather than at a wonder. They are **off by default**, and the Timberbot splits
+file turns them on for you:
+
+| Split | Fires when |
+|---|---|
+| *(run start)* | the overlay appears after naming the settlement |
+| Gear Workshop | a Gear Workshop is built *(the same checkbox as above)* |
+| Smelter | a Smelter is built |
+| Bot Part Factory | a Bot Part Factory is built |
+| Produce a Timberbot *(run end)* | the first bot is created — the moment the population overlay starts showing a bot count |
+
+There is no category to choose: every trigger is a checkbox and you turn on
+whichever ones you actually split on, mixing them however your route goes.
+
+Two of them are worth a sentence each:
+
+- **Smelter** and **Smelter + Wood Workshop** read the same building. The first
+  splits when the Smelter is finished; the second waits for the Wood Workshop
+  as well and fires on whichever is second. Leaving both on gives you two
+  splits out of one Smelter, which is why the solo one ships off.
+- A Timberbot run means turning the wonder splits **off** as well as turning
+  these on — nothing else stops the Observatory or Numbercruncher from
+  splitting if you build one on the way to bots. The Timberbot splits file
+  already does both; it only matters if you are configuring one yourself.
+
+One LiveSplit limitation worth noting: **Splits fire in whatever order the
+player achieves them**, which need not match the order in a `.lss` file. So an
+out of order split will get attributed to the wrong item.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for how it works and what has been
+measured.
 
 ## Building
 
