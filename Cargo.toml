@@ -81,6 +81,12 @@ required-features = ["snapshot-tests"]
 # failed to link before any test ran. So `cargo wasm` asks for the `cdylib`
 # itself -- it is `cargo rustc --crate-type cdylib` -- and every other build,
 # the tests' included, gets the `rlib` they link against.
+#
+# Keep the `cdylib` build `cdylib` only. An `rlib` cannot be LTO'd, and when a
+# crate is built as both, Cargo silently drops `lto` from the whole build: no
+# `-C lto` for this crate, no `-C linker-plugin-lto` for its dependencies, and
+# no warning. Every release up to 0.4 shipped that way, and asking for both is
+# how it would come back.
 crate-type = ["rlib"]
 
 [profile.release]
