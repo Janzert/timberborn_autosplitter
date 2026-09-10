@@ -25,6 +25,23 @@ release date.
   Turning both on gives two splits out of one Smelter, which is allowed if that
   is what you want.
 
+### Changed
+
+- **The example splits files now spell out every split setting**, rather than
+  only the ones that differ from the shipped defaults. LiveSplit stores a
+  setting in the `.lss` only once you change it, so the wonder examples used to
+  carry no settings at all.
+
+  That is worth knowing because an empty settings block is not "use the
+  defaults" — LiveSplit skips it entirely and leaves whatever settings were
+  already loaded in place. Opening a wonder splits file after a Timberbot one,
+  in the same session, therefore left the three Timberbot splits switched on.
+  Now each file says what its category wants and switching between them does
+  the right thing.
+
+  Nothing changes for a file you already use, and your own settings are still
+  yours: this is only what the downloaded examples start out saying.
+
 ## 0.3 — 2026-09-05
 
 Mostly about what the splitter costs while you play. Starting a game used to

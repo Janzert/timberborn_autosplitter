@@ -82,5 +82,20 @@
       <SegmentHistory />
     </Segment>
   </Segments>
-  <AutoSplitterSettings />
+  <AutoSplitterSettings>
+    <Version>1.0</Version>
+    <CustomSettings>
+      <Setting id="start" type="bool">True</Setting>
+      <Setting id="forester" type="bool">True</Setting>
+      <Setting id="gear_workshop" type="bool">True</Setting>
+      <Setting id="tappers_shack" type="bool">True</Setting>
+      <Setting id="advanced_science" type="bool">True</Setting>
+      <Setting id="smelter_woodworkshop" type="bool">True</Setting>
+      <Setting id="unlock_wonder" type="bool">True</Setting>
+      <Setting id="congratulations_screen" type="bool">True</Setting>
+      <Setting id="smelter" type="bool">False</Setting>
+      <Setting id="bot_part_factory" type="bool">False</Setting>
+      <Setting id="first_bot" type="bool">False</Setting>
+    </CustomSettings>
+  </AutoSplitterSettings>
 </Run>

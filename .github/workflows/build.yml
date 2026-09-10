@@ -76,4 +76,5 @@ jobs:
             target/wasm32-unknown-unknown/release/timberborn_autosplitter.wasm \
             examples/Timberborn-Wonder-Folktails.lss \
             examples/Timberborn-Wonder-IronTeeth.lss \
+            examples/Timberborn-Timberbot.lss \
             examples/Timberborn.lsl --clobber
