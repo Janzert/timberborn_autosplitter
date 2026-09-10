@@ -120,7 +120,7 @@ Whether the splitter is active at all is remembered by LiveSplit itself, per
 game name, rather than in either file.
 
 The Auto Splitting Runtime that runs the module ships with LiveSplit itself —
-this was tested against 1.8.29 — so there is nothing else to install, and
+tested against 1.8.29 and 1.8.34 — so there is nothing else to install, and
 nothing is added to the game.
 
 There is a wonder splits file for each faction, because the segment names and
