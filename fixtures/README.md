@@ -61,8 +61,12 @@ Two halves, from two places, and neither can produce the other:
 `tb-fixture` does both and merges them:
 
 ```bash
-cargo fixture --managed ~/.steam/steam/steamapps/common/Timberborn/Timberborn_Data/Managed
+cargo fixture -- --managed ~/.steam/steam/steamapps/common/Timberborn/Timberborn_Data/Managed
 ```
+
+The bare `--` is not a typo: `fixture` is a cargo *alias*, so anything meant
+for the tool rather than for cargo has to be handed past cargo's own parser.
+Without it, cargo rejects `--managed` as an unknown flag of its own.
 
 It needs the game **installed** (for the assemblies) and a `run-finished`
 snapshot **of that same build** (for the offsets) — see
@@ -158,7 +162,7 @@ takes any copy of a `Timberborn_Data/Managed` directory, so a saved-off one
 works:
 
 ```bash
-cargo fixture --managed /path/to/1.0.13.1/Timberborn_Data/Managed
+cargo fixture -- --managed /path/to/1.0.13.1/Timberborn_Data/Managed
 ```
 
 Both halves are offline, so nothing has to be running. What is needed is a
