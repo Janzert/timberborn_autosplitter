@@ -3,7 +3,7 @@
 What changed between releases, from a runner's point of view. Dates are the
 release date.
 
-## Unreleased
+## 0.5 — 2026-09-11
 
 ### Added
 
