@@ -27,6 +27,18 @@
 //! The three length constants read as zero until the game has finished
 //! loading, so they are read until they are usable and then kept. The two
 //! counters are read every tick.
+//!
+//! # Between ticks
+//!
+//! Those counters only move once a game tick, which is 0.6s of real time at
+//! 1x, so a timer driven by them alone updates under twice a second and reads
+//! as broken however small each step is. `TickProgressService.Progress` --
+//! how far through the current tick the game is, 0 to 1 -- fills the gap, and
+//! it is reached through the DI container like everything else rather than
+//! costing a scan. Measured across all three recordings: it sweeps the unit
+//! interval at live instants, and reads exactly zero only where the game is
+//! not ticking, which is a scene still loading and the Congratulations
+//! screen.
 
 use asr::{game_engine::unity::mono::Module, time::Duration, timer, Address, Process};
 
@@ -130,6 +142,55 @@ const NEW_GAME_DAY: f64 = 1.0 + 128.0 / VANILLA_TICKS_PER_DAY;
 /// drift is expected and means nothing.
 const BASELINE_SLACK_TICKS: f64 = 8.0;
 
+/// `TickProgressService`, where the game says how far through the current
+/// tick it is.
+///
+/// Optional throughout: without it game time still follows the clock, just in
+/// whole-tick steps, so a build that renames this loses smoothness rather than
+/// timing.
+#[derive(Clone, Copy)]
+pub struct TickProgress {
+    instance: Address,
+    offset: u32,
+}
+
+impl TickProgress {
+    /// Looks the service up in the DI container. `None` if it is not there
+    /// yet, or if the class has never been constructed.
+    pub fn resolve(
+        process: &Process,
+        module: &Module,
+        lookup: impl FnOnce(Address) -> Option<Address>,
+    ) -> Option<Self> {
+        let vtable = crate::service::class_vtable(process, module, IMAGE, CLASS)?;
+        let instance = lookup(vtable)?;
+        let offset = crate::service::field_offset(process, module, IMAGE, CLASS, "Progress")?;
+        asr::print_message(&alloc::format!(
+            "Found {CLASS} at {instance}. Game time will move between ticks."
+        ));
+        Some(Self { instance, offset })
+    }
+
+    /// How far through the current tick, clamped to the tick it belongs to.
+    ///
+    /// Clamped rather than trusted: this is read a beat after the tick counter
+    /// and a value above one would put game time into a tick that has not
+    /// happened.
+    fn fraction(&self, process: &Process) -> f64 {
+        let value = process
+            .read::<f32>(self.instance.add(self.offset as u64))
+            .map(f64::from)
+            .unwrap_or(0.0);
+        if value.is_nan() {
+            return 0.0;
+        }
+        value.clamp(0.0, 1.0)
+    }
+}
+
+const IMAGE: &str = "Timberborn.TimeSystem";
+const CLASS: &str = "TickProgressService";
+
 /// One tick's look at the clock.
 pub struct Reading {
     /// The whole-day counter, which reads on every build.
@@ -147,6 +208,8 @@ pub struct Reading {
 pub struct Clock {
     fields: ClockFields,
     instance: Address,
+    /// Where the sub-tick fraction comes from, when the container had it.
+    progress: Option<TickProgress>,
     /// Derived once the length constants read as something usable, and then
     /// kept: they do not change within a game, and re-deriving them would be
     /// three reads a tick for an answer already known.
@@ -154,10 +217,11 @@ pub struct Clock {
 }
 
 impl Clock {
-    pub fn new(fields: ClockFields, instance: Address) -> Self {
+    pub fn new(fields: ClockFields, instance: Address, progress: Option<TickProgress>) -> Self {
         Self {
             fields,
             instance,
+            progress,
             ticks_per_day: None,
         }
     }
@@ -179,13 +243,25 @@ impl Clock {
     }
 
     /// The fractional day, given the whole-day counter already read.
+    ///
+    /// **The tick counter is read before the progress within it, and the order
+    /// is load-bearing.** A tick can turn between the two reads, and this way
+    /// round the pair is at worst a whole tick stale -- the count from the old
+    /// tick, the progress from the new one near zero -- which only ever
+    /// understates. The other order pairs a progress near one with the count
+    /// after the turn, overshooting by a tick and then falling back: a timer
+    /// running backwards, which is the one thing game time must never do.
     fn fraction(&mut self, process: &Process, day_number: i32) -> Option<f64> {
         let ticks_per_day = self.ticks_per_day(process)?;
         let sub_day = self.fields.sub_day?;
         let ticks = process
             .read::<i32>(self.instance.add(sub_day.ticks_today as u64))
             .ok()?;
-        Some(f64::from(day_number) + f64::from(ticks) / ticks_per_day)
+        let within = match &self.progress {
+            Some(progress) => progress.fraction(process),
+            None => 0.0,
+        };
+        Some(f64::from(day_number) + (f64::from(ticks) + within) / ticks_per_day)
     }
 
     /// Ticks in a day, derived from the clock's own length constants.

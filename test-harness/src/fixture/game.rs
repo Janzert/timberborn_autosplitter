@@ -371,6 +371,15 @@ impl Scene {
         // makes the log report a completion day of 5.6e-47 instead of a number.
         self.set_f32(&clock, "DayLengthInSeconds", 900.0);
 
+        // Where the game says how far through the current tick it is. In the
+        // container but not a service with an event bus of its own, so it is
+        // registered rather than wired up. Zero by default, which is a game
+        // sitting exactly on a tick boundary and keeps a scenario's arithmetic
+        // in whole ticks until it says otherwise.
+        let tick_progress = self.object("Timberborn.TimeSystem", "TickProgressService");
+        self.set_f32(&tick_progress, "Progress", 0.0);
+        self.register(&tick_progress);
+
         let unlocking = self.service("Timberborn.ScienceSystem", "BuildingUnlockingService");
         let countdown = self.service(
             "Timberborn.GameWonderCompletion",
@@ -406,6 +415,7 @@ impl Scene {
             bots,
             wellbeing,
             initializer,
+            tick_progress,
         }
     }
 
@@ -558,6 +568,9 @@ pub struct CoreServices {
     pub wellbeing: Object,
     /// `GameInitializer`, whose `_initializationState` is the run start.
     pub initializer: Object,
+    /// `TickProgressService`, whose `Progress` is how far through the current
+    /// tick the game is.
+    pub tick_progress: Object,
 }
 
 /// One entity, in the two pieces a scenario touches.
@@ -604,6 +617,13 @@ impl Live {
     pub fn set_u8(&self, object: &Object, field: &str, value: u8) {
         let offset = self.offset(object, field);
         self.memory.poke(object.address + offset, &[value]);
+    }
+
+    /// Writes a 32-bit float field -- the tick progress, a day length.
+    pub fn set_f32(&self, object: &Object, field: &str, value: f32) {
+        let offset = self.offset(object, field);
+        self.memory
+            .poke(object.address + offset, &value.to_le_bytes());
     }
 
     /// Sets a field of one of the nameless layouts — a list's `_size`, a set's

@@ -687,6 +687,11 @@ async fn run(process: &Process, settings: &mut Settings) {
         };
         asr::print_message(&format!("Found {} at {instance}.", clock.name()));
 
+        // The same container, the same moment: it is registered alongside the
+        // clock, and without it game time still runs, in whole-tick steps.
+        let tick_progress =
+            clock::TickProgress::resolve(process, &module, |vtable| registry.lookup(vtable));
+
         if !probed {
             if !probe::run(process, &module) {
                 status::warn("Game version may not be supported -- see the log");
@@ -707,6 +712,7 @@ async fn run(process: &Process, settings: &mut Settings) {
             &mut registry,
             instance,
             clock_fields,
+            tick_progress,
             event_bus_vtable,
             &mut scene,
             run_start,
@@ -939,6 +945,7 @@ async fn watch(
     registry: &mut singletons::Registry,
     instance: Address,
     clock_fields: clock::ClockFields,
+    tick_progress: Option<clock::TickProgress>,
     event_bus_vtable: Address,
     scene: &mut SceneLoad,
     mut run_start: Option<RunStart>,
@@ -947,7 +954,7 @@ async fn watch(
     game_time: &mut clock::GameTime,
 ) {
     let mut ticks = 0u32;
-    let mut game_clock = clock::Clock::new(clock_fields, instance);
+    let mut game_clock = clock::Clock::new(clock_fields, instance, tick_progress);
     let mut last_day = None;
     let mut completion: Option<WonderCompletion> = None;
     let mut unlock: Option<WonderUnlock> = None;

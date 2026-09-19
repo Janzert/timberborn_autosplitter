@@ -52,6 +52,17 @@ pub const SUBJECTS: &[Subject] = &[
         used_for: "day counter, run start, game time, countdown diagnostics",
     },
     Subject {
+        image: "Timberborn.TimeSystem",
+        class: "TickProgressService",
+        // How far through the current tick the game is, 0 to 1. The clock's
+        // own counters only move once a tick -- 0.6s of real time at 1x -- so
+        // this is what makes game time advance smoothly rather than in steps.
+        // No `_eventBus`: it is reached through the DI container, which needs
+        // no validation field.
+        fields: &["Progress"],
+        used_for: "game time between ticks",
+    },
+    Subject {
         image: "Timberborn.SingletonSystem",
         class: "EventBus",
         fields: &[],

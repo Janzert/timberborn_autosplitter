@@ -132,6 +132,7 @@ struct Run {
     /// `WellbeingService`, whose average is the Unlock Iron Teeth run's end.
     wellbeing: Object,
     clock: Object,
+    tick_progress: Object,
     entities: u64,
     unlocked: u64,
     /// The bot population's `_bots`, which is the live count rather than the
@@ -164,6 +165,14 @@ fn settlement(fixture: &fixture::Fixture, faction: &Faction, buildings: &[&str])
     // Plausible rather than measured: nothing splits on it, and a zero here
     // would print a completion day of 5.6e-47 instead of a number.
     scene.set_f32(&clock, "DayLengthInSeconds", 900.0);
+
+    // How far through the current tick the game is, which is what makes game
+    // time move between ticks. Zero means a game sitting exactly on a tick
+    // boundary, so every scenario below reads in whole ticks unless it says
+    // otherwise.
+    let tick_progress = scene.object("Timberborn.TimeSystem", "TickProgressService");
+    scene.set_f32(&tick_progress, "Progress", 0.0);
+    scene.register(&tick_progress);
 
     let unlocking = scene.service("Timberborn.ScienceSystem", "BuildingUnlockingService");
     // Every name the set will ever hold is placed now; `_count` and
@@ -244,6 +253,7 @@ fn settlement(fixture: &fixture::Fixture, faction: &Faction, buildings: &[&str])
             bots,
             wellbeing,
             clock,
+            tick_progress,
             entities,
             unlocked: unlocked_object,
             bot_list,
@@ -326,6 +336,11 @@ impl Run {
     fn clock_at(&self, day: i32, ticks: i32) {
         self.live.set_i32(&self.clock, "DayNumber", day);
         self.live.set_i32(&self.clock, "_ticksPassedToday", ticks);
+    }
+
+    /// The game moves `fraction` of the way through the current tick.
+    fn within_tick(&self, fraction: f32) {
+        self.live.set_f32(&self.tick_progress, "Progress", fraction);
     }
 
     /// The settlement's average well-being becomes `value` -- the number the
@@ -1183,4 +1198,74 @@ fn a_day_is_worth_a_minute() {
         timberborn_autosplitter::clock::SECONDS_PER_GAME_DAY,
         SECONDS_PER_DAY
     );
+}
+
+/// Game time moves within a tick, and meets the next one exactly.
+///
+/// The counters on the clock only move once a game tick -- 0.6s of real time
+/// at 1x -- so a timer driven by them alone updates under twice a second and
+/// reads as broken. The last two steps are the ones that matter: a full tick
+/// of progress and the tick turning under it are the same instant, and they
+/// must produce the same number. A seam there would show up as the timer
+/// stalling or jumping every 0.6s, which is what this exists to prevent.
+#[test]
+fn game_time_moves_between_ticks_and_meets_the_next_one() {
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for fixture in &fixtures {
+        for faction in FACTIONS {
+            let (world, run) = settlement(fixture, faction, &faction.buildings);
+            let steps: Vec<Step> = vec![
+                Box::new(|r: &Run| r.load_ends()),
+                Box::new(|r: &Run| r.overlay()),
+                Box::new(|r: &Run| r.within_tick(0.5)),
+                Box::new(|r: &Run| r.within_tick(1.0)),
+                // The same instant said the other way: the tick turned, and
+                // the progress within the new one is nothing.
+                Box::new(|r: &Run| {
+                    r.clock_at(1, NEW_GAME_TICK + 1);
+                    r.within_tick(0.0);
+                }),
+            ];
+            let (world, _) = drive_steps(world, run, steps, |_, _| {});
+            let name = run_name(fixture, faction);
+            // A tick is 1/768 of a day, so 60/768 = 0.078125s of game time,
+            // and half of it is 0.0390625. Both are exact in binary, so this
+            // can be an equality rather than an epsilon.
+            assert_eq!(
+                game_time_steps(&world),
+                vec![0.0, 0.0390625, 0.078125],
+                "{name}: game time did not move smoothly within the tick, or \
+                 did not meet the next tick where the progress left off"
+            );
+        }
+    }
+}
+
+/// A progress reading outside its tick cannot push game time past it.
+///
+/// The field is read a beat after the tick counter, so a value that has
+/// already run past one -- or a stale or garbage read -- would otherwise put
+/// the timer into a tick that has not happened, and it would then fall back.
+#[test]
+fn tick_progress_is_clamped_to_its_own_tick() {
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for fixture in &fixtures {
+        for faction in FACTIONS {
+            let (world, run) = settlement(fixture, faction, &faction.buildings);
+            let steps: Vec<Step> = vec![
+                Box::new(|r: &Run| r.load_ends()),
+                Box::new(|r: &Run| r.overlay()),
+                Box::new(|r: &Run| r.within_tick(7.5)),
+                Box::new(|r: &Run| r.within_tick(-3.0)),
+            ];
+            let (world, _) = drive_steps(world, run, steps, |_, _| {});
+            let name = run_name(fixture, faction);
+            assert_eq!(
+                game_time_steps(&world),
+                vec![0.0, 0.078125, 0.0],
+                "{name}: an out-of-range tick progress was not clamped to its \
+                 own tick"
+            );
+        }
+    }
 }
