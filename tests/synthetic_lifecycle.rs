@@ -95,12 +95,7 @@ impl Loading {
 
 /// Everything the timer was told, ignoring the variables set alongside.
 fn controlling(world: &World) -> Vec<&TimerEvent> {
-    world
-        .timer
-        .events
-        .iter()
-        .filter(|event| !matches!(event, TimerEvent::SetVariable { .. }))
-        .collect()
+    world.timer.run_control().collect()
 }
 
 /// Whether a log line appears at or after `from`.

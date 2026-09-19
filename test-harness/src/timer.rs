@@ -58,13 +58,47 @@ impl Timer {
         self.events.push(event);
     }
 
-    /// Events that control the run, which is everything except writes to the
-    /// status variable. The splitter uses that variable to talk to the runner,
-    /// so it is chatter rather than timer control and drowns assertions.
+    /// Events that control the run: starts, splits, skips, undos and resets.
+    ///
+    /// Everything else is excluded, and for the same reason in both cases --
+    /// it happens constantly and would drown any assertion about what the
+    /// splitter *did*. Writes to the status variable are the splitter talking
+    /// to the runner, and the game-time calls are a second clock running
+    /// alongside the run rather than anything that moves it on: `set_game_time`
+    /// fires every tick of every run. Tests about game time read
+    /// [`game_time`](Self::game_time) instead.
     pub fn run_control(&self) -> impl Iterator<Item = &TimerEvent> {
+        self.events.iter().filter(|e| {
+            !matches!(
+                e,
+                TimerEvent::SetVariable { .. }
+                    | TimerEvent::SetGameTime { .. }
+                    | TimerEvent::PauseGameTime
+                    | TimerEvent::ResumeGameTime
+            )
+        })
+    }
+
+    /// Every game time the splitter set, in order, as seconds.
+    pub fn game_time(&self) -> Vec<f64> {
         self.events
             .iter()
-            .filter(|e| !matches!(e, TimerEvent::SetVariable { .. }))
+            .filter_map(|e| match e {
+                TimerEvent::SetGameTime { secs, nanos } => {
+                    Some(*secs as f64 + f64::from(*nanos) / 1e9)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// How many times the splitter asked the host to stop its own flow of game
+    /// time. Sticky host state, so more than one is a bug.
+    pub fn game_time_pauses(&self) -> usize {
+        self.events
+            .iter()
+            .filter(|e| **e == TimerEvent::PauseGameTime)
+            .count()
     }
 
     /// How many splits were taken, ignoring skips and undos.

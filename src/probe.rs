@@ -35,18 +35,21 @@ pub const SUBJECTS: &[Subject] = &[
     Subject {
         image: "Timberborn.TimeSystem",
         class: "DayNightCycle",
-        // The three lengths are diagnostic: they turn the countdown's in-game
-        // hours into real seconds for the log. Listed anyway -- the probe's
-        // question is "did an update rename something", and a probe that only
-        // covers the load-bearing reads answers less than it appears to.
+        // `DayLengthInSeconds` is diagnostic: it turns the countdown's in-game
+        // hours into real seconds for the log. The other four are load-bearing
+        // for game time -- `_ticksPassedToday` is the position within the day,
+        // and the day's two halves over `FixedDeltaTimeInHours` are the ticks
+        // in a day it is a fraction of. See `src/clock.rs`.
         fields: &[
             "DayNumber",
             "_eventBus",
             "DayLengthInSeconds",
             "DaytimeLengthInHours",
             "NighttimeLengthInHours",
+            "FixedDeltaTimeInHours",
+            "_ticksPassedToday",
         ],
-        used_for: "day counter, run start, countdown diagnostics",
+        used_for: "day counter, run start, game time, countdown diagnostics",
     },
     Subject {
         image: "Timberborn.SingletonSystem",

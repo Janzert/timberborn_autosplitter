@@ -18,6 +18,10 @@ static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 #[cfg(test)]
 use test_harness as _;
 
+// Public for the offline suite, which pins `SECONDS_PER_GAME_DAY`: the scale
+// game time is published at, and so a constant that should be hard to change
+// by accident.
+pub mod clock;
 mod collections;
 // Public so the offline suite can check that a fixture covers every subject.
 // A subject added here and not regenerated into `fixtures/` would leave the
@@ -428,11 +432,20 @@ async fn run(process: &Process, settings: &mut Settings) {
     })
     .await;
 
-    let Some(day_number) = clock.field(process, &module, "DayNumber") else {
+    let Some(clock_fields) = clock::ClockFields::resolve(process, &module, &clock) else {
         status::warn("Game version not supported: DayNumber missing");
         return;
     };
+    if !clock_fields.has_sub_day() {
+        asr::print_message(
+            "The clock's sub-day fields are missing, so game time is not available. \
+             Real time is unaffected.",
+        );
+    }
 
+    // Per attach, not per game: the host's pause state survives a scene
+    // change and a reset, so this cannot be rebuilt with the clock.
+    let mut game_time = clock::GameTime::default();
     let mut probed = false;
     // The DI container of the game just left, skipped for the same reason its
     // objects are: it stays alive, and it holds a clock that is not this
@@ -610,6 +623,10 @@ async fn run(process: &Process, settings: &mut Settings) {
             || {
                 if let Some(start) = run_start.as_mut() {
                     if start.poll(process) {
+                        // No clock yet -- this scan is what finds the container
+                        // holding it -- so game time takes the new game's
+                        // constant rather than going without a baseline.
+                        game_time.begin_at_new_game();
                         start_timer(settings);
                     }
                 }
@@ -689,12 +706,13 @@ async fn run(process: &Process, settings: &mut Settings) {
             &clock,
             &mut registry,
             instance,
-            day_number,
+            clock_fields,
             event_bus_vtable,
             &mut scene,
             run_start,
             table.as_ref(),
             settings,
+            &mut game_time,
         )
         .await;
 
@@ -920,14 +938,16 @@ async fn watch(
     clock: &service::Locatable,
     registry: &mut singletons::Registry,
     instance: Address,
-    day_number: u32,
+    clock_fields: clock::ClockFields,
     event_bus_vtable: Address,
     scene: &mut SceneLoad,
     mut run_start: Option<RunStart>,
     table: Option<&table::ReferenceTable>,
     settings: &mut Settings,
+    game_time: &mut clock::GameTime,
 ) {
     let mut ticks = 0u32;
+    let mut game_clock = clock::Clock::new(clock_fields, instance);
     let mut last_day = None;
     let mut completion: Option<WonderCompletion> = None;
     let mut unlock: Option<WonderUnlock> = None;
@@ -1012,16 +1032,23 @@ async fn watch(
 
                 // Whatever went wrong before, it was about a previous game.
                 status::clear();
+                // Before the timer starts, so the baseline is the clock as it
+                // was at the overlay rather than a tick later.
+                game_time.begin(game_clock.read(process).and_then(|r| r.day));
                 start_timer(settings);
             }
         }
 
-        if let Ok(day) = process.read::<i32>(instance.add(day_number as u64)) {
-            if last_day != Some(day) {
-                asr::print_message(&format!("DayNumber = {day}"));
-                last_day = Some(day);
+        // One look at the clock a tick, above every split below, so the tick
+        // that ends the run is the tick its game time is recorded from.
+        let clock_now = game_clock.read(process);
+        if let Some(reading) = &clock_now {
+            if last_day != Some(reading.day_number) {
+                asr::print_message(&format!("DayNumber = {}", reading.day_number));
+                last_day = Some(reading.day_number);
             }
         }
+        game_time.update(clock_now.as_ref().and_then(|reading| reading.day));
 
         // Nothing may sample game state until initialization is done. The save
         // restorer sets CountdownFinished partway through a load, so resolving

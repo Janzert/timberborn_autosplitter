@@ -354,12 +354,22 @@ impl Scene {
     pub fn core_services(&mut self, initialization_state: i32) -> CoreServices {
         let clock = self.service("Timberborn.TimeSystem", "DayNightCycle");
         self.set_i32(&clock, "DayNumber", 1);
-        // The day lengths the countdown diagnostic divides by. Plausible
-        // rather than measured: nothing splits on them, and a zero here makes
-        // the log report a completion day of 5.6e-47 instead of a number.
-        self.set_f32(&clock, "DayLengthInSeconds", 900.0);
+        // The day's two halves and the length of a tick, which game time
+        // divides by: 16 + 8 hours at 0.03125 hours a tick is 768 ticks to a
+        // day. Measured, unlike `DayLengthInSeconds` below -- these three are
+        // load-bearing now, and a world with a different day length would give
+        // game time a different scale than the game's.
         self.set_f32(&clock, "DaytimeLengthInHours", 16.0);
         self.set_f32(&clock, "NighttimeLengthInHours", 8.0);
+        self.set_f32(&clock, "FixedDeltaTimeInHours", 0.03125);
+        // Where a new game's clock starts: 4 hours of 24, which is tick 128 of
+        // 768. A scenario that starts a run takes its game-time baseline from
+        // this.
+        self.set_i32(&clock, "_ticksPassedToday", 128);
+        // The real-seconds day length the countdown diagnostic divides by.
+        // Plausible rather than measured: nothing splits on it, and a zero here
+        // makes the log report a completion day of 5.6e-47 instead of a number.
+        self.set_f32(&clock, "DayLengthInSeconds", 900.0);
 
         let unlocking = self.service("Timberborn.ScienceSystem", "BuildingUnlockingService");
         let countdown = self.service(

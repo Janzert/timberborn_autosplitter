@@ -24,6 +24,8 @@ struct Replay {
     name: String,
     /// `(step index, what the splitter did there)`.
     fired: Vec<(usize, TimerEvent)>,
+    /// Every game time the splitter set, in order.
+    game_time: Vec<f64>,
     log: Vec<String>,
     /// The step labels as recorded, so a test can say what *should* have
     /// happened where.
@@ -81,6 +83,7 @@ fn replay(name: &str, dirs: &[std::path::PathBuf], state: &str) -> Replay {
 
     Replay {
         name: name.to_owned(),
+        game_time: world.timer.game_time(),
         fired,
         log: world.log,
         recorded,
@@ -512,4 +515,78 @@ fn both_games_bind_a_run_start() {
         "{}: expected a run start bound in each game; log was {:#?}",
         run.name, run.log
     );
+}
+
+/// Game time rises through a real run, from zero.
+///
+/// The offline suite already pins the arithmetic against a heap this
+/// repository wrote. What only a capture can say is that the two counters mean
+/// what the formula assumes in the game's own memory -- that they move at all,
+/// in step, and in one direction.
+#[test]
+fn game_time_rises_from_zero_through_a_recorded_run() {
+    for run in replayed() {
+        let times = &run.game_time;
+        assert_eq!(
+            times.first().copied(),
+            Some(0.0),
+            "{}: game time did not start at zero. It was {:?}",
+            run.name,
+            &times[..times.len().min(8)]
+        );
+        assert!(
+            times.windows(2).all(|pair| pair[1] >= pair[0]),
+            "{}: game time went backwards during the run",
+            run.name
+        );
+        let distinct = distinct(times);
+        assert!(
+            distinct >= 5,
+            "{}: game time only moved through {distinct} values in a whole \
+             recorded run, so it is not following the clock",
+            run.name
+        );
+    }
+}
+
+/// The day rollover, in real memory.
+///
+/// `_ticksPassedToday` resets to zero when the day turns, so the fraction it
+/// contributes drops by a whole day's worth at that instant and only the day
+/// counter going up keeps the total rising. This is the recording that crosses
+/// one -- three, in fact -- and a splitter that read either counter without
+/// the other would go visibly backwards here while passing every test that
+/// stays inside a single day.
+#[test]
+fn game_time_crosses_the_day_rollover_without_going_backwards() {
+    for run in replayed_timberbot() {
+        let times = &run.game_time;
+        assert!(
+            times.windows(2).all(|pair| pair[1] >= pair[0]),
+            "{}: game time went backwards, which is what a mishandled day \
+             rollover looks like",
+            run.name
+        );
+        let last = times.last().copied().unwrap_or_default();
+        assert!(
+            last > 120.0,
+            "{}: the recording spans three day rollovers, so game time should \
+             have passed two days' worth; it ended at {last}",
+            run.name
+        );
+    }
+}
+
+/// How many times the value changed, which is what "it followed the clock"
+/// means for a series pushed every tick.
+fn distinct(times: &[f64]) -> usize {
+    let mut seen = 0;
+    let mut last = None;
+    for time in times {
+        if last != Some(*time) {
+            seen += 1;
+            last = Some(*time);
+        }
+    }
+    seen
 }

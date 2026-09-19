@@ -152,12 +152,18 @@ fn settlement(fixture: &fixture::Fixture, faction: &Faction, buildings: &[&str])
 
     let clock = scene.service("Timberborn.TimeSystem", "DayNightCycle");
     scene.set_i32(&clock, "DayNumber", 1);
-    // The day lengths the countdown diagnostic divides by. Plausible rather
-    // than measured: nothing splits on them, and a zero here would print a
-    // completion day of 5.6e-47 instead of a number.
-    scene.set_f32(&clock, "DayLengthInSeconds", 900.0);
+    // A new game's clock: day 1, four hours in, and the lengths that make that
+    // tick 128 of 768. Measured values, because game time divides by them --
+    // see `Scene::core_services`, which sets the same ones for the worlds that
+    // do not build their clock here.
     scene.set_f32(&clock, "DaytimeLengthInHours", 16.0);
     scene.set_f32(&clock, "NighttimeLengthInHours", 8.0);
+    scene.set_f32(&clock, "FixedDeltaTimeInHours", 0.03125);
+    scene.set_i32(&clock, "_ticksPassedToday", NEW_GAME_TICK);
+    // The real-seconds day length the countdown diagnostic divides by.
+    // Plausible rather than measured: nothing splits on it, and a zero here
+    // would print a completion day of 5.6e-47 instead of a number.
+    scene.set_f32(&clock, "DayLengthInSeconds", 900.0);
 
     let unlocking = scene.service("Timberborn.ScienceSystem", "BuildingUnlockingService");
     // Every name the set will ever hold is placed now; `_count` and
@@ -310,6 +316,16 @@ impl Run {
         self.live
             .set_instance_i32(reached_by::BOT_LIST, self.bot_list, "_size", 1);
         self.live.set_u8(&self.bots, "BotCreated", 1);
+    }
+
+    /// The in-game clock moves to `day`, `ticks` into it.
+    ///
+    /// Both counters together, because the game moves both: a day rollover is
+    /// `DayNumber` up by one and `_ticksPassedToday` back to zero, which is
+    /// what the timberbot recording shows it doing.
+    fn clock_at(&self, day: i32, ticks: i32) {
+        self.live.set_i32(&self.clock, "DayNumber", day);
+        self.live.set_i32(&self.clock, "_ticksPassedToday", ticks);
     }
 
     /// The settlement's average well-being becomes `value` -- the number the
@@ -522,12 +538,7 @@ fn run_name(fixture: &fixture::Fixture, faction: &Faction) -> String {
 /// Everything the timer was told, in order, ignoring the variables the
 /// splitter sets alongside.
 fn controlling(world: &World) -> Vec<&TimerEvent> {
-    world
-        .timer
-        .events
-        .iter()
-        .filter(|event| !matches!(event, TimerEvent::SetVariable { .. }))
-        .collect()
+    world.timer.run_control().collect()
 }
 
 /// The category: a start and seven splits, in that order and no others.
@@ -970,4 +981,206 @@ fn a_timer_the_runner_stopped_takes_no_more_splits() {
             world.log
         );
     }
+}
+
+/// Ticks to a day in the synthetic world, as in the game: 16 + 8 in-game
+/// hours at 0.03125 an hour. Spelled out rather than imported for the same
+/// reason `FINISHED` is -- a test that took the splitter's own number could
+/// not notice it changing.
+const TICKS_PER_DAY: i32 = 768;
+
+/// Where a new game's clock starts: 4 hours of 24.
+const NEW_GAME_TICK: i32 = TICKS_PER_DAY / 6;
+
+/// Seconds of game time a whole in-game day is worth. The splitter's
+/// `SECONDS_PER_GAME_DAY`, restated for the same reason.
+const SECONDS_PER_DAY: f64 = 60.0;
+
+/// A run whose clock actually moves, ending on the Congratulations screen.
+///
+/// The three clock steps are chosen to land on round numbers: 128 ticks is a
+/// sixth of a day and so 10s, the rollover to day 2 makes 50s, and 128 ticks
+/// into day 2 is a full day at 60s. A test that has to compute what it expects
+/// from the same formula the splitter used would pass on a shared mistake.
+fn play_timed(fixture: &fixture::Fixture, faction: &Faction) -> World {
+    let (world, run) = settlement(fixture, faction, &faction.buildings);
+    let steps: Vec<Step> = vec![
+        Box::new(|r: &Run| r.load_ends()),
+        Box::new(|r: &Run| r.overlay()),
+        Box::new(|r: &Run| r.clock_at(1, NEW_GAME_TICK + TICKS_PER_DAY / 6)),
+        Box::new(|r: &Run| r.clock_at(2, 0)),
+        Box::new(|r: &Run| r.clock_at(2, NEW_GAME_TICK)),
+        Box::new(|r: &Run| r.unlock_wonder()),
+        // The clock moves on the same instant the run ends, which is what
+        // makes the ordering testable: a splitter that set game time after
+        // splitting would file this run at 60s rather than 110s, and every
+        // other arrangement of these steps would score both the same.
+        Box::new(|r: &Run| {
+            r.clock_at(3, 0);
+            r.congratulations();
+        }),
+    ];
+    drive_steps(world, run, steps, |_, _| {}).0
+}
+
+/// What the run above ends at: day 3 tick 0, from a baseline of day 1 tick
+/// 128, is 1 5/6 days.
+const FINAL_GAME_TIME: f64 = 110.0;
+
+/// The game times the splitter pushed, with runs of the same value collapsed.
+///
+/// It pushes every tick, so the raw list is thousands of repeats; what a test
+/// is about is the sequence of values it moved through.
+fn game_time_steps(world: &World) -> Vec<f64> {
+    let mut steps: Vec<f64> = Vec::new();
+    for value in world.timer.game_time() {
+        if steps.last() != Some(&value) {
+            steps.push(value);
+        }
+    }
+    steps
+}
+
+fn for_each_timed_run(check: impl Fn(&str, &World)) {
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for fixture in &fixtures {
+        for faction in FACTIONS {
+            let world = play_timed(fixture, faction);
+            check(&run_name(fixture, faction), &world);
+        }
+    }
+}
+
+/// Game time is the game's clock, measured from the run start.
+///
+/// The exact sequence, not a count: a splitter that pushed the *absolute* day
+/// instead of the elapsed one would produce a perfectly plausible rising
+/// series, and only the first value says which of the two it is.
+#[test]
+fn game_time_follows_the_in_game_clock_from_the_run_start() {
+    for_each_timed_run(|name, world| {
+        assert_eq!(
+            game_time_steps(world),
+            vec![0.0, 10.0, 50.0, 60.0, FINAL_GAME_TIME],
+            "{name}: game time did not follow the clock. Log was {:#?}",
+            world.log
+        );
+    });
+}
+
+/// The host's own flow of game time is stopped once, and only once.
+///
+/// It is sticky host state: stopping it twice is harmless but says the
+/// splitter does not know whether it has, and the next thing that does not
+/// know is the thing that resumes it.
+#[test]
+fn the_hosts_game_time_is_paused_exactly_once() {
+    for_each_timed_run(|name, world| {
+        assert_eq!(
+            world.timer.game_time_pauses(),
+            1,
+            "{name}: expected one PauseGameTime, got {:?}",
+            world.timer.events
+        );
+    });
+}
+
+/// Nothing is pushed before the run starts, and the last push of all precedes
+/// the final split.
+///
+/// The second half is the one that costs a real run if it is wrong: LiveSplit
+/// records the game time it holds *at* the split, so a splitter that set the
+/// clock after splitting would file every run one tick short.
+#[test]
+fn game_time_is_set_after_the_start_and_before_the_final_split() {
+    for_each_timed_run(|name, world| {
+        let events = &world.timer.events;
+        let start = events
+            .iter()
+            .position(|e| *e == TimerEvent::Start)
+            .expect("the run started");
+        let first_set = events
+            .iter()
+            .position(|e| matches!(e, TimerEvent::SetGameTime { .. }))
+            .expect("game time was set");
+        assert!(
+            start < first_set,
+            "{name}: game time was set before the run started"
+        );
+
+        // Not "the last push came before the last split": the splitter keeps
+        // pushing while the host says the run is still running, and this
+        // harness's timer never reaches `Ended`. What matters is the value
+        // standing when the final split was taken.
+        let last_split = world
+            .timer
+            .events
+            .iter()
+            .rposition(|e| *e == TimerEvent::Split)
+            .expect("the run ended");
+        let at_split = world.timer.events[..last_split]
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                TimerEvent::SetGameTime { secs, nanos } => {
+                    Some(*secs as f64 + f64::from(*nanos) / 1e9)
+                }
+                _ => None,
+            })
+            .expect("game time was set before the final split");
+        assert_eq!(
+            at_split, FINAL_GAME_TIME,
+            "{name}: the final split was taken on the clock as it stood a tick \
+             earlier, so the run's recorded time is stale"
+        );
+    });
+}
+
+/// A clock that reads behind the run's baseline produces zero, not a negative.
+///
+/// The host rejects a negative game time outright, so the clamp is what stops
+/// one being sent at all. Reaching this needs something to have gone wrong
+/// elsewhere -- the baseline is taken from the same clock -- which is exactly
+/// why it is worth pinning.
+#[test]
+fn a_clock_behind_the_baseline_is_clamped_to_zero() {
+    let fixtures = fixture::load_all().unwrap_or_else(|e| panic!("{e}"));
+    for fixture in &fixtures {
+        for faction in FACTIONS {
+            let (world, run) = settlement(fixture, faction, &faction.buildings);
+            let steps: Vec<Step> = vec![
+                Box::new(|r: &Run| r.load_ends()),
+                Box::new(|r: &Run| r.overlay()),
+                Box::new(|r: &Run| r.clock_at(1, NEW_GAME_TICK + TICKS_PER_DAY / 6)),
+                // Behind where the run started, which the game never does.
+                Box::new(|r: &Run| r.clock_at(1, 0)),
+            ];
+            let (world, _) = drive_steps(world, run, steps, |_, _| {});
+            let name = run_name(fixture, faction);
+            let times = world.timer.game_time();
+            assert!(
+                times.iter().all(|t| *t >= 0.0),
+                "{name}: a negative game time was sent: {:?}",
+                times.iter().filter(|t| **t < 0.0).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                game_time_steps(&world),
+                vec![0.0, 10.0, 0.0],
+                "{name}: the clamp did not hold game time at zero"
+            );
+        }
+    }
+}
+
+/// The scale is one line, and this is the line.
+///
+/// Not a tautology: it is the number published with the category, so a change
+/// to it is a change to every time already submitted. It should be hard to do
+/// by accident.
+#[test]
+fn a_day_is_worth_a_minute() {
+    assert_eq!(
+        timberborn_autosplitter::clock::SECONDS_PER_GAME_DAY,
+        SECONDS_PER_DAY
+    );
 }
