@@ -185,6 +185,14 @@
       ]
     },
     {
+      "image": "Timberborn.TimeSystem",
+      "namespace": "Timberborn.TimeSystem",
+      "name": "TickProgressService",
+      "fields": [
+        { "name": "<Progress>k__BackingField", "requested": "Progress", "type": "float", "static": false, "offset": 24 }
+      ]
+    },
+    {
       "image": "Timberborn.Wellbeing",
       "namespace": "Timberborn.Wellbeing",
       "name": "WellbeingService",
