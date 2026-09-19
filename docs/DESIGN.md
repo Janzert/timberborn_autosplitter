@@ -1328,6 +1328,25 @@ candidate is linear and they differ only in what a human reads:
 | 3600 (an in-game hour as a clock hour) | `1536:00:00` | no intuition for a PB |
 | 1 | `0:01:04` | legible only to those told the trick |
 
+A fifth candidate is ruled out by the frontends rather than by taste:
+**`K = 86400`, an in-game day as a timer day**, which is the most natural
+mapping there is -- a 64-day run would read `64d 0:00:00`, days where the game
+says days. It needs the timer to have a days field, and **neither frontend
+has one**:
+
+- livesplit-core's `Regular` formatter -- what the timer and the splits use --
+  has a test named `days()` asserting that `2148:34:56` formats as
+  `2148:34:56`. Hours simply grow. A `Days` formatter exists in the crate and
+  is used in exactly one place, the Total Playtime component.
+- Desktop LiveSplit's `GeneralTimeFormatter` has a `ShowDays` property, set
+  nowhere in the tree outside a unit test, and its `!ShowDays` branch says so
+  in a comment: "Days rolled into the hour count, e.g. 47:59:10".
+
+So `K = 86400` would show a 64-day run as `1536:00:00`, which is unworkable
+for exactly the runs the category is about. The same fact makes 60 safe from
+the other direction: a days field would only matter past 24 timer hours, which
+is **1440 in-game days**, and a thousand-day save still reads `16:40:00`.
+
 60 wins because the day count reads straight off the minutes column and the
 result still looks like a speedrun time. **It must not be read from the game.**
 `DayLengthInSeconds` is the tempting version of 460.8, and two installs whose
