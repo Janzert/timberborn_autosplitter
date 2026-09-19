@@ -5,8 +5,11 @@
 //! game's position in time to a resolution of one tick:
 //!
 //! ```text
-//! day = DayNumber + _ticksPassedToday / ticks_per_day
+//! day = DayNumber + (_ticksPassedToday + Progress) / ticks_per_day
 //! ```
+//!
+//! where `Progress` is the fraction of the current tick that has elapsed --
+//! see *Between ticks* below.
 //!
 //! Nothing here reads the tick count *per day* directly -- the game keeps that
 //! on `DayNightCycleSpec`, one pointer away, and the same number falls out of
@@ -25,7 +28,7 @@
 //! identical on 1.0.13.1 and 1.1.2.4, and so 768.0 both times.
 //!
 //! The three length constants read as zero until the game has finished
-//! loading, so they are read until they are usable and then kept. The two
+//! loading, so they are read until they are usable and then kept. The
 //! counters are read every tick.
 //!
 //! # Between ticks
@@ -51,15 +54,15 @@ use crate::{service::Locatable, status};
 /// minute: the day count reads straight off the minutes column, sub-day
 /// progress off the seconds, and a world-record wonder run -- about 64 in-game
 /// days -- reads `1:04:00`, which is also a plausible-looking speedrun time.
-/// One tick is then 78ms, small enough that the display does not visibly step
-/// and `TickProgressService` interpolation is not needed.
 ///
 /// **This is the one line to change** if the community settles on another
 /// scale. An `.lss` stores the raw game time, so runs already recorded can be
 /// rescaled arithmetically -- the choice is not a one-way door. Two others
 /// were costed: 460.8 (an in-game day at 1x real time, which would read
-/// `8:11:31` for that same run and would step by 0.6s a tick), and 3600 (an
-/// in-game hour as a clock hour).
+/// `8:11:31` for that same run), and 3600 (an in-game hour as a clock hour).
+///
+/// The scale does not change how smoothly the timer moves: the game advances
+/// in whole ticks whatever K is, which is what *Between ticks* deals with.
 ///
 /// What it must not be is read from the game. `DayLengthInSeconds` is the
 /// tempting version of the 460.8 above, and two installs whose day length
@@ -290,7 +293,7 @@ impl Clock {
         if (ticks - VANILLA_TICKS_PER_DAY).abs() < 0.5 {
             asr::print_message(&alloc::format!(
                 "Clock: {ticks} ticks a day ({daytime}+{nighttime} in-game hours \
-                 at {hours_per_tick} an hour a tick)."
+                 at {hours_per_tick} hours a tick)."
             ));
         } else {
             status::warn(&alloc::format!(
