@@ -104,6 +104,9 @@ worth reading:
 | `Game version not supported: DayNumber missing` | A game update renamed something the splitter cannot do without. |
 | `Game version may not be supported -- see the log` | Some names did not resolve. Some splits may still work. |
 | `Cannot tell a new game from a loaded save` | The splitter cannot rule out starting the timer on a loaded save. |
+| `The clock was lost mid-run. Game time is frozen.` | The game ended or stopped being readable while a run was timed. [Game time](#game-time) holds its last value; real time carries on. |
+| `Run started, but the clock could not be read. No game time.` | The run started but the game's clock could not be read at that moment, so there is no zero to measure from. Real time is unaffected. |
+| `This game's day is N ticks, not 768.` | The settlement's day is not the vanilla length, so its game time cannot be compared with other runs. |
 
 To add it to a layout of your own: **Edit Layout...** → `+` → **Information**
 → **Text**, then in its settings tick **Custom Variable**, put
@@ -183,6 +186,39 @@ out of order split will get attributed to the wrong item.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for how it works and what has been
 measured.
+
+## Game time
+
+Alongside the ordinary real-time clock, the splitter reports **game time**:
+the settlement's own clock, measured from the moment the run starts.
+
+**A day reads as a minute.** Timberborn's day is 24 in-game hours, and the
+timer shows one of them as two and a half seconds, so a run of 64 in-game days
+reads `1:04:00` — the day count in the minutes column, progress through the
+current day in the seconds. Nothing about it depends on your machine or your
+frame rate.
+
+To see it, switch LiveSplit's timing method to **Game Time**: right-click the
+timer → **Compare Against** → **Game Time**. If you forget, nothing is lost —
+a `.lss` records both times for every split, so a run timed with the wrong
+method selected still has its game time in the file.
+
+What to expect while running:
+
+- **The timer follows the game's pace, so it runs faster at 3x than at 1x.**
+  That is not a bug. What game time gives you is that the *total* does not
+  depend on the speed you played at: the same run done at 1x and at 3x
+  finishes on the same game time, where real time would differ by however much
+  you accelerated.
+- **Pausing the game stops it**, exactly and immediately.
+- **It starts at zero when the run starts** — the overlay after you name the
+  settlement, the same moment the timer starts. If the splitter could not time
+  your run start (see [the status line](#the-status-line)), it does not guess a
+  starting point: game time stays at zero for that run while real time runs
+  normally.
+- **If the game goes away mid-run, game time freezes** where it was and the
+  status line says so, rather than drifting on with real time and giving you a
+  number that looks right.
 
 ## Building
 

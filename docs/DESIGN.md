@@ -1275,6 +1275,157 @@ stale-address bugs, because there is nothing stale yet.
 
 **Not verified on Windows.**
 
+## Game time: the settlement's own clock
+
+Real time keeps running underneath and every split records both, so this costs
+a real-time run nothing. It is always on, with no setting of its own -- one
+fewer key written into every runner's `.lss`.
+
+`pause_game_time()` once and then `set_game_time()` every tick is what makes
+game time the game's clock *exactly*. Left unpaused, the host interpolates
+between updates with real time, which is right for a load remover and wrong
+here: at 3x the game delivers in-game hours three times faster and the host
+would keep filling the gaps at 1x.
+
+### The fraction of a day
+
+Everything comes off `DayNightCycle`, which the splitter already binds on every
+game and revalidates every tick, so there is no object to locate and no scan:
+
+```text
+day = DayNumber + (_ticksPassedToday + Progress) / ticks_per_day
+
+ticks_per_day = (DaytimeLengthInHours + NighttimeLengthInHours)
+                / FixedDeltaTimeInHours
+```
+
+`DayNightCycleSpec.ConfiguredDayLengthInTicks` is the same number one pointer
+away, and is deliberately not followed: three fields already on the clock give
+it, and the clock's address is already held.
+
+Measured rather than assumed, by replaying the recorded runs: the length
+constants are 0.03125 hours a tick and a day of 16 + 8 hours -- identical on
+1.0.13.1 and 1.1.2.4 -- so `ticks_per_day` derives to exactly 768.0 on both,
+matching `Configurations/DayNightCycle.blueprint.json`. `_ticksPassedToday`
+stays inside 0..768 and resets to zero at the day rollover, which the
+timberbot recording crosses three times. Live, the game's own
+`DayLengthInSeconds` reads 460.80002, which is 768 ticks of
+`TickTimeSpec.TickIntervalInSeconds` at 0.6s.
+
+`VANILLA_TICKS_PER_DAY` exists only to compare against. A settlement whose day
+is a different length still times correctly; it just cannot be compared with
+anyone else's run, and that is invisible without the warning.
+
+### A day is a minute, and that is one constant
+
+`SECONDS_PER_GAME_DAY` maps days onto the `Duration` LiveSplit wants. Every
+candidate is linear and they differ only in what a human reads:
+
+| K | A 64-day run reads | Against it |
+|---|---|---|
+| 60 | `1:04:00` | needs explaining once |
+| 460.8 (an in-game day at 1x) | `8:11:31` | hides the day count, and steps 0.6s a tick |
+| 3600 (an in-game hour as a clock hour) | `1536:00:00` | no intuition for a PB |
+| 1 | `0:01:04` | legible only to those told the trick |
+
+60 wins because the day count reads straight off the minutes column and the
+result still looks like a speedrun time. **It must not be read from the game.**
+`DayLengthInSeconds` is the tempting version of 460.8, and two installs whose
+day length differed would then produce incomparable times with nothing saying
+so. The choice is also not a one-way door: an `.lss` stores the raw game time,
+so runs already recorded rescale arithmetically if the community settles on
+another scale.
+
+### Between ticks
+
+The clock's counters move once a game tick, which is 0.6s of real time at 1x.
+Driving game time from them alone updates the display under twice a second,
+and that reads as broken however small each step is -- the step at K=60 is
+78ms, and it was still visibly janky live. **The step size was never the
+problem; the arrival rate was.**
+
+`TickProgressService.Progress` is how far through the current tick the game is,
+0 to 1, and it is in the DI container beside everything else, so it costs a
+lookup rather than a scan. It has no `_eventBus`, which would matter for a
+scan and does not for a container lookup. It is optional throughout: a build
+that renames it loses smoothness, not timing.
+
+Measured before it was used: across all three wonder-run recordings `Progress`
+sweeps the unit interval at live instants, and reads exactly zero only where
+the game is not ticking -- a scene still loading, and the Congratulations
+screen. That second case is why two frozen `run-finished` captures both read
+`0.0`, which on its own looks like a field that never holds anything.
+
+**The tick counter is read before the progress within it, and the order is
+load-bearing.** A tick can turn between the two reads. This way round the pair
+is at worst a whole tick stale -- the count from the old tick, the progress
+from the new one near zero -- which only understates. The other order pairs a
+progress near one with the count from after the turn, overshoots by a tick and
+then falls back, which is a timer running backwards. The value is also clamped
+to its own tick, so a stale or garbage read cannot push game time into a tick
+that has not happened.
+
+### The baseline, and the two ways a run starts
+
+Game time must be zero at the run start, and a new game does not begin at day
+zero: `HoursPassedOnNewGame` is 4 of 24, which is tick 128 of 768. So the
+fractional day at the start is stored and subtracted, and the result is clamped
+at zero because the host rejects a negative game time.
+
+The baseline is sampled on the tick the run start fires, which is `ShowUI` --
+one step before `Finished`, and so inside the rule that nothing may sample
+saved state before initialization completes. It is safe here for a reason
+specific to this value: the splitter only ever starts a run on a *new* game,
+where the clock is at a known constant rather than at something restored from
+a save. Measured live on five separate starts, the sample read day 1.1667
+every time. Sampling is still what is used, with the constant as the check:
+a sample more than eight ticks away from it says so in the log.
+
+**The run start fires from two places**, and the second has no clock:
+`start_timer` is also called from the container scan, which is the thing that
+finds the clock. A run starting there takes `NEW_GAME_DAY` instead of going
+without a baseline. That is not a guess -- a start only fires for a new game --
+and the alternative is a run silently untimed in game time.
+
+A clock that *is* located and then will not read gets no baseline at all. That
+is a broken world rather than a missing one, and a number invented for it
+would be believed.
+
+### What it does when things go wrong
+
+- **The clock is lost mid-run: freeze and warn.** The obvious counterpart,
+  `resume_game_time()`, is the wrong instinct: it hands the host real time to
+  interpolate into a game-timed run, producing a plausible-looking wrong
+  number. A frozen timer with a status line is visibly broken instead, and
+  this project's expensive bugs have all been of the first kind.
+- **The host is paused on the first push, not at attach.** Pausing is sticky
+  host state, and doing it at attach would reach into the timer of a runner
+  the splitter is not timing for -- a game already finished, a category that is
+  not this one. `refuses_to_start_a_timer_for_a_run_already_over` in the
+  snapshot suite is what says so.
+- **Game time is set above every split**, so the tick that ends a run is the
+  tick its time is recorded from. Offline this is pinned by a scenario whose
+  last step moves the clock and ends the run in the same instant; any other
+  arrangement scores a correct splitter and a stale one identically.
+- **Pushes stop once the timer is not `Running`.** Nothing offline can check
+  that -- the test harness's timer never reaches `Ended` -- so it is verified
+  live: the final time stands still after the last split.
+
+### Verified
+
+Offline, in both suites: the exact duration sequence, one `PauseGameTime` and
+no more, nothing pushed before the start, the clamp at zero, the seam where a
+full tick of progress meets the tick turning under it, and -- against real
+captured memory -- a series rising from zero through each recorded wonder run
+and crossing the timberbot recording's three day rollovers without going
+backwards.
+
+Live, through a native Linux frontend against the game under Proton: the
+baseline on five starts, the probe resolving every field at the offsets the
+fixtures record, speed changes, pausing, the smoothing, a whole category's
+seven splits in order, and the timer stopping at the Congratulations screen
+and staying stopped.
+
 ## Saying something to the runner
 
 `asr::print_message` goes to the host's log. In LiveSplit that is `Trace`, which

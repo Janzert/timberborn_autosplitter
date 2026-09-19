@@ -3,6 +3,32 @@
 What changed between releases, from a runner's point of view. Dates are the
 release date.
 
+## 0.6 — unreleased
+
+### Added
+
+- **Game time: the settlement's own clock, alongside real time.** A day reads
+  as a minute, so a 64-day run shows `1:04:00` — the day count in the minutes
+  column, progress through the day in the seconds. To see it, switch
+  LiveSplit's timing method to **Game Time** (right-click the timer →
+  **Compare Against** → **Game Time**); a `.lss` records both times either
+  way, so nothing is lost if you forget.
+
+  It is on for everyone and changes nothing about real time or the splits: the
+  same triggers fire at the same moments, and every split records both times.
+
+  What to expect: the timer follows the game's pace, so it runs faster at 3x
+  than at 1x, and pausing the game stops it. The point is that the *total*
+  does not depend on the speed you played at — the same run at 1x and at 3x
+  finishes on the same game time. It starts at zero at the overlay, the same
+  moment the timer starts, and if the splitter could not time your run start
+  it leaves game time at zero rather than guessing a starting point.
+
+  Three new status-line messages go with it, all covered in the README: a
+  clock lost mid-run (game time freezes rather than drifting), a run start
+  with no readable clock, and a settlement whose day is not the vanilla 768
+  ticks, whose game time cannot be compared with other runs.
+
 ## 0.5 — 2026-09-11
 
 ### Added
