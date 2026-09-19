@@ -68,7 +68,12 @@ The bare `--` is not a typo: `fixture` is a cargo *alias*, so anything meant
 for the tool rather than for cargo has to be handed past cargo's own parser.
 Without it, cargo rejects `--managed` as an unknown flag of its own.
 
-It needs the game **installed** (for the assemblies) and a `run-finished`
+`--managed` is any install's `Managed` directory, not necessarily the one
+Steam currently has on disk: a copy of an older install kept elsewhere answers
+just as well, since all that is read out of it are the assemblies. So a
+fixture for a build can be regenerated without putting that build back.
+
+It needs an **install** of the build (for the assemblies) and a `run-finished`
 snapshot **of that same build** (for the offsets) — see
 [../snapshots/README.md](../snapshots/README.md). It refuses to pair an install
 with a capture of a different version, because a fixture whose names came from

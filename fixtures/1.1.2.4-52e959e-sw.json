@@ -179,7 +179,9 @@
         { "name": "_eventBus", "type": "Timberborn.SingletonSystem.EventBus", "static": false, "offset": 16 },
         { "name": "<DayLengthInSeconds>k__BackingField", "requested": "DayLengthInSeconds", "type": "float", "static": false, "offset": 76 },
         { "name": "<DaytimeLengthInHours>k__BackingField", "requested": "DaytimeLengthInHours", "type": "float", "static": false, "offset": 80 },
-        { "name": "<NighttimeLengthInHours>k__BackingField", "requested": "NighttimeLengthInHours", "type": "float", "static": false, "offset": 84 }
+        { "name": "<NighttimeLengthInHours>k__BackingField", "requested": "NighttimeLengthInHours", "type": "float", "static": false, "offset": 84 },
+        { "name": "<FixedDeltaTimeInHours>k__BackingField", "requested": "FixedDeltaTimeInHours", "type": "float", "static": false, "offset": 88 },
+        { "name": "_ticksPassedToday", "type": "int", "static": false, "offset": 96 }
       ]
     },
     {
