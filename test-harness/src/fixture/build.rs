@@ -44,13 +44,15 @@ use crate::memory::{flags, FakeProcess, MemoryRange, SharedMemory, SparseMemory}
 
 /// `MonoAssembly`, as asr reads it.
 mod assembly {
-    pub const ANAME: u64 = 0x10;
     pub const IMAGE: u64 = 0x60;
     pub const SIZE: u64 = 0x68;
 }
 
 /// `MonoImage`, and the `MonoInternalHashTable` its class cache is.
 mod image {
+    /// asr reads an assembly's name off its image rather than off the
+    /// assembly's own `aname`.
+    pub const ASSEMBLY_NAME: u64 = 0x30;
     pub const CLASS_CACHE: u64 = 0x4D0;
     pub const HASH_SIZE: u64 = CLASS_CACHE + 0x18;
     pub const HASH_TABLE: u64 = CLASS_CACHE + 0x20;
@@ -262,11 +264,11 @@ impl Builder {
             let assembly = metadata.alloc(assembly::SIZE);
             metadata.write_u64(node, assembly);
 
-            let name = metadata.cstr(image_name, &mut interned);
-            metadata.write_u64(assembly + assembly::ANAME, name);
-
             let image = metadata.alloc(image::SIZE);
             metadata.write_u64(assembly + assembly::IMAGE, image);
+
+            let name = metadata.cstr(image_name, &mut interned);
+            metadata.write_u64(image + image::ASSEMBLY_NAME, name);
 
             // One class per bucket. Mono hashes by name into a shared table
             // and chains collisions; asr walks every bucket and every chain,

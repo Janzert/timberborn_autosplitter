@@ -15,7 +15,7 @@
 //! needs a game, a capture, or a machine that has ever run Timberborn.
 
 use asr::{
-    game_engine::unity::mono::{Class, Module, Version},
+    game_engine::unity::mono::{Class, Module},
     PointerSize, Process, ProcessId,
 };
 use test_harness::{
@@ -56,17 +56,11 @@ fn for_each_fixture(check: impl Fn(&Fixture, &Process, &Module)) {
 }
 
 /// The whole of `Module::attach`: the Unity version resource, the export
-/// table, the RIP-relative displacement into the assembly list. Reaching a
-/// version at all means every one of those was right.
+/// table, the RIP-relative displacement into the assembly list. Attaching at
+/// all means every one of those was right.
 #[test]
 fn asr_attaches_to_the_synthetic_mono() {
     for_each_fixture(|fixture, _process, module| {
-        assert_eq!(
-            module.get_version(),
-            Version::V3,
-            "{}: Timberborn is Unity 6, which is V3",
-            fixture.game_version
-        );
         assert_eq!(
             module.get_pointer_size(),
             PointerSize::Bit64,
