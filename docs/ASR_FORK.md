@@ -71,22 +71,22 @@ The accessors live on the **`timberborn`** branch,
 which is what the parent repo's gitlink points at. It is named for what it is
 for -- the branch this project builds against -- rather than for whatever
 happened to land on it first; it was `class-vtable` until 2026-09-05.
-`mono-class-vtable` carries the accessors shaped for upstream review --
-retitled to the house style, with the dedup and the doc comments a reviewer
-asked for in advance.
+`mono-class-handles` carries the same commits for upstream review.
 
-**The gitlink tracks `timberborn`, never `mono-class-vtable`.** A PR branch is
-rewritten as review proceeds -- a branch of this fork's has been, to drop a
-commit a reviewer did not want -- and a gitlink pointing at a commit that a
-later force-push orphans cannot be fetched at all: every fresh clone breaks.
+**The gitlink tracks `timberborn`, never the pull request's branch.** A PR
+branch is rewritten as review proceeds -- a branch of this fork's has been, to
+drop a commit a reviewer did not want -- and a gitlink pointing at a commit
+that a later force-push orphans cannot be fetched at all: every fresh clone
+breaks.
 That is the one rule here worth more than the convenience of a single branch.
 Keep the two at the same commit while they agree, and let them diverge if
 review asks for something the splitter does not need.
 
-That rule is why the rename left something behind, and the rebase after it. Rebasing rewrote every
-commit `class-vtable` had, and deleting the branch would have orphaned the
-gitlinks in this repo's own history -- every parent commit up to the rename
-names a submodule commit that no branch reaches any more. The old tip is
+That rule is why the rename left something behind, and the rebase after it.
+Rebasing rewrote every commit `class-vtable` had, and deleting the branch
+would have orphaned the gitlinks in this repo's own history -- every parent
+commit up to the rename names a submodule commit that no branch reaches any
+more. The old tip is
 therefore kept as the tag **`archive/class-vtable`** (`a231d3f`), pushed to the
 fork. Do not delete it: checking out an older parent commit needs it. Do the
 same for any future rewrite of this branch -- as was done when it was rebased
@@ -119,8 +119,14 @@ git add vendor/asr && git commit -m "chore: bump vendored asr"
 
 ## Upstreaming
 
-The accessors are <https://github.com/LiveSplit/asr/pull/157>, from the
-`mono-class-vtable` branch on the fork.
+The accessors are <https://github.com/LiveSplit/asr/pull/200>, from the
+`mono-class-handles` branch on the fork, opened 2026-10-17. Each commit
+carries a test in upstream's `mono/walk_tests.rs`, on its existing fixture.
+
+It replaces <https://github.com/LiveSplit/asr/pull/157>, which was written
+against the Mono code before upstream moved it into `managed/` and no longer
+applied. #157 had no review discussion to carry over, so it was closed rather
+than force-pushed.
 
 ### Upstream tests
 
@@ -139,7 +145,7 @@ without `-D warnings`; and a `cargo fmt` step that ends in `|| true`. Upstream
 `master` has 31 clippy warnings of its own, so compare a branch's count
 against master's rather than expecting none.
 
-### Notes on #157
+### Notes on #200
 
 It is framed generally rather than as a Timberborn special case: Unity games
 using constructor-injection DI (Bindito, Zenject, VContainer) frequently have
@@ -155,10 +161,6 @@ what the pull request adds is making that public, and documenting the
 lazily-filled field table, which is a real trap in the API being proposed and
 cost a session to find.
 
-The pull request's branch predates upstream's restructuring of the Mono code
-into `managed/` and no longer applies; the rebased `timberborn` branch is what
-it would need to become.
-
 Upstream uses neither conventional commits nor an `Area:` prefix -- 93% of the
 last 150 subjects are a bare imperative sentence -- so the commits are titled
 to match rather than to match this repo.
@@ -168,5 +170,5 @@ over exposing the raw address. That is a nicer contribution but more surface to
 get reviewed, which is why it is worth doing after the splitter works.
 
 The submodule goes away when the fork has nothing left that upstream lacks --
-which now means #157, or an equivalent, landing. Delete the `[patch]` stanza
+which now means #200, or an equivalent, landing. Delete the `[patch]` stanza
 and the submodule then, not before.
