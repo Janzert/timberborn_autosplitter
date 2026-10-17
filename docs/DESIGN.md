@@ -127,7 +127,8 @@ way to go the other way either — from an object found at runtime back to a
   lookups (`class.runtime_info` -> `domain_vtables[0]`), so this exposes the
   exact value the scan compares against rather than the raw class address.
 - `Class::of_object()` — reads an object's `MonoVTable` -> `MonoClass` and
-  returns it as a `Class`. This is what makes BCL collections resolvable by
+  returns it as a `Class`, through the same internal lookup asr uses for the
+  scene manager. This is what makes BCL collections resolvable by
   name: a generic instantiation like `HashSet<string>` cannot be looked up in an
   image by name, but any instance points at its own class.
 

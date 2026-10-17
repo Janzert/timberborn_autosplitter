@@ -1,4 +1,4 @@
-//! The 71 `extern "C"` imports `asr` expects from the auto splitting runtime.
+//! The 72 `extern "C"` imports `asr` expects from the auto splitting runtime.
 //!
 //! Signatures mirror `vendor/asr/src/runtime/sys.rs` exactly, with asr's
 //! private newtypes replaced by the primitives they are `repr(transparent)`
@@ -498,6 +498,21 @@ pub unsafe extern "C" fn user_settings_add_file_select_mime_filter(
     _mime_type_len: usize,
 ) {
     unsupported("user_settings_add_file_select_mime_filter")
+}
+
+/// # Safety
+///
+/// All buffers must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn user_settings_add_text_input(
+    _key_ptr: *const u8,
+    _key_len: usize,
+    _description_ptr: *const u8,
+    _description_len: usize,
+    _default_value_ptr: *const u8,
+    _default_value_len: usize,
+) {
+    unsupported("user_settings_add_text_input")
 }
 
 /// # Safety

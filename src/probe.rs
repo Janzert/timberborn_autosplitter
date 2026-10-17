@@ -221,8 +221,7 @@ pub const SUBJECTS: &[Subject] = &[
 /// will not be present in the main menu.
 pub fn run(process: &Process, module: &Module) -> bool {
     asr::print_message(&format!(
-        "--- probe: mono {:?}, {:?} ---",
-        module.get_version(),
+        "--- probe: mono, {:?} ---",
         module.get_pointer_size(),
     ));
 
